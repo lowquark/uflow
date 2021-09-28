@@ -2,6 +2,8 @@
 use super::peer;
 use super::frame;
 use super::MTU;
+use super::ChannelId;
+use super::SendMode;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -96,11 +98,9 @@ impl Client {
         self.peer_ref.borrow_mut().poll_events()
     }
 
-    /*
-    pub fn send(&mut self, channel_id: u8, data: Box<[u8]>) {
-        self.peer_ref.borrow_mut().send(channel_id, data);
+    pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
+        self.peer_ref.borrow_mut().send(data, channel_id, mode);
     }
-    */
 
     pub fn disconnect(&self) {
         self.peer_ref.borrow_mut().disconnect();

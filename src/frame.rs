@@ -660,8 +660,8 @@ impl Data {
 
 impl DataAck {
     const TYPE_ID: u8 = 7;
-    const HEADER_SIZE_BYTES: usize = 3;
-    const SEQUENCE_ID_SIZE_BYTES: usize = 4;
+    pub const HEADER_SIZE_BYTES: usize = 3;
+    pub const SEQUENCE_ID_SIZE_BYTES: usize = 4;
 
     pub fn to_bytes(&self) -> Box<[u8]> {
         assert!(self.sequence_ids.len() <= u16::MAX as usize);

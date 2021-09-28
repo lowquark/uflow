@@ -5,6 +5,8 @@ use std::net;
 use std::time;
 
 use super::frame;
+use super::ChannelId;
+use super::SendMode;
 
 mod frame_transfer;
 
@@ -227,6 +229,15 @@ impl Peer {
                 // Our ping has been received, pet watchdog
                 self.watchdog_time = time::Instant::now();
             }
+            frame::Frame::Data(data_frame) => {
+                self.frame_transfer.acknowledge_data_frame(&data_frame);
+                for entry in data_frame.entries.iter() {
+                    println!("Received a datagram! {:?}", entry);
+                }
+            }
+            frame::Frame::DataAck(data_ack_frame) => {
+                self.frame_transfer.handle_data_ack(data_ack_frame);
+            }
             _ => ()
         }
     }
@@ -335,14 +346,21 @@ impl Peer {
         std::mem::take(&mut self.event_queue).into_iter()
     }
 
-    /*
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
+        /*
         let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
         if self.state == State::Connected {
             channel.tx.enqueue(data, mode);
         }
+        */
+        self.frame_transfer.enqueue_datagram(
+            frame::DataEntry::Packet(frame::Packet {
+                channel_id: 69,
+                sequence_id: 420,
+                dependent_lead: 0,
+                data: data
+            }), true);
     }
-    */
 
     fn flush_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
         let timeout = time::Duration::from_millis(self.rto_ms.round() as u64);

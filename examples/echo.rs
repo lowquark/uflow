@@ -34,6 +34,8 @@ fn client_thread() {
             println!("[{:?}] event {:?}", client.address(), event);
         }
 
+        client.send(vec![0x00, 0x11, 0x22].into_boxed_slice(), 0, udpl::SendMode::Reliable);
+
         host.flush();
 
         std::thread::sleep(std::time::Duration::from_millis(15));
