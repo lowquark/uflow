@@ -14,3 +14,5 @@ type ProtocolVersionId = u8;
 pub const PROTOCOL_VERSION: ProtocolVersionId = 0;
 pub const MTU: usize = 1500;
 
+pub const MAX_CHANNELS: u32 = 256;
+

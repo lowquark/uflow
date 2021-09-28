@@ -142,6 +142,10 @@ impl Tx {
             self.base_sequence_id = new_base_sequence_id;
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.send_queue.is_empty()
+    }
 }
 
 #[test]

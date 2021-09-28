@@ -198,7 +198,7 @@ impl Rx {
         }
     }
 
-    pub fn window_ack(&mut self) -> Option<WindowAck> {
+    pub fn take_window_ack(&mut self) -> Option<WindowAck> {
         self.window_ack.take()
     }
 
@@ -591,9 +591,9 @@ fn test_window_acks() {
         assert_eq!(rx.receive().unwrap(), vec![ i as u8 ].into_boxed_slice());
 
         if i % WINDOW_ACK_SPACING == WINDOW_ACK_SPACING - 1 {
-            assert_eq!(rx.window_ack().unwrap(), WindowAck { sequence_id: i });
+            assert_eq!(rx.take_window_ack().unwrap(), WindowAck { sequence_id: i });
         } else {
-            assert_eq!(rx.window_ack(), None);
+            assert_eq!(rx.take_window_ack(), None);
         }
     }
 

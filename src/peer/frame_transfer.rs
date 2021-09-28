@@ -193,5 +193,9 @@ impl Tx {
             sink.send(&frame_data);
         }
     }
+
+    pub fn is_tx_idle(&self) -> bool {
+        self.send_queue.is_empty() && self.resend_queue.is_empty()
+    }
 }
 

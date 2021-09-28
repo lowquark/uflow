@@ -3,7 +3,7 @@ fn server_thread() {
     let mut host = udpl::host::Host::bind("127.0.0.1:8888", udpl::host::Params::new()).unwrap();
     let mut clients = Vec::new();
 
-    for _ in 0..400 {
+    for _ in 0..220 {
         host.step();
 
         for client in host.incoming() {
@@ -27,14 +27,20 @@ fn client_thread() {
     let mut host = udpl::host::Host::bind_any(udpl::host::Params::new()).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
-    for _ in 0..200 {
+    for i in 0..200 {
         host.step();
 
         for event in client.poll_events() {
             println!("[{:?}] event {:?}", client.address(), event);
         }
 
-        client.send(vec![0x00, 0x11, 0x22].into_boxed_slice(), 0, udpl::SendMode::Reliable);
+        let a = i*3 as u16;
+        let b = i*3 + 1 as u16;
+        let c = i*3 + 2 as u16;
+
+        client.send(Box::new(a.to_be_bytes()), 0, udpl::SendMode::Reliable);
+        client.send(Box::new(b.to_be_bytes()), 0, udpl::SendMode::Reliable);
+        client.send(Box::new(c.to_be_bytes()), 0, udpl::SendMode::Reliable);
 
         host.flush();
 
@@ -43,7 +49,7 @@ fn client_thread() {
 
     client.disconnect();
 
-    for _ in 0..200 {
+    for _ in 0..20 {
         host.step();
 
         for event in client.poll_events() {
