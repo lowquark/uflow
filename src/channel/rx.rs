@@ -115,14 +115,11 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(datagram: Datagram) -> Self {
+    fn new(sequence_id: seq::Id, dependent_lead: u16) -> Self {
         Self {
-            sequence_id: datagram.sequence_id,
-            dependent_lead: datagram.dependent_lead,
-            frag_asm: match datagram.payload {
-                Payload::Fragment(fragment) => Some(FragAsm::new(fragment)),
-                Payload::Sentinel => None,
-            }
+            sequence_id: sequence_id,
+            dependent_lead: dependent_lead,
+            frag_asm: None,
         }
     }
 
@@ -133,11 +130,16 @@ impl Entry {
         if datagram.dependent_lead != self.dependent_lead {
             return;
         }
-        if let Some(ref mut frag_asm) = self.frag_asm {
-            match datagram.payload {
-                Payload::Fragment(fragment) => frag_asm.handle_fragment(fragment),
-                _ => (),
+
+        match datagram.payload {
+            Payload::Fragment(fragment) => {
+                if let Some(ref mut frag_asm) = self.frag_asm {
+                    frag_asm.handle_fragment(fragment);
+                } else {
+                    self.frag_asm = Some(FragAsm::new(fragment));
+                }
             }
+            Payload::Sentinel => ()
         }
     }
 
@@ -159,8 +161,8 @@ pub struct Rx {
     base_sequence_id: seq::Id,
     // Pending receive entries
     receive_queue: VecDeque<Entry>,
-    // Number of sentinel entries in the queue
-    num_sentinels: usize,
+    // Pending window acknowledgement
+    window_ack: Option<WindowAck>,
 }
 
 impl Rx {
@@ -168,7 +170,7 @@ impl Rx {
         Self {
             base_sequence_id: 0,
             receive_queue: VecDeque::new(),
-            num_sentinels: 0,
+            window_ack: None,
         }
     }
 
@@ -189,40 +191,58 @@ impl Rx {
                 self.receive_queue[idx].handle_datagram(datagram);
             }
             Err(idx) => {
-                let entry = Entry::new(datagram);
-                if entry.is_sentinel() {
-                    self.num_sentinels += 1;
-                }
+                let mut entry = Entry::new(datagram.sequence_id, datagram.dependent_lead);
+                entry.handle_datagram(datagram);
                 self.receive_queue.insert(idx, entry);
             }
         }
     }
 
+    pub fn window_ack(&mut self) -> Option<WindowAck> {
+        self.window_ack.take()
+    }
+
+    fn new_window_ack(prev_base_id: seq::Id, base_id: seq::Id) -> Option<WindowAck> {
+        if base_id & !(WINDOW_ACK_SPACING-1) != prev_base_id & !(WINDOW_ACK_SPACING-1) {
+            let window_ack_id = (base_id & !(WINDOW_ACK_SPACING-1)).wrapping_sub(1) & 0xFFFFFF;
+            Some(WindowAck {
+                sequence_id: window_ack_id
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn receive(&mut self) -> Option<Box<[u8]>> {
-        // Count sentinels seen before calling drain so as to update total
-        let mut sentinel_drain_count: usize = 0;
+        let prev_base_id = self.base_sequence_id;
 
-        for (idx, entry) in self.receive_queue.iter_mut().enumerate() {
-            let lead = entry.dependent_lead as u32;
-            if lead <= seq::lead_unsigned(entry.sequence_id, self.base_sequence_id) {
-                return None;
-            }
+        if !self.receive_queue.is_empty() {
+            let last_id = self.receive_queue.back().unwrap().sequence_id;
 
-            if let Some(packet) = entry.try_assemble() {
-                self.base_sequence_id = seq::add(entry.sequence_id, 1);
-                self.receive_queue.drain(..idx+1);
-                self.num_sentinels -= sentinel_drain_count;
-                return Some(packet);
-            }
+            for (idx, entry) in self.receive_queue.iter_mut().enumerate() {
+                let lead = entry.dependent_lead as u32;
 
-            if entry.is_sentinel() {
-                sentinel_drain_count += 1;
+                if lead != 0 && lead <= seq::lead_unsigned(entry.sequence_id, self.base_sequence_id) {
+                    return None;
+                }
 
-                if self.num_sentinels >= SENTINEL_EXPIRATION_THRESHOLD {
+                if let Some(packet) = entry.try_assemble() {
                     self.base_sequence_id = seq::add(entry.sequence_id, 1);
                     self.receive_queue.drain(..idx+1);
-                    self.num_sentinels -= sentinel_drain_count;
-                    return None;
+                    if let Some(ack) = Self::new_window_ack(prev_base_id, self.base_sequence_id) {
+                        self.window_ack = Some(ack);
+                    }
+                    return Some(packet);
+                } else {
+                    let last_lead = seq::lead_unsigned(last_id, entry.sequence_id);
+                    if last_lead >= TRANSFER_WINDOW_SIZE - WINDOW_ACK_SPACING {
+                        self.base_sequence_id = seq::add(entry.sequence_id, 1);
+                        self.receive_queue.drain(..idx+1);
+                        if let Some(ack) = Self::new_window_ack(prev_base_id, self.base_sequence_id) {
+                            self.window_ack = Some(ack);
+                        }
+                        return None;
+                    }
                 }
             }
         }
@@ -230,4 +250,356 @@ impl Rx {
         None
     }
 }
+
+#[test]
+fn test_basic_receive() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+    let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    let dg2 = Datagram {
+        sequence_id: 2,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p2.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg0);
+    rx.handle_datagram(dg1);
+    rx.handle_datagram(dg2);
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive().unwrap(), p1);
+    assert_eq!(rx.receive().unwrap(), p2);
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 3);
+}
+
+#[test]
+fn test_invalid() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 1,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg0);
+    rx.handle_datagram(dg1);
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 1);
+}
+
+#[test]
+fn test_reorder() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+    let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    let dg2 = Datagram {
+        sequence_id: 2,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p2.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg2);
+    rx.handle_datagram(dg1);
+    rx.handle_datagram(dg0);
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive().unwrap(), p1);
+    assert_eq!(rx.receive().unwrap(), p2);
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 3);
+}
+
+#[test]
+fn test_duplicates() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+    let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    let dg2 = Datagram {
+        sequence_id: 2,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p2.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg0.clone());
+    rx.handle_datagram(dg1.clone());
+    rx.handle_datagram(dg1);
+    rx.handle_datagram(dg2.clone());
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive().unwrap(), p1);
+    assert_eq!(rx.receive().unwrap(), p2);
+
+    rx.handle_datagram(dg0);
+    rx.handle_datagram(dg2);
+
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 3);
+}
+
+#[test]
+fn test_stall() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+    let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    let dg2 = Datagram {
+        sequence_id: 2,
+        dependent_lead: 1,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p2.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg2);
+    rx.handle_datagram(dg0);
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive(), None);
+
+    rx.handle_datagram(dg1);
+
+    assert_eq!(rx.receive().unwrap(), p1);
+    assert_eq!(rx.receive().unwrap(), p2);
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 3);
+}
+
+#[test]
+fn test_skip() {
+    let mut rx = Rx::new();
+
+    let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
+    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
+    let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
+
+    let dg0 = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p0.clone(),
+        })
+    };
+
+    let dg1 = Datagram {
+        sequence_id: 1,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p1.clone(),
+        })
+    };
+
+    let dg2 = Datagram {
+        sequence_id: 2,
+        dependent_lead: 2,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 0,
+            data: p2.clone(),
+        })
+    };
+
+    rx.handle_datagram(dg2);
+    rx.handle_datagram(dg0);
+
+    assert_eq!(rx.receive().unwrap(), p0);
+    assert_eq!(rx.receive().unwrap(), p2);
+    assert_eq!(rx.receive(), None);
+
+    assert_eq!(rx.base_sequence_id, 3);
+}
+
+#[test]
+fn test_receive_window() {
+    let mut rx = Rx::new();
+
+    for i in 0..2*TRANSFER_WINDOW_SIZE {
+        let dg0 = Datagram {
+            sequence_id: i,
+            dependent_lead: 0,
+            payload: Payload::Fragment(Fragment {
+                fragment_id: 0,
+                last_fragment_id: 0,
+                data: vec![ i as u8 ].into_boxed_slice(),
+            })
+        };
+
+        rx.handle_datagram(dg0);
+    }
+
+    for i in 0..TRANSFER_WINDOW_SIZE {
+        assert_eq!(rx.receive().unwrap(), vec![ i as u8 ].into_boxed_slice());
+    }
+
+    assert_eq!(rx.receive(), None);
+    assert_eq!(rx.receive_queue.len(), 0);
+}
+
+#[test]
+fn test_window_acks() {
+    let mut rx = Rx::new();
+
+    for i in 0..TRANSFER_WINDOW_SIZE {
+        let dg0 = Datagram {
+            sequence_id: i,
+            dependent_lead: 0,
+            payload: Payload::Fragment(Fragment {
+                fragment_id: 0,
+                last_fragment_id: 0,
+                data: vec![ i as u8 ].into_boxed_slice(),
+            })
+        };
+
+        rx.handle_datagram(dg0);
+    }
+
+    for i in 0..TRANSFER_WINDOW_SIZE {
+        assert_eq!(rx.receive().unwrap(), vec![ i as u8 ].into_boxed_slice());
+
+        if i % WINDOW_ACK_SPACING == WINDOW_ACK_SPACING - 1 {
+            assert_eq!(rx.window_ack().unwrap(), WindowAck { sequence_id: i });
+        } else {
+            assert_eq!(rx.window_ack(), None);
+        }
+    }
+
+    assert_eq!(Rx::new_window_ack(0, WINDOW_ACK_SPACING), Some(WindowAck { sequence_id: WINDOW_ACK_SPACING-1 }));
+    assert_eq!(Rx::new_window_ack(0x1000000 - WINDOW_ACK_SPACING, 0x000000), Some(WindowAck { sequence_id: 0xFFFFFF }));
+}
+
+// TODO: Test fragmentation
 
