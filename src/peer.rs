@@ -6,50 +6,9 @@ use std::time;
 
 use super::frame;
 
+mod frame_transfer;
+
 const MAX_CHANNELS: usize = 256;
-
-struct SendEntry {
-    data: Box<[u8]>,
-    sequence_id: u32,
-    reliable: bool,
-}
-
-impl SendEntry {
-    fn new(data: Box<[u8]>, sequence_id: u32, reliable: bool) -> Self {
-        Self {
-            data: data, 
-            sequence_id: sequence_id,
-            reliable: reliable,
-        }
-    }
-}
-
-struct ResendEntry {
-    data: Box<[u8]>,
-    last_send_time: Option<time::Instant>,
-    sequence_id: u32,
-}
-
-impl ResendEntry {
-    fn new(data: Box<[u8]>, sequence_id: u32) -> Self {
-        Self {
-            data: data, 
-            last_send_time: None,
-            sequence_id: sequence_id,
-        }
-    }
-
-    fn mark_sent(&mut self, now: time::Instant) {
-        self.last_send_time = Some(now);
-    }
-
-    fn should_resend(&self, now: time::Instant, timeout: time::Duration) -> bool {
-        match self.last_send_time {
-            Some(send_time) => now - send_time > timeout,
-            None => true,
-        }
-    }
-}
 
 #[derive(Clone,Debug)]
 pub struct Params {
@@ -98,10 +57,7 @@ pub struct Peer {
     was_connected: bool,
     disconnect_flush: bool,
 
-    next_reliable_id: u32,
-    base_sequence_id: u32,
-    send_queue: VecDeque<Box<[u8]>>,
-    resend_queue: VecDeque<ResendEntry>,
+    frame_transfer: frame_transfer::Tx,
 }
 
 pub trait DataSink {
@@ -128,10 +84,7 @@ impl Peer {
             was_connected: false,
             disconnect_flush: false,
 
-            next_reliable_id: 0,
-            base_sequence_id: 0,
-            send_queue: VecDeque::new(),
-            resend_queue: VecDeque::new(),
+            frame_transfer: frame_transfer::Tx::new(),
         }
     }
 
@@ -382,35 +335,19 @@ impl Peer {
         std::mem::take(&mut self.event_queue).into_iter()
     }
 
-    fn enqueue_reliable_frame(&mut self, data: Box<[u8]>) {
-        self.resend_queue.push_back(ResendEntry { data: data, last_send_time: None, sequence_id: self.next_reliable_id });
-        self.next_reliable_id = self.next_reliable_id.wrapping_add(1);
+    /*
+    pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
+        let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
+        if self.state == State::Connected {
+            channel.tx.enqueue(data, mode);
+        }
     }
+    */
 
     fn flush_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
         let timeout = time::Duration::from_millis(self.rto_ms.round() as u64);
 
-        for entry in self.resend_queue.iter_mut() {
-            if entry.should_resend(now, timeout) {
-                entry.mark_sent(now);
-                sink.send(&entry.data);
-            }
-        }
-
-        /*
-        for entry in self.send_queue.iter_mut() {
-            sink.send(&entry.data);
-            if entry.reliable {
-                self.resend_queue.push_back(ResendEntry {
-                    data: entry.data,
-                    last_send_time: Some(time::Instant::now()),
-                    sequence_id: entry.sequence_id,
-                }
-            }
-        }
-
-        self.send_queue.clear();
-        */
+        self.frame_transfer.flush(now, timeout, sink);
     }
 
     fn flush_meta(&mut self, now: time::Instant, sink: & dyn DataSink) {
@@ -436,12 +373,4 @@ impl Peer {
         return self.state == State::Zombie;
     }
 }
-
-
-    /*
-    let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
-    if self.state == State::Connected {
-        channel.tx.enqueue(data, mode);
-    }
-    */
 
