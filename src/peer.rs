@@ -5,10 +5,10 @@ use std::time;
 use super::frame;
 use super::channel;
 use super::ChannelId;
+use super::DataSink;
 use super::MAX_CHANNELS;
 use super::SendMode;
-
-mod frame_transfer;
+use super::transport;
 
 #[derive(Clone,Debug)]
 pub struct Params {
@@ -58,11 +58,7 @@ pub struct Peer {
     disconnect_flush: bool,
 
     channels: Vec<channel::Channel>,
-    frame_transfer: frame_transfer::Tx,
-}
-
-pub trait DataSink {
-    fn send(&self, data: &[u8]);
+    transport: transport::FrameIO,
 }
 
 fn verify_connect_info(remote_info: frame::Connect) -> bool {
@@ -93,7 +89,7 @@ impl Peer {
             disconnect_flush: false,
 
             channels: channels,
-            frame_transfer: frame_transfer::Tx::new(),
+            transport: transport::FrameIO::new(),
         }
     }
 
@@ -237,7 +233,7 @@ impl Peer {
                 self.watchdog_time = time::Instant::now();
             }
             frame::Frame::Data(data_frame) => {
-                self.frame_transfer.acknowledge_data_frame(&data_frame);
+                self.transport.acknowledge_data_frame(&data_frame);
                 for entry in data_frame.entries.into_iter() {
                     if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
                         match entry.message {
@@ -252,7 +248,7 @@ impl Peer {
                 }
             }
             frame::Frame::DataAck(data_ack_frame) => {
-                self.frame_transfer.handle_data_ack(data_ack_frame);
+                self.transport.handle_data_ack(data_ack_frame);
             }
             _ => ()
         }
@@ -266,7 +262,7 @@ impl Peer {
         }
 
         if self.disconnect_flush {
-            if self.frame_transfer.is_tx_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
+            if self.transport.is_tx_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
                 self.send_disconnect_enter();
             }
         }
@@ -379,17 +375,17 @@ impl Peer {
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
-                self.frame_transfer.enqueue_datagram(data_entry, is_reliable);
+                self.transport.enqueue_datagram(data_entry, is_reliable);
             }
             if let Some(window_ack) = channel.rx.take_window_ack() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::WindowAck(window_ack));
-                self.frame_transfer.enqueue_datagram(data_entry, true);
+                self.transport.enqueue_datagram(data_entry, true);
             }
         }
 
         let timeout = time::Duration::from_millis(self.rto_ms.round() as u64);
 
-        self.frame_transfer.flush(now, timeout, sink);
+        self.transport.flush(now, timeout, sink);
     }
 
     fn flush_meta(&mut self, now: time::Instant, sink: & dyn DataSink) {

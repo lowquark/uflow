@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::net;
 use std::rc::Rc;
 
+use super::DataSink;
+
 struct PeerDataSink<'a> {
     socket: &'a net::UdpSocket,
     address: net::SocketAddr,
@@ -24,7 +26,7 @@ impl<'a> PeerDataSink<'a> {
     }
 }
 
-impl<'a> peer::DataSink for PeerDataSink<'a> {
+impl<'a> DataSink for PeerDataSink<'a> {
     fn send(&self, data: &[u8]) {
         let _ = self.socket.send_to(data, self.address);
     }

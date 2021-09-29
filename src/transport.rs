@@ -44,7 +44,7 @@ impl ResendEntry {
     }
 }
 
-pub struct Tx {
+pub struct FrameIO {
     send_queue: VecDeque<SendEntry>,
     resend_queue: VecDeque<ResendEntry>,
     ack_queue: VecDeque<u32>,
@@ -52,7 +52,7 @@ pub struct Tx {
     base_sequence_id: u32,
 }
 
-impl Tx {
+impl FrameIO {
     // TODO: TRANSFER_WINDOW_SIZE, MTU as arguments to new()
     const TRANSFER_WINDOW_SIZE: u32 = 1024;
     const MTU: usize = 1500 - 28;
