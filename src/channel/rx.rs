@@ -148,10 +148,6 @@ impl Entry {
             None
         }
     }
-
-    fn is_sentinel(&self) -> bool {
-        self.frag_asm.is_none()
-    }
 }
 
 pub struct Rx {
@@ -203,9 +199,7 @@ impl Rx {
     fn new_window_ack(prev_base_id: seq::Id, base_id: seq::Id) -> Option<WindowAck> {
         if base_id & !(WINDOW_ACK_SPACING-1) != prev_base_id & !(WINDOW_ACK_SPACING-1) {
             let window_ack_id = (base_id & !(WINDOW_ACK_SPACING-1)).wrapping_sub(1) & 0xFFFFFF;
-            Some(WindowAck {
-                sequence_id: window_ack_id
-            })
+            Some(WindowAck::new(window_ack_id))
         } else {
             None
         }
@@ -498,7 +492,6 @@ fn test_skip() {
     let mut rx = Rx::new();
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
-    let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
     let p2 = vec![ 8,  9, 10, 11].into_boxed_slice();
 
     let dg0 = Datagram {
@@ -508,16 +501,6 @@ fn test_skip() {
             fragment_id: 0,
             last_fragment_id: 0,
             data: p0.clone(),
-        })
-    };
-
-    let dg1 = Datagram {
-        sequence_id: 1,
-        dependent_lead: 0,
-        payload: Payload::Fragment(Fragment {
-            fragment_id: 0,
-            last_fragment_id: 0,
-            data: p1.clone(),
         })
     };
 
@@ -589,14 +572,14 @@ fn test_window_acks() {
         assert_eq!(rx.receive().unwrap(), vec![ i as u8 ].into_boxed_slice());
 
         if i % WINDOW_ACK_SPACING == WINDOW_ACK_SPACING - 1 {
-            assert_eq!(rx.take_window_ack().unwrap(), WindowAck { sequence_id: i });
+            assert_eq!(rx.take_window_ack().unwrap(), WindowAck::new(i));
         } else {
             assert_eq!(rx.take_window_ack(), None);
         }
     }
 
-    assert_eq!(Rx::new_window_ack(0, WINDOW_ACK_SPACING), Some(WindowAck { sequence_id: WINDOW_ACK_SPACING-1 }));
-    assert_eq!(Rx::new_window_ack(0x1000000 - WINDOW_ACK_SPACING, 0x000000), Some(WindowAck { sequence_id: 0xFFFFFF }));
+    assert_eq!(Rx::new_window_ack(0, WINDOW_ACK_SPACING), Some(WindowAck::new(WINDOW_ACK_SPACING-1)));
+    assert_eq!(Rx::new_window_ack(0x1000000 - WINDOW_ACK_SPACING, 0x000000), Some(WindowAck::new(0xFFFFFF)));
 }
 
 // TODO: Test fragmentation

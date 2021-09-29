@@ -1,6 +1,7 @@
 
 pub type Id = u32;
 
+/*
 pub fn lead_signed(a: Id, b: Id) -> i32 {
     let mut result = ((a.wrapping_sub(b)) & 0xFFFFFF) as i32;
     if result >= 0x800000 {
@@ -8,6 +9,7 @@ pub fn lead_signed(a: Id, b: Id) -> i32 {
     }
     result
 }
+*/
 
 pub fn lead_unsigned(a: Id, b: Id) -> Id {
     (a.wrapping_sub(b)) & 0xFFFFFF

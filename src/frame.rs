@@ -289,7 +289,7 @@ impl DataEntry {
 
         let head = buf[0];
 
-        match buf[0] {
+        match head {
             Self::FRAGMENT_TYPE_ID => {
                 Self::read_fragment(buf)
             }
@@ -328,7 +328,7 @@ impl DataEntry {
                 Payload::Fragment(fr) => 13 + fr.data.len(),
                 Payload::Sentinel => 7,
             }
-            Message::WindowAck(dg) => 5,
+            Message::WindowAck(_) => 5,
         }
     }
 }

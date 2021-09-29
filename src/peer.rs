@@ -28,12 +28,6 @@ enum State {
     Zombie,           // Nothing
 }
 
-#[derive(Clone,Copy,Debug,PartialEq)]
-enum Mode {
-    Passive,
-    Active,
-}
-
 #[derive(Clone,Debug,PartialEq)]
 pub enum Event {
     Connect,
@@ -61,12 +55,8 @@ pub struct Peer {
     transport: transport::FrameIO,
 }
 
-fn verify_connect_info(remote_info: frame::Connect) -> bool {
-    true
-}
-
 impl Peer {
-    fn new(mode: Mode, params: Params) -> Self {
+    fn new(params: Params) -> Self {
         let mut channels = Vec::new();
 
         assert!(params.num_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
@@ -75,7 +65,7 @@ impl Peer {
         }
 
         Self {
-            state: match mode { Mode::Passive => State::AwaitConnect, Mode::Active => State::SendConnect },
+            state: State::Zombie,
 
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
@@ -94,15 +84,23 @@ impl Peer {
     }
 
     pub fn new_passive(params: Params) -> Self {
-        Self::new(Mode::Passive, params)
+        let mut peer = Self::new(params);
+        peer.await_connect_enter();
+        peer
     }
 
     pub fn new_active(params: Params) -> Self {
-        Self::new(Mode::Active, params)
+        let mut peer = Self::new(params);
+        peer.send_connect_enter();
+        peer
     }
 
     fn enqueue_meta(&mut self, frame: frame::Frame) {
         self.meta_queue.push_back(frame.to_bytes());
+    }
+
+    fn verify_connect_info(&self, _remote_info: frame::Connect) -> bool {
+        true
     }
 
     // State::AwaitConnect
@@ -116,7 +114,7 @@ impl Peer {
     fn await_connect_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
             frame::Frame::Connect(frame) => {
-                if verify_connect_info(frame) {
+                if self.verify_connect_info(frame) {
                     self.await_connect_ack_enter();
                 } else {
                     // No likey connect
@@ -137,7 +135,8 @@ impl Peer {
 
     fn await_connect_ack_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::ConnectAck(frame) => {
+            frame::Frame::ConnectAck(_) => {
+                // TODO: Exchange random connection ids
                 self.connected_enter();
             }
             frame::Frame::Disconnect(_) => {
@@ -174,7 +173,8 @@ impl Peer {
     fn send_connect_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
             frame::Frame::Connect(frame) => {
-                if verify_connect_info(frame) {
+                // TODO: Exchange random connection ids
+                if self.verify_connect_info(frame) {
                     self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { }));
                     self.connected_enter();
                 } else {
@@ -217,7 +217,7 @@ impl Peer {
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Connect(frame) => {
+            frame::Frame::Connect(_) => {
                 // In this state, we've already verified any connection parameters, just ack
                 // If both client & host ack here, NAT punchthrough might work
                 self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { }));
@@ -388,7 +388,7 @@ impl Peer {
         self.transport.flush(now, timeout, sink);
     }
 
-    fn flush_meta(&mut self, now: time::Instant, sink: & dyn DataSink) {
+    fn flush_meta(&mut self, sink: & dyn DataSink) {
         for data in self.meta_queue.iter() {
             sink.send(&data);
         }
@@ -397,7 +397,7 @@ impl Peer {
 
     pub fn flush(&mut self, sink: & dyn DataSink) {
         let now = time::Instant::now();
-        self.flush_meta(now, sink);
+        self.flush_meta(sink);
 
         if self.state == State::Connected {
             self.flush_data(now, sink);
