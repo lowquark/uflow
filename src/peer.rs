@@ -1,6 +1,7 @@
 
 use std::collections::VecDeque;
 use std::time;
+use std::ops::Range;
 
 use super::frame;
 use super::channel;
@@ -15,6 +16,7 @@ pub struct Params {
     pub num_channels: u32,
     pub max_tx_bandwidth: u32,
     pub max_rx_bandwidth: u32,
+    pub priority_channels: Range<u32>,
 }
 
 #[derive(Clone,Copy,Debug,PartialEq)]
@@ -52,7 +54,8 @@ pub struct Peer {
     disconnect_flush: bool,
 
     channels: Vec<channel::Channel>,
-    transport: transport::FrameIO,
+    priority_channels: Range<u32>,
+    frame_io: transport::FrameIO,
 }
 
 impl Peer {
@@ -79,7 +82,8 @@ impl Peer {
             disconnect_flush: false,
 
             channels: channels,
-            transport: transport::FrameIO::new(),
+            priority_channels: params.priority_channels,
+            frame_io: transport::FrameIO::new(),
         }
     }
 
@@ -233,7 +237,7 @@ impl Peer {
                 self.watchdog_time = time::Instant::now();
             }
             frame::Frame::Data(data_frame) => {
-                self.transport.acknowledge_data_frame(&data_frame);
+                self.frame_io.acknowledge_data_frame(&data_frame);
                 for entry in data_frame.entries.into_iter() {
                     if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
                         match entry.message {
@@ -248,7 +252,7 @@ impl Peer {
                 }
             }
             frame::Frame::DataAck(data_ack_frame) => {
-                self.transport.handle_data_ack(data_ack_frame);
+                self.frame_io.handle_data_ack(data_ack_frame);
             }
             _ => ()
         }
@@ -262,7 +266,7 @@ impl Peer {
         }
 
         if self.disconnect_flush {
-            if self.transport.is_tx_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
+            if self.frame_io.is_tx_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
                 self.send_disconnect_enter();
             }
         }
@@ -375,17 +379,17 @@ impl Peer {
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
-                self.transport.enqueue_datagram(data_entry, is_reliable);
+                self.frame_io.enqueue_datagram(data_entry, is_reliable, self.priority_channels.contains(&(channel_id as u32)));
             }
             if let Some(window_ack) = channel.rx.take_window_ack() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::WindowAck(window_ack));
-                self.transport.enqueue_datagram(data_entry, true);
+                self.frame_io.enqueue_datagram(data_entry, true, self.priority_channels.contains(&(channel_id as u32)));
             }
         }
 
         let timeout = time::Duration::from_millis(self.rto_ms.round() as u64);
 
-        self.transport.flush(now, timeout, sink);
+        self.frame_io.flush(now, timeout, sink);
     }
 
     fn flush_meta(&mut self, sink: & dyn DataSink) {

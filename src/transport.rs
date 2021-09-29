@@ -44,8 +44,48 @@ impl ResendEntry {
     }
 }
 
+struct SendQueue {
+    high_priority: VecDeque<SendEntry>,
+    low_priority: VecDeque<SendEntry>,
+}
+
+impl SendQueue {
+    pub fn new() -> Self {
+        Self {
+            high_priority: VecDeque::new(),
+            low_priority: VecDeque::new(),
+        }
+    }
+
+    pub fn push_high_priority(&mut self, entry: SendEntry) {
+        self.high_priority.push_back(entry);
+    }
+
+    pub fn push_low_priority(&mut self, entry: SendEntry) {
+        self.low_priority.push_back(entry);
+    }
+
+    pub fn peek(&self) -> Option<&SendEntry> {
+        if let Some(entry) = self.high_priority.front() {
+            return Some(entry);
+        }
+        return self.low_priority.front();
+    }
+
+    pub fn pop(&mut self) -> Option<SendEntry> {
+        if let Some(entry) = self.high_priority.pop_front() {
+            return Some(entry);
+        }
+        return self.low_priority.pop_front();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.high_priority.is_empty() && self.low_priority.is_empty()
+    }
+}
+
 pub struct FrameIO {
-    send_queue: VecDeque<SendEntry>,
+    send_queue: SendQueue,
     resend_queue: VecDeque<ResendEntry>,
     ack_queue: VecDeque<u32>,
     next_sequence_id: u32,
@@ -59,7 +99,7 @@ impl FrameIO {
 
     pub fn new() -> Self {
         Self {
-            send_queue: VecDeque::new(),
+            send_queue: SendQueue::new(),
             resend_queue: VecDeque::new(),
             ack_queue: VecDeque::new(),
             next_sequence_id: 0,
@@ -67,8 +107,12 @@ impl FrameIO {
         }
     }
 
-    pub fn enqueue_datagram(&mut self, data: frame::DataEntry, reliable: bool) {
-        self.send_queue.push_back(SendEntry::new(data, reliable));
+    pub fn enqueue_datagram(&mut self, data: frame::DataEntry, reliable: bool, high_priority: bool) {
+        if high_priority {
+            self.send_queue.push_high_priority(SendEntry::new(data, reliable));
+        } else {
+            self.send_queue.push_low_priority(SendEntry::new(data, reliable));
+        }
     }
 
     pub fn acknowledge_data_frame(&mut self, data: &frame::Data) {
@@ -117,8 +161,8 @@ impl FrameIO {
             }
         }
 
-        // Assemble a new data frame from as many send entries as possible if the transfer window permits
         if !self.send_queue.is_empty() {
+            // Assemble a new data frame from as many send entries as possible if the transfer window permits
             if self.next_sequence_id.wrapping_sub(self.base_sequence_id) < Self::TRANSFER_WINDOW_SIZE {
                 let mut unreliable_entries = Vec::new();
                 let mut reliable_entries = Vec::new();
@@ -126,12 +170,12 @@ impl FrameIO {
 
                 let mut frame_size = frame::Data::HEADER_SIZE_BYTES;
 
-                // Enqueue at least one datagram, then consider size limit
-                while let Some(entry) = self.send_queue.front() {
+                // Enqueue at least one datagram, then consider MTU
+                while let Some(entry) = self.send_queue.peek() {
                     let encoded_size = entry.data.encoded_size();
 
                     if num_entries == 0 || frame_size + encoded_size <= Self::MTU {
-                        let entry = self.send_queue.pop_front().unwrap();
+                        let entry = self.send_queue.pop().unwrap();
                         if entry.reliable {
                             reliable_entries.push(entry.data);
                         } else {
@@ -147,17 +191,10 @@ impl FrameIO {
 
                 let sequence_id = self.next_sequence_id;
 
-                if reliable_entries.len() == 0 {
-                    // Assemble frame of unreliable datagrams, don't advance next_sequence_id
+                if reliable_entries.len() > 0 {
+                    // This claims the sequence id
+                    self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
 
-                    let frame = frame::Frame::Data(frame::Data {
-                        ack: false,
-                        sequence_id: sequence_id,
-                        entries: unreliable_entries,
-                    });
-
-                    return Some(frame.to_bytes());
-                } else {
                     // Assemble frame of reliable datagrams to resend later
                     let resend_frame = frame::Data {
                         ack: true,
@@ -167,21 +204,20 @@ impl FrameIO {
 
                     self.resend_queue.push_back(ResendEntry::new(resend_frame.to_bytes(), now, sequence_id));
 
-                    // Assemble frame of mixed reliability datagrams
-                    let mut all_entries = resend_frame.entries;
-                    all_entries.append(&mut unreliable_entries);
-
-                    let frame = frame::Frame::Data(frame::Data {
-                        ack: true,
-                        sequence_id: sequence_id,
-                        entries: all_entries,
-                    });
-
-                    // This claims the sequence id
-                    self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
-
-                    return Some(frame.to_bytes());
+                    reliable_entries = resend_frame.entries;
                 }
+
+                // Assemble frame of all datagrams
+                let mut all_entries = reliable_entries;
+                all_entries.append(&mut unreliable_entries);
+
+                let frame = frame::Frame::Data(frame::Data {
+                    ack: true,
+                    sequence_id: sequence_id,
+                    entries: all_entries,
+                });
+
+                return Some(frame.to_bytes());
             }
         }
 

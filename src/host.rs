@@ -8,6 +8,7 @@ use super::SendMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net;
+use std::ops::Range;
 use std::rc::Rc;
 
 use super::DataSink;
@@ -36,6 +37,7 @@ impl<'a> DataSink for PeerDataSink<'a> {
 #[derive(Clone)]
 pub struct Params {
     num_channels: u32,
+    priority_channels: Range<u32>,
     max_peer_tx_bandwidth: u32,
     max_peer_rx_bandwidth: u32,
     max_connected_peers: u32,
@@ -46,6 +48,7 @@ impl Params {
     pub fn new() -> Self {
         Self {
             num_channels: 1,
+            priority_channels: 0..0,
             max_peer_tx_bandwidth: 1_000_000,
             max_peer_rx_bandwidth: 1_000_000,
             max_connected_peers: 10,
@@ -54,6 +57,11 @@ impl Params {
 
     pub fn num_channels(mut self, num_channels: u32) -> Params {
         self.num_channels = num_channels;
+        self
+    }
+
+    pub fn priority_channels(mut self, priority_channels: Range<u32>) -> Params {
+        self.priority_channels = priority_channels;
         self
     }
 
@@ -130,6 +138,7 @@ impl Host {
                 num_channels: params.num_channels,
                 max_tx_bandwidth: params.max_peer_tx_bandwidth,
                 max_rx_bandwidth: params.max_peer_rx_bandwidth,
+                priority_channels: params.priority_channels,
             },
             new_clients: Vec::new(),
             max_connected_peers: params.max_connected_peers,
@@ -178,6 +187,7 @@ impl Host {
         self.peer_list.retain(|_, peer| !peer.borrow().is_zombie());
         self.new_clients.retain(|client| !client.is_zombie());
 
+        // TODO: Should this only flush meta? Is it less efficient than a single flush call?
         self.flush();
     }
 

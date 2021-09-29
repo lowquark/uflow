@@ -6,7 +6,13 @@ mod peer;
 mod transport;
 
 pub type ChannelId = u8;
-pub use channel::SendMode;
+
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub enum SendMode {
+    Unreliable,
+    Reliable,
+    Passive,
+}
 
 type FrameId = u32;
 type PingId = u16;

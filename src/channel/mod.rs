@@ -16,12 +16,7 @@ type Payload = super::frame::Payload;
 type Datagram = super::frame::Datagram;
 type WindowAck = super::frame::WindowAck;
 
-#[derive(Clone,Copy,Debug,PartialEq)]
-pub enum SendMode {
-    Unreliable,
-    Reliable,
-    Passive,
-}
+type SendMode = super::SendMode;
 
 pub struct Channel {
     pub tx: tx::Tx,
