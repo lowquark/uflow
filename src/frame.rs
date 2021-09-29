@@ -692,7 +692,7 @@ impl Frame {
 }
 
 #[cfg(test)]
-fn verify_bytes_consistent(f: &Frame) {
+fn verify_consistent(f: &Frame) {
     //println!("frame: {:#?}", f);
 
     let bytes = f.to_bytes();
@@ -717,6 +717,16 @@ fn verify_extra_bytes_fail(f: &Frame) {
     assert_eq!(Frame::from_bytes(&bad_bytes), None);
 }
 
+#[cfg(test)]
+fn verify_truncation_fails(f: &Frame) {
+    let bytes = f.to_bytes();
+
+    for i in 1..bytes.len() {
+        let bytes_trunc = &bytes[0..i];
+        assert_eq!(Frame::from_bytes(&bytes_trunc), None);
+    }
+}
+
 #[test]
 fn test_connect_basic() {
     let f = Frame::Connect(Connect {
@@ -724,29 +734,33 @@ fn test_connect_basic() {
         num_channels: 3,
         rx_bandwidth_max: 0xBEEFBEEF,
     });
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
 fn test_connect_ack_basic() {
     let f = Frame::ConnectAck(ConnectAck {});
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
 fn test_disconnect_basic() {
     let f = Frame::Disconnect(Disconnect {});
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
 fn test_disconnect_ack_basic() {
     let f = Frame::DisconnectAck(DisconnectAck {});
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
@@ -754,8 +768,9 @@ fn test_ping_basic() {
     let f = Frame::Ping(Ping {
         sequence_id: 0xBEEF,
     });
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
@@ -763,8 +778,9 @@ fn test_ping_ack_basic() {
     let f = Frame::PingAck(PingAck {
         sequence_id: 0xBEEF,
     });
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
@@ -781,8 +797,9 @@ fn test_data_basic() {
                     WindowAck::new(0xBEEF2))),
         ],
     });
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
@@ -792,8 +809,9 @@ fn test_data_ack_basic() {
             0x00000000, 0x00112233, 0x54545454, 0x77777777
         ],
     });
-    verify_bytes_consistent(&f);
+    verify_consistent(&f);
     verify_extra_bytes_fail(&f);
+    verify_truncation_fails(&f);
 }
 
 #[test]
@@ -806,8 +824,9 @@ fn test_connect_random() {
             num_channels: rand::random::<u8>(),
             rx_bandwidth_max: rand::random::<u32>(),
         });
-        verify_bytes_consistent(&f);
+        verify_consistent(&f);
         verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 }
 
@@ -819,8 +838,9 @@ fn test_ping_random() {
         let f = Frame::Ping(Ping {
             sequence_id: rand::random::<u16>(),
         });
-        verify_bytes_consistent(&f);
+        verify_consistent(&f);
         verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 }
 
@@ -832,8 +852,9 @@ fn test_ping_ack_random() {
         let f = Frame::PingAck(PingAck {
             sequence_id: rand::random::<u16>(),
         });
-        verify_bytes_consistent(&f);
+        verify_consistent(&f);
         verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 }
 
@@ -845,8 +866,8 @@ fn random_data(size: usize) -> Box<[u8]> {
 #[test]
 fn test_data_random() {
     const NUM_ROUNDS: usize = 100;
-    const MAX_DATAGRAMS: usize = 1000;
-    const MAX_DATA_SIZE: usize = 1000;
+    const MAX_DATAGRAMS: usize = 100;
+    const MAX_DATA_SIZE: usize = 100;
 
     for _ in 0..NUM_ROUNDS {
         let mut entries = Vec::new();
@@ -879,8 +900,9 @@ fn test_data_random() {
             entries: entries,
         });
 
-        verify_bytes_consistent(&f);
+        verify_consistent(&f);
         verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 }
 
@@ -897,8 +919,9 @@ fn test_data_ack_random() {
         let f = Frame::DataAck(DataAck {
             sequence_ids: sequence_ids,
         });
-        verify_bytes_consistent(&f);
+        verify_consistent(&f);
         verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 }
 
