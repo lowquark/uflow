@@ -4,42 +4,40 @@ use super::FrameId;
 use super::PingId;
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct Packet {
-    pub channel_id: u8,
-    pub sequence_id: u32,
-    pub dependent_lead: u16,
-    pub data: Box<[u8]>,
-}
-
-#[derive(Clone,Debug,PartialEq)]
-pub struct PacketFragment {
-    pub channel_id: u8,
-    pub sequence_id: u32,
-    pub dependent_lead: u16,
+pub struct Fragment {
     pub fragment_id: u16,
     pub last_fragment_id: u16,
     pub data: Box<[u8]>,
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct PacketSentinel {
-    pub channel_id: u8,
+pub enum Payload {
+    Fragment(Fragment),
+    Sentinel,
+}
+
+#[derive(Clone,Debug,PartialEq)]
+pub struct Datagram {
     pub sequence_id: u32,
     pub dependent_lead: u16,
+    pub payload: Payload,
 }
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct WindowAck {
-    pub channel_id: u8,
     pub sequence_id: u32,
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub enum DataEntry {
-    Packet(Packet),
-    PacketFragment(PacketFragment),
-    PacketSentinel(PacketSentinel),
+pub enum Message {
+    Datagram(Datagram),
     WindowAck(WindowAck),
+}
+
+#[derive(Clone,Debug,PartialEq)]
+pub struct DataEntry {
+    pub channel_id: u8,
+    pub message: Message,
 }
 
 #[derive(Debug,PartialEq)]
@@ -95,309 +93,242 @@ pub enum Frame {
     DataAck(DataAck),
 }
 
-impl Packet {
-    const TYPE_ID: u8 = 0;
-    const HEADER_SIZE_BYTES: usize = 9;
-
-    pub fn read(bytes: &[u8]) -> Option<(DataEntry, usize)> {
-        if bytes.len() < Self::HEADER_SIZE_BYTES {
-            return None;
+impl Fragment {
+    pub fn new(fragment_id: u16, last_fragment_id: u16, data: Box<[u8]>) -> Self {
+        Self {
+            fragment_id: fragment_id,
+            last_fragment_id: last_fragment_id,
+            data: data,
         }
-
-        let header = &bytes[0 .. Self::HEADER_SIZE_BYTES];
-
-        if header[0] != Self::TYPE_ID {
-            return None;
-        }
-        let channel_id = header[1];
-
-        let sequence_id = ((header[2] as u32) << 16) |
-                          ((header[3] as u32) <<  8) |
-                          ((header[4] as u32)      );
-
-        let dependent_lead = ((header[5] as u16) <<  8) |
-                             ((header[6] as u16)      );
-
-        let data_size = ((header[7] as usize) <<  8) |
-                        ((header[8] as usize)      );
-
-        if Self::HEADER_SIZE_BYTES + data_size > bytes.len() {
-            return None;
-        }
-
-        let data = bytes[Self::HEADER_SIZE_BYTES .. Self::HEADER_SIZE_BYTES + data_size].into();
-
-        Some((
-            DataEntry::Packet(Self {
-                channel_id: channel_id,
-                sequence_id: sequence_id,
-                dependent_lead: dependent_lead,
-                data: data,
-            }),
-            Self::HEADER_SIZE_BYTES + data_size
-        ))
-    }
-
-    pub fn write(&self, bytes: &mut Vec<u8>) {
-        assert!(self.data.len() <= u16::MAX as usize);
-        let data_len = self.data.len() as u16;
-
-        let header = [
-            Self::TYPE_ID,
-            self.channel_id,
-            (self.sequence_id >> 16) as u8,
-            (self.sequence_id >>  8) as u8,
-            (self.sequence_id      ) as u8,
-            (self.dependent_lead >>  8) as u8,
-            (self.dependent_lead      ) as u8,
-            (data_len >>  8) as u8,
-            (data_len      ) as u8,
-        ];
-
-        bytes.extend_from_slice(&header);
-        bytes.extend_from_slice(&self.data);
-    }
-
-    pub fn encoded_size(&self) -> usize {
-        Self::HEADER_SIZE_BYTES + self.data.len()
     }
 }
 
-impl PacketFragment {
-    const TYPE_ID: u8 = 1;
-    const HEADER_SIZE_BYTES: usize = 13;
-
-    pub fn read(bytes: &[u8]) -> Option<(DataEntry, usize)> {
-        if bytes.len() < Self::HEADER_SIZE_BYTES {
-            return None;
+impl Datagram {
+    pub fn new(sequence_id: u32, dependent_lead: u16, payload: Payload) -> Self {
+        Self {
+            sequence_id: sequence_id,
+            dependent_lead: dependent_lead,
+            payload: payload,
         }
-
-        let header = &bytes[0 .. Self::HEADER_SIZE_BYTES];
-
-        if header[0] != Self::TYPE_ID {
-            return None;
-        }
-        let channel_id = header[1];
-
-        let sequence_id = ((header[2] as u32) << 16) |
-                          ((header[3] as u32) <<  8) |
-                          ((header[4] as u32)      );
-
-        let dependent_lead = ((header[5] as u16) <<  8) |
-                             ((header[6] as u16)      );
-
-        let fragment_id = ((header[7] as u16) <<  8) |
-                          ((header[8] as u16)      );
-
-        let last_fragment_id = ((header[ 9] as u16) <<  8) |
-                               ((header[10] as u16)      );
-
-        let data_size = ((header[11] as usize) <<  8) |
-                        ((header[12] as usize)      );
-
-        if Self::HEADER_SIZE_BYTES + data_size > bytes.len() {
-            return None;
-        }
-
-        let data = bytes[Self::HEADER_SIZE_BYTES .. Self::HEADER_SIZE_BYTES + data_size].into();
-
-        Some((
-            DataEntry::PacketFragment(Self {
-                channel_id: channel_id,
-                sequence_id: sequence_id,
-                dependent_lead: dependent_lead,
-                fragment_id: fragment_id,
-                last_fragment_id: last_fragment_id,
-                data: data,
-            }),
-            Self::HEADER_SIZE_BYTES + data_size
-        ))
-    }
-
-    pub fn write(&self, bytes: &mut Vec<u8>) {
-        assert!(self.data.len() <= u16::MAX as usize);
-        let data_len = self.data.len() as u16;
-
-        let header = [
-            Self::TYPE_ID,
-            self.channel_id,
-            (self.sequence_id >> 16) as u8,
-            (self.sequence_id >>  8) as u8,
-            (self.sequence_id      ) as u8,
-            (self.dependent_lead >>  8) as u8,
-            (self.dependent_lead      ) as u8,
-            (self.fragment_id >>  8) as u8,
-            (self.fragment_id      ) as u8,
-            (self.last_fragment_id >>  8) as u8,
-            (self.last_fragment_id      ) as u8,
-            (data_len >>  8) as u8,
-            (data_len      ) as u8,
-        ];
-
-        bytes.extend_from_slice(&header);
-        bytes.extend_from_slice(&self.data);
-    }
-
-    pub fn encoded_size(&self) -> usize {
-        Self::HEADER_SIZE_BYTES + self.data.len()
-    }
-}
-
-impl PacketSentinel {
-    const TYPE_ID: u8 = 2;
-    const HEADER_SIZE_BYTES: usize = 7;
-
-    pub fn read(bytes: &[u8]) -> Option<(DataEntry, usize)> {
-        if bytes.len() < Self::HEADER_SIZE_BYTES {
-            return None;
-        }
-        if bytes[0] != Self::TYPE_ID {
-            return None;
-        }
-
-        let channel_id = bytes[1];
-
-        let sequence_id = ((bytes[2] as u32) << 16) |
-                          ((bytes[3] as u32) <<  8) |
-                          ((bytes[4] as u32)      );
-
-        let dependent_lead = ((bytes[5] as u16) <<  8) |
-                             ((bytes[6] as u16)      );
-
-        Some((
-            DataEntry::PacketSentinel(Self {
-                channel_id: channel_id,
-                sequence_id: sequence_id,
-                dependent_lead: dependent_lead,
-            }),
-            Self::HEADER_SIZE_BYTES
-        ))
-    }
-
-    pub fn write(&self, bytes: &mut Vec<u8>) {
-        let header = [
-            Self::TYPE_ID,
-            self.channel_id,
-            (self.sequence_id >> 16) as u8,
-            (self.sequence_id >>  8) as u8,
-            (self.sequence_id      ) as u8,
-            (self.dependent_lead >>  8) as u8,
-            (self.dependent_lead      ) as u8,
-        ];
-
-        bytes.extend_from_slice(&header);
-    }
-
-    pub fn encoded_size(&self) -> usize {
-        Self::HEADER_SIZE_BYTES
     }
 }
 
 impl WindowAck {
-    const TYPE_ID: u8 = 3;
-    const HEADER_SIZE_BYTES: usize = 5;
-
-    pub fn read(bytes: &[u8]) -> Option<(DataEntry, usize)> {
-        if bytes.len() < Self::HEADER_SIZE_BYTES {
-            return None;
+    pub fn new(sequence_id: u32) -> Self {
+        Self {
+            sequence_id: sequence_id,
         }
-        if bytes[0] != Self::TYPE_ID {
-            return None;
-        }
-
-        let channel_id = bytes[1];
-
-        let sequence_id = ((bytes[2] as u32) << 16) |
-                          ((bytes[3] as u32) <<  8) |
-                          ((bytes[4] as u32)      );
-
-        Some((
-            DataEntry::WindowAck(Self {
-                channel_id: channel_id,
-                sequence_id: sequence_id,
-            }),
-            Self::HEADER_SIZE_BYTES
-        ))
-    }
-
-    pub fn write(&self, bytes: &mut Vec<u8>) {
-        let header = [
-            Self::TYPE_ID,
-            self.channel_id,
-            (self.sequence_id >> 16) as u8,
-            (self.sequence_id >>  8) as u8,
-            (self.sequence_id      ) as u8,
-        ];
-
-        bytes.extend_from_slice(&header);
-    }
-
-    pub fn encoded_size(&self) -> usize {
-        Self::HEADER_SIZE_BYTES
     }
 }
 
 impl DataEntry {
-    pub fn read(bytes: &[u8]) -> Option<(DataEntry, usize)> {
-        if bytes.len() >= 1 {
-            match bytes[0] {
-                Packet::TYPE_ID => Packet::read(bytes),
-                PacketFragment::TYPE_ID => PacketFragment::read(bytes),
-                PacketSentinel::TYPE_ID => PacketSentinel::read(bytes),
-                WindowAck::TYPE_ID => WindowAck::read(bytes),
-                _ => None
+    pub fn new(channel_id: u8, message: Message) -> Self {
+        Self {
+            channel_id: channel_id,
+            message: message,
+        }
+    }
+
+    const FRAGMENT_TYPE_ID: u8 = 0;
+    const SENTINEL_TYPE_ID: u8 = 1;
+    const WINDOW_ACK_TYPE_ID: u8 = 2;
+
+    fn read_fragment(buf: &[u8]) -> Option<(DataEntry, &[u8])> {
+        let header_size = 13;
+
+        if buf.len() < header_size {
+            return None;
+        }
+
+        let channel_id       =   buf[ 1];
+        let sequence_id      = ((buf[ 2] as u32) << 16) | 
+                               ((buf[ 3] as u32) <<  8) | 
+                               ((buf[ 4] as u32)      );
+        let dependent_lead   = ((buf[ 5] as u16) <<  8) | 
+                               ((buf[ 6] as u16)      );
+        let fragment_id      = ((buf[ 7] as u16) <<  8) | 
+                               ((buf[ 8] as u16)      );
+        let last_fragment_id = ((buf[ 9] as u16) <<  8) | 
+                               ((buf[10] as u16)      );
+        let data_len         = ((buf[11] as usize) <<  8) | 
+                               ((buf[12] as usize)      );
+
+        let total_size = header_size + data_len;
+
+        if buf.len() < total_size {
+            return None;
+        }
+
+        let data = buf[header_size .. total_size].into();
+
+        Some((
+            DataEntry {
+                channel_id: channel_id,
+                message: Message::Datagram(Datagram {
+                    sequence_id: sequence_id,
+                    dependent_lead: dependent_lead,
+                    payload: Payload::Fragment(Fragment {
+                        fragment_id: fragment_id,
+                        last_fragment_id: last_fragment_id,
+                        data: data,
+                    }),
+                }),
+            },
+            &buf[total_size ..]
+        ))
+    }
+
+    fn write_fragment(channel_id: u8,
+                      sequence_id: u32, dependent_lead: u16,
+                      fragment_id: u16, last_fragment_id: u16,
+                      data: &Box<[u8]>, buf: &mut Vec<u8>) {
+        assert!(data.len() <= u16::MAX as usize);
+        let data_len = data.len() as u16;
+
+        let header = [
+            Self::FRAGMENT_TYPE_ID,
+            channel_id,
+            (sequence_id >> 16) as u8,
+            (sequence_id >>  8) as u8,
+            (sequence_id      ) as u8,
+            (dependent_lead >>  8) as u8,
+            (dependent_lead      ) as u8,
+            (fragment_id >>  8) as u8,
+            (fragment_id      ) as u8,
+            (last_fragment_id >>  8) as u8,
+            (last_fragment_id      ) as u8,
+            (data_len >>  8) as u8,
+            (data_len      ) as u8,
+        ];
+
+        buf.extend_from_slice(&header);
+        buf.extend_from_slice(&data);
+    }
+
+    fn read_sentinel(buf: &[u8]) -> Option<(DataEntry, &[u8])> {
+        let header_size = 7;
+
+        if buf.len() < header_size {
+            return None;
+        }
+
+        let channel_id     =   buf[1];
+        let sequence_id    = ((buf[2] as u32) << 16) | 
+                             ((buf[3] as u32) <<  8) | 
+                             ((buf[4] as u32)      );
+        let dependent_lead = ((buf[5] as u16) <<  8) | 
+                             ((buf[6] as u16)      );
+
+        Some((
+            DataEntry {
+                channel_id: channel_id,
+                message: Message::Datagram(Datagram {
+                    sequence_id: sequence_id,
+                    dependent_lead: dependent_lead,
+                    payload: Payload::Sentinel,
+                }),
+            },
+            &buf[header_size ..]
+        ))
+    }
+
+    fn write_sentinel(channel_id: u8,
+                      sequence_id: u32, dependent_lead: u16,
+                      buf: &mut Vec<u8>) {
+        let bytes = [
+            Self::SENTINEL_TYPE_ID,
+            channel_id,
+            (sequence_id >> 16) as u8,
+            (sequence_id >>  8) as u8,
+            (sequence_id      ) as u8,
+            (dependent_lead >>  8) as u8,
+            (dependent_lead      ) as u8,
+        ];
+
+        buf.extend_from_slice(&bytes);
+    }
+
+    fn read_window_ack(buf: &[u8]) -> Option<(DataEntry, &[u8])> {
+        let header_size = 5;
+
+        if buf.len() < header_size {
+            return None;
+        }
+
+        let channel_id  =   buf[1];
+        let sequence_id = ((buf[2] as u32) << 16) | 
+                          ((buf[3] as u32) <<  8) | 
+                          ((buf[4] as u32)      );
+
+        Some((
+            Self::new(channel_id, Message::WindowAck(WindowAck {
+                sequence_id: sequence_id
+            })),
+            &buf[header_size ..]
+        ))
+    }
+
+    fn write_window_ack(channel_id: u8,
+                        sequence_id: u32,
+                        buf: &mut Vec<u8>) {
+        let bytes = [
+            Self::WINDOW_ACK_TYPE_ID,
+            channel_id,
+            (sequence_id >> 16) as u8,
+            (sequence_id >>  8) as u8,
+            (sequence_id      ) as u8,
+        ];
+
+        buf.extend_from_slice(&bytes);
+    }
+
+    pub fn read(buf: &[u8]) -> Option<(DataEntry, &[u8])> {
+        if buf.len() < 1 {
+            return None;
+        }
+
+        let head = buf[0];
+
+        match buf[0] {
+            Self::FRAGMENT_TYPE_ID => {
+                Self::read_fragment(buf)
             }
-        } else {
-            None
+            Self::SENTINEL_TYPE_ID => {
+                Self::read_sentinel(buf)
+            }
+            Self::WINDOW_ACK_TYPE_ID => {
+                Self::read_window_ack(buf)
+            }
+            _ => None
         }
     }
 
-    pub fn write(&self, bytes: &mut Vec<u8>) {
-        match self {
-            DataEntry::Packet(packet) => packet.write(bytes),
-            DataEntry::PacketFragment(fragment) => fragment.write(bytes),
-            DataEntry::PacketSentinel(sentinel) => sentinel.write(bytes),
-            DataEntry::WindowAck(window_ack) => window_ack.write(bytes),
+    pub fn write(&self, buf: &mut Vec<u8>) {
+        match &self.message {
+            Message::Datagram(dg) => match &dg.payload {
+                Payload::Fragment(fr) => {
+                    Self::write_fragment(self.channel_id,
+                                         dg.sequence_id, dg.dependent_lead,
+                                         fr.fragment_id, fr.last_fragment_id,
+                                         &fr.data, buf);
+                }
+                Payload::Sentinel => {
+                    Self::write_sentinel(self.channel_id, dg.sequence_id, dg.dependent_lead, buf);
+                }
+            }
+            Message::WindowAck(dg) => {
+                Self::write_window_ack(self.channel_id, dg.sequence_id, buf);
+            }
         }
-    }
-
-    pub fn new_packet(channel_id: u8, sequence_id: u32, dependent_lead: u16, data: Box<[u8]>) -> DataEntry {
-        DataEntry::Packet(Packet {
-            channel_id: channel_id,
-            sequence_id: sequence_id,
-            dependent_lead: dependent_lead,
-            data: data,
-        })
-    }
-
-    pub fn new_fragment(channel_id: u8,
-                        sequence_id: u32, dependent_lead: u16,
-                        fragment_id: u16, last_fragment_id: u16,
-                        data: Box<[u8]>) -> DataEntry {
-        DataEntry::PacketFragment(PacketFragment {
-            channel_id: channel_id,
-            sequence_id: sequence_id,
-            dependent_lead: dependent_lead,
-            fragment_id: fragment_id,
-            last_fragment_id: last_fragment_id,
-            data: data,
-        })
-    }
-
-    pub fn new_sentinel(channel_id: u8, sequence_id: u32, dependent_lead: u16) -> DataEntry {
-        DataEntry::PacketSentinel(PacketSentinel {
-            channel_id: channel_id,
-            sequence_id: sequence_id,
-            dependent_lead: dependent_lead,
-        })
     }
 
     pub fn encoded_size(&self) -> usize {
-        match self {
-            DataEntry::Packet(entry) => entry.encoded_size(),
-            DataEntry::PacketFragment(entry) => entry.encoded_size(),
-            DataEntry::PacketSentinel(entry) => entry.encoded_size(),
-            DataEntry::WindowAck(entry) => entry.encoded_size(),
+        match &self.message {
+            Message::Datagram(dg) => match &dg.payload {
+                Payload::Fragment(fr) => 13 + fr.data.len(),
+                Payload::Sentinel => 7,
+            }
+            Message::WindowAck(dg) => 5,
         }
     }
 }
@@ -588,10 +519,10 @@ impl Data {
     pub const HEADER_SIZE_BYTES: usize = 8;
 
     pub fn to_bytes(&self) -> Box<[u8]> {
+        let mut bytes = Vec::new();
+
         assert!(self.entries.len() <= u16::MAX as usize);
         let entry_num = self.entries.len() as u16;
-
-        let mut bytes = Vec::new();
 
         let header = [
             Self::TYPE_ID,
@@ -624,29 +555,28 @@ impl Data {
             return None;
         }
 
-        let ack = match header[1] { 0 => false, 1 => true, _ => { return None } };
-
+        let ack         = match header[1] { 0 => false, 1 => true, _ => { return None } };
         let sequence_id = ((header[2] as u32) << 24) |
                           ((header[3] as u32) << 16) |
                           ((header[4] as u32) <<  8) |
                           ((header[5] as u32)      );
+        let entry_num   = ((header[6] as u16) <<  8) |
+                          ((header[7] as u16)      );
 
-        let entry_num = ((header[6] as u16) <<  8) |
-                        ((header[7] as u16)      );
-
-        let mut read_idx = Self::HEADER_SIZE_BYTES;
         let mut entries = Vec::new();
 
+        let mut buf = &bytes[Self::HEADER_SIZE_BYTES ..];
+
         for _ in 0..entry_num {
-            if let Some((entry, read_size)) = DataEntry::read(&bytes[read_idx..]) {
-                read_idx += read_size;
+            if let Some((entry, new_buf)) = DataEntry::read(buf) {
                 entries.push(entry);
+                buf = new_buf;
             } else {
                 return None
             }
         }
 
-        if read_idx == bytes.len() {
+        if buf.len() == 0 {
             Some(Self {
                 ack: ack,
                 sequence_id: sequence_id,
@@ -761,41 +691,6 @@ impl Frame {
     }
 }
 
-pub struct DataBuilder {
-    entries: Vec<DataEntry>,
-    size: usize,
-    max_size: usize,
-}
-
-impl DataBuilder {
-    pub fn new(max_size: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            size: Data::HEADER_SIZE_BYTES,
-            max_size: max_size,
-        }
-    }
-
-    pub fn can_add(&mut self, entry: &DataEntry) -> bool {
-        self.entries.len() == 0 || self.size + entry.encoded_size() <= self.max_size
-    }
-
-    pub fn add(&mut self, entry: DataEntry) {
-        self.entries.push(entry);
-    }
-
-    pub fn build(self) -> (Data, usize) {
-        (
-            Data {
-                ack: false,
-                sequence_id: 0,
-                entries: self.entries,
-            },
-            self.size
-        )
-    }
-}
-
 #[cfg(test)]
 fn verify_bytes_consistent(f: &Frame) {
     //println!("frame: {:#?}", f);
@@ -878,9 +773,12 @@ fn test_data_basic() {
         ack: true,
         sequence_id: 0x010203,
         entries: vec![
-            DataEntry::new_packet(69, 0xBEEF, 1, vec![  0,  1,  2,  3 ].into_boxed_slice()),
-            DataEntry::new_fragment(69, 0xBEF0, 2, 10, 10, vec![  4,  5,  6,  7 ].into_boxed_slice()),
-            DataEntry::new_sentinel(69, 0xBEF1, 3),
+            DataEntry::new(69, Message::Datagram(
+                    Datagram::new(0xBEEF0, 2, Payload::Fragment(Fragment::new(10, 10, vec![  4,  5,  6,  7 ].into_boxed_slice()))))),
+            DataEntry::new(69, Message::Datagram(
+                    Datagram::new(0xBEEF1, 2, Payload::Sentinel))),
+            DataEntry::new(69, Message::WindowAck(
+                    WindowAck::new(0xBEEF2))),
         ],
     });
     verify_bytes_consistent(&f);
@@ -939,6 +837,11 @@ fn test_ping_ack_random() {
     }
 }
 
+#[cfg(test)]
+fn random_data(size: usize) -> Box<[u8]> {
+    (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
+}
+
 #[test]
 fn test_data_random() {
     const NUM_ROUNDS: usize = 100;
@@ -951,25 +854,19 @@ fn test_data_random() {
         for _ in 0..rand::random::<usize>() % MAX_DATAGRAMS {
             match rand::random::<u32>() % 3 {
                 0 => {
-                    let entry = DataEntry::new_packet(rand::random::<u8>(),
-                                                      rand::random::<u32>() & 0xFFFFFF,
-                                                      rand::random::<u16>(),
-                                                      (0..MAX_DATA_SIZE).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice());
+                    let entry = DataEntry::new(rand::random::<u8>(), Message::Datagram(
+                            Datagram::new(rand::random::<u32>() & 0xFFFFFF, rand::random::<u16>(), Payload::Fragment(
+                                    Fragment::new(rand::random::<u16>(), rand::random::<u16>(), random_data(MAX_DATA_SIZE))))));
                     entries.push(entry);
                 }
                 1 => {
-                    let entry = DataEntry::new_fragment(rand::random::<u8>(),
-                                                        rand::random::<u32>() & 0xFFFFFF,
-                                                        rand::random::<u16>(),
-                                                        rand::random::<u16>(),
-                                                        rand::random::<u16>(),
-                                                        (0..MAX_DATA_SIZE).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice());
+                    let entry = DataEntry::new(rand::random::<u8>(), Message::Datagram(
+                            Datagram::new(rand::random::<u32>() & 0xFFFFFF, rand::random::<u16>(), Payload::Sentinel)));
                     entries.push(entry);
                 }
                 2 => {
-                    let entry = DataEntry::new_sentinel(rand::random::<u8>(),
-                                                        rand::random::<u32>() & 0xFFFFFF,
-                                                        rand::random::<u16>());
+                    let entry = DataEntry::new(rand::random::<u8>(), Message::WindowAck(
+                            WindowAck::new(rand::random::<u32>() & 0xFFFFFF)));
                     entries.push(entry);
                 }
                 _ => panic!("NANI?!")

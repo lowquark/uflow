@@ -12,8 +12,6 @@ use super::seq;
 
 use std::collections::VecDeque;
 
-const SENTINEL_EXPIRATION_THRESHOLD: usize = (TRANSFER_WINDOW_SIZE/WINDOW_ACK_SPACING - 2) as usize;
-
 struct FragAsm {
     fragments_remaining: usize,
     total_size: usize,

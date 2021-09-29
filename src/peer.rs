@@ -1,7 +1,5 @@
 
 use std::collections::VecDeque;
-use std::collections::HashMap;
-use std::net;
 use std::time;
 
 use super::frame;
@@ -241,47 +239,13 @@ impl Peer {
             frame::Frame::Data(data_frame) => {
                 self.frame_transfer.acknowledge_data_frame(&data_frame);
                 for entry in data_frame.entries.into_iter() {
-                    match entry {
-                        frame::DataEntry::Packet(entry) => {
-                            if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                                channel.rx.handle_datagram(channel::Datagram {
-                                    sequence_id: entry.sequence_id,
-                                    dependent_lead: entry.dependent_lead,
-                                    payload: channel::Payload::Fragment(channel::Fragment {
-                                        fragment_id: 0,
-                                        last_fragment_id: 0,
-                                        data: entry.data,
-                                    }),
-                                });
+                    if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
+                        match entry.message {
+                            frame::Message::Datagram(dg) => {
+                                channel.rx.handle_datagram(dg);
                             }
-                        }
-                        frame::DataEntry::PacketFragment(entry) => {
-                            if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                                channel.rx.handle_datagram(channel::Datagram {
-                                    sequence_id: entry.sequence_id,
-                                    dependent_lead: entry.dependent_lead,
-                                    payload: channel::Payload::Fragment(channel::Fragment {
-                                        fragment_id: entry.fragment_id,
-                                        last_fragment_id: entry.last_fragment_id,
-                                        data: entry.data,
-                                    }),
-                                });
-                            }
-                        }
-                        frame::DataEntry::PacketSentinel(entry) => {
-                            if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                                channel.rx.handle_datagram(channel::Datagram {
-                                    sequence_id: entry.sequence_id,
-                                    dependent_lead: entry.dependent_lead,
-                                    payload: channel::Payload::Sentinel,
-                                });
-                            }
-                        }
-                        frame::DataEntry::WindowAck(entry) => {
-                            if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                                channel.tx.handle_window_ack(channel::WindowAck {
-                                    sequence_id: entry.sequence_id,
-                                });
+                            frame::Message::WindowAck(wa) => {
+                                channel.tx.handle_window_ack(wa);
                             }
                         }
                     }
@@ -414,41 +378,12 @@ impl Peer {
         // TODO: Make this round-robin
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
-                match datagram.payload {
-                    channel::Payload::Fragment(fragment) => {
-                        // TODO: Better construction (somewhere else!)
-                        self.frame_transfer.enqueue_datagram(
-                            frame::DataEntry::PacketFragment(frame::PacketFragment {
-                                channel_id: channel_id as ChannelId,
-                                sequence_id: datagram.sequence_id,
-                                dependent_lead: datagram.dependent_lead,
-                                fragment_id: fragment.fragment_id,
-                                last_fragment_id: fragment.last_fragment_id,
-                                data: fragment.data,
-                            })
-                            , is_reliable
-                        );
-                    }
-                    channel::Payload::Sentinel => {
-                        self.frame_transfer.enqueue_datagram(
-                            frame::DataEntry::PacketSentinel(frame::PacketSentinel {
-                                channel_id: channel_id as ChannelId,
-                                sequence_id: datagram.sequence_id,
-                                dependent_lead: datagram.dependent_lead,
-                            })
-                            , is_reliable
-                        );
-                    }
-                }
+                let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
+                self.frame_transfer.enqueue_datagram(data_entry, is_reliable);
             }
             if let Some(window_ack) = channel.rx.take_window_ack() {
-                self.frame_transfer.enqueue_datagram(
-                    frame::DataEntry::WindowAck(frame::WindowAck {
-                        channel_id: channel_id as ChannelId,
-                        sequence_id: window_ack.sequence_id,
-                    })
-                    , true
-                );
+                let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::WindowAck(window_ack));
+                self.frame_transfer.enqueue_datagram(data_entry, true);
             }
         }
 

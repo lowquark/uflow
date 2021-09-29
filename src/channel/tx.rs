@@ -50,16 +50,10 @@ impl Tx {
             let begin = i*FRAGMENT_SIZE;
             let end = (i + 1)*FRAGMENT_SIZE;
             let slice = &data[begin .. end];
+
+            let payload = Payload::Fragment(Fragment::new(i as u16, last_fragment_id, slice.into()));
             self.send_queue.push_back((
-                Datagram {
-                    sequence_id: sequence_id,
-                    dependent_lead: dependent_lead,
-                    payload: Payload::Fragment(Fragment {
-                        fragment_id: i as u16,
-                        last_fragment_id: last_fragment_id,
-                        data: slice.into(),
-                    })
-                },
+                Datagram::new(sequence_id, dependent_lead, payload),
                 reliable
             ));
         }
@@ -67,16 +61,10 @@ impl Tx {
         if caboose {
             let begin = num_full_fragments * FRAGMENT_SIZE;
             let slice = &data[begin .. ];
+
+            let payload = Payload::Fragment(Fragment::new(last_fragment_id, last_fragment_id, slice.into()));
             self.send_queue.push_back((
-                Datagram {
-                    sequence_id: sequence_id,
-                    dependent_lead: dependent_lead,
-                    payload: Payload::Fragment(Fragment {
-                        fragment_id: last_fragment_id,
-                        last_fragment_id: last_fragment_id,
-                        data: slice.into(),
-                    })
-                },
+                Datagram::new(sequence_id, dependent_lead, payload),
                 reliable
             ));
         }
@@ -86,11 +74,7 @@ impl Tx {
         let dependent_lead = dependent_id.map_or(0, |id| seq::lead_unsigned(sequence_id, id) as u16);
 
         self.send_queue.push_back((
-            Datagram {
-                sequence_id: sequence_id,
-                dependent_lead: dependent_lead,
-                payload: Payload::Sentinel,
-            },
+            Datagram::new(sequence_id, dependent_lead, Payload::Sentinel),
             true
         ));
     }
