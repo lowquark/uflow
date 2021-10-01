@@ -4,6 +4,7 @@ use std::time;
 
 use super::frame;
 use super::DataSink;
+use super::MTU;
 
 struct SendEntry {
     data: frame::DataEntry,
@@ -16,31 +17,6 @@ impl SendEntry {
             data: data, 
             reliable: reliable,
         }
-    }
-}
-
-#[derive(Debug)]
-struct ResendEntry {
-    frame_data: Box<[u8]>,
-    last_send_time: time::Instant,
-    sequence_id: u32,
-}
-
-impl ResendEntry {
-    fn new(frame_data: Box<[u8]>, last_send_time: time::Instant, sequence_id: u32) -> Self {
-        Self {
-            frame_data: frame_data, 
-            last_send_time: last_send_time,
-            sequence_id: sequence_id,
-        }
-    }
-
-    fn mark_sent(&mut self, now: time::Instant) {
-        self.last_send_time = now;
-    }
-
-    fn should_resend(&self, now: time::Instant, timeout: time::Duration) -> bool {
-        now - self.last_send_time > timeout
     }
 }
 
@@ -84,18 +60,99 @@ impl SendQueue {
     }
 }
 
+#[derive(Debug)]
+struct ResendEntry {
+    frame_data: Box<[u8]>,
+    last_send_time: time::Instant,
+    sequence_id: u32,
+}
+
+impl ResendEntry {
+    fn new(frame_data: Box<[u8]>, last_send_time: time::Instant, sequence_id: u32) -> Self {
+        Self {
+            frame_data: frame_data,
+            last_send_time: last_send_time,
+            sequence_id: sequence_id,
+        }
+    }
+
+    fn mark_sent(&mut self, now: time::Instant) {
+        self.last_send_time = now;
+    }
+
+    fn should_resend(&self, now: time::Instant, timeout: time::Duration) -> bool {
+        now - self.last_send_time > timeout
+    }
+}
+
+struct BandwidthCounter {
+    target: f64,
+    alloc: usize,
+    last_alloc_time: Option<time::Instant>,
+}
+
+impl BandwidthCounter {
+    const MAX_LOCAL_BANDWIDTH_FACTOR: f64 = 2.0;
+
+    fn new(target: f64) -> Self {
+        Self {
+            target: target,
+            alloc: 0,
+            last_alloc_time: None,
+        }
+    }
+
+    fn set_target(&mut self, target: f64) {
+        self.target = target;
+    }
+
+    fn step(&mut self, now: time::Instant) {
+        if let Some(time) = self.last_alloc_time {
+            let delta_time = (now - time).as_secs_f64();
+
+            let delta_bytes = (self.target*delta_time).round() as usize;
+
+            let max_alloc = std::cmp::max((Self::MAX_LOCAL_BANDWIDTH_FACTOR*self.target*delta_time).round() as usize, MTU);
+
+            println!("self.alloc = {}, delta_bytes = {}, max_alloc = {}", self.alloc, delta_bytes, max_alloc);
+
+            self.alloc = std::cmp::min(self.alloc + delta_bytes, max_alloc);
+            println!("self.alloc := {}", self.alloc);
+        }
+
+        self.last_alloc_time = Some(now);
+    }
+
+    fn bytes_remaining(&self) -> usize {
+        self.alloc
+    }
+
+    fn should_send(&self, frame_size: usize) -> bool {
+        self.alloc >= frame_size
+    }
+
+    fn mark_sent(&mut self, frame_size: usize) {
+        if self.alloc > frame_size {
+            self.alloc -= frame_size;
+        } else {
+            self.alloc = 0;
+        }
+    }
+}
+
 pub struct FrameIO {
     send_queue: SendQueue,
     resend_queue: VecDeque<ResendEntry>,
     ack_queue: VecDeque<u32>,
     next_sequence_id: u32,
     base_sequence_id: u32,
+
+    bw_counter: BandwidthCounter,
 }
 
 impl FrameIO {
     // TODO: TRANSFER_WINDOW_SIZE, MTU as arguments to new()
     const TRANSFER_WINDOW_SIZE: u32 = 1024;
-    const MTU: usize = 1500 - 28;
 
     pub fn new() -> Self {
         Self {
@@ -104,6 +161,8 @@ impl FrameIO {
             ack_queue: VecDeque::new(),
             next_sequence_id: 0,
             base_sequence_id: 0,
+
+            bw_counter: BandwidthCounter::new(100_000.0),
         }
     }
 
@@ -140,27 +199,7 @@ impl FrameIO {
         }
     }
 
-    fn pull_frame(&mut self, now: time::Instant, timeout: time::Duration) -> Option<Box<[u8]>> {
-        // Send any pending acks
-        if !self.ack_queue.is_empty() {
-            let capacity_ids = (Self::MTU - frame::DataAck::HEADER_SIZE_BYTES)/frame::DataAck::SEQUENCE_ID_SIZE_BYTES;
-
-            let sequence_ids = self.ack_queue.drain(..usize::min(capacity_ids, self.ack_queue.len())).collect();
-            let frame = frame::Frame::DataAck(frame::DataAck {
-                sequence_ids: sequence_ids,
-            });
-
-            return Some(frame.to_bytes());
-        }
-
-        // Resend any pending reliable frames
-        for entry in self.resend_queue.iter_mut() {
-            if entry.should_resend(now, timeout) {
-                entry.mark_sent(now);
-                return Some(entry.frame_data.clone());
-            }
-        }
-
+    fn pull_data_frame(&mut self, now: time::Instant, max_size: usize) -> Result<Option<frame::Data>,()> {
         if !self.send_queue.is_empty() {
             // Assemble a new data frame from as many send entries as possible if the transfer window permits
             if self.next_sequence_id.wrapping_sub(self.base_sequence_id) < Self::TRANSFER_WINDOW_SIZE {
@@ -174,7 +213,7 @@ impl FrameIO {
                 while let Some(entry) = self.send_queue.peek() {
                     let encoded_size = entry.data.encoded_size();
 
-                    if num_entries == 0 || frame_size + encoded_size <= Self::MTU {
+                    if frame_size + encoded_size <= max_size {
                         let entry = self.send_queue.pop().unwrap();
                         if entry.reliable {
                             reliable_entries.push(entry.data);
@@ -189,6 +228,10 @@ impl FrameIO {
                     }
                 }
 
+                if num_entries == 0 {
+                    return Err(());
+                }
+
                 let sequence_id = self.next_sequence_id;
 
                 if reliable_entries.len() > 0 {
@@ -196,11 +239,8 @@ impl FrameIO {
                     self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
 
                     // Assemble frame of reliable datagrams to resend later
-                    let resend_frame = frame::Data {
-                        ack: true,
-                        sequence_id: sequence_id,
-                        entries: reliable_entries,
-                    };
+                    let needs_ack = true;
+                    let resend_frame = frame::Data::new(needs_ack, sequence_id, reliable_entries);
 
                     self.resend_queue.push_back(ResendEntry::new(resend_frame.to_bytes(), now, sequence_id));
 
@@ -208,29 +248,83 @@ impl FrameIO {
                 }
 
                 // Assemble frame of all datagrams
+                let needs_ack = reliable_entries.len() != 0;
+
                 let mut all_entries = reliable_entries;
                 all_entries.append(&mut unreliable_entries);
 
-                let frame = frame::Frame::Data(frame::Data {
-                    ack: true,
-                    sequence_id: sequence_id,
-                    entries: all_entries,
-                });
-
-                return Some(frame.to_bytes());
+                return Ok(Some(frame::Data::new(needs_ack, sequence_id, all_entries)));
             }
         }
 
-        None
+        return Ok(None);
+    }
+
+    fn try_send_acks(&mut self, sink: & dyn DataSink) -> Result<(),()> {
+        while !self.ack_queue.is_empty() {
+            let max_size = std::cmp::min(MTU, self.bw_counter.bytes_remaining());
+
+            if max_size >= frame::DataAck::HEADER_SIZE_BYTES + frame::DataAck::SEQUENCE_ID_SIZE_BYTES {
+                let max_ids = (max_size - frame::DataAck::HEADER_SIZE_BYTES)/frame::DataAck::SEQUENCE_ID_SIZE_BYTES;
+
+                let sequence_ids = self.ack_queue.drain(..usize::min(max_ids, self.ack_queue.len())).collect();
+                let frame = frame::Frame::DataAck(frame::DataAck {
+                    sequence_ids: sequence_ids,
+                });
+
+                let frame_data = frame.to_bytes();
+                sink.send(&frame_data);
+                self.bw_counter.mark_sent(frame_data.len());
+            } else {
+                return Err(());
+            }
+        }
+        return Ok(());
+    }
+
+    fn try_send_resends(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) -> Result<(),()> {
+        // TODO: Efficient iteration
+        for entry in self.resend_queue.iter_mut() {
+            if entry.should_resend(now, timeout) {
+                if self.bw_counter.should_send(entry.frame_data.len()) {
+                    sink.send(&entry.frame_data);
+                    entry.mark_sent(now);
+                    self.bw_counter.mark_sent(entry.frame_data.len());
+                } else {
+                    // Wait until we have enough bandwidth tokens
+                    return Err(());
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    fn try_send_datagrams(&mut self, now: time::Instant, sink: & dyn DataSink) -> Result<(),()> {
+        while let Some(frame) = self.pull_data_frame(now, self.bw_counter.bytes_remaining())? {
+            let frame_data = frame.to_bytes();
+            sink.send(&frame_data);
+            self.bw_counter.mark_sent(frame_data.len());
+        }
+        return Ok(());
+    }
+
+    pub fn step(&mut self, now: time::Instant) {
+        self.bw_counter.step(now);
     }
 
     pub fn flush(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) {
-        while let Some(frame_data) = self.pull_frame(now, timeout) {
-            sink.send(&frame_data);
+        if self.try_send_acks(sink).is_err() {
+            return;
+        }
+        if self.try_send_resends(now, timeout, sink).is_err() {
+            return;
+        }
+        if self.try_send_datagrams(now, sink).is_err() {
+            return;
         }
     }
 
-    pub fn is_tx_idle(&self) -> bool {
+    pub fn is_idle(&self) -> bool {
         self.send_queue.is_empty() && self.resend_queue.is_empty()
     }
 }

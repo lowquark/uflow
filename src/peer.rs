@@ -14,6 +14,7 @@ use super::transport;
 #[derive(Clone,Debug)]
 pub struct Params {
     pub num_channels: u32,
+    pub min_tx_bandwidth: u32,
     pub max_tx_bandwidth: u32,
     pub max_rx_bandwidth: u32,
     pub priority_channels: Range<u32>,
@@ -258,15 +259,17 @@ impl Peer {
         }
     }
 
-    fn connected_step(&mut self) {
+    fn connected_step(&mut self, now: time::Instant) {
         for channel in self.channels.iter_mut() {
             while let Some(packet) = channel.rx.receive() {
                 self.event_queue.push_back(Event::Receive(packet));
             }
         }
 
+        self.frame_io.step(now);
+
         if self.disconnect_flush {
-            if self.frame_io.is_tx_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
+            if self.frame_io.is_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
                 self.send_disconnect_enter();
             }
         }
@@ -358,7 +361,7 @@ impl Peer {
             State::AwaitConnect => (),
             State::AwaitConnectAck => self.await_connect_ack_step(),
             State::SendConnect => self.send_connect_step(),
-            State::Connected => self.connected_step(),
+            State::Connected => self.connected_step(now),
             State::SendDisconnect => self.send_disconnect_step(),
             State::Disconnected => (),
             State::Zombie => (),

@@ -518,6 +518,14 @@ impl Data {
     const TYPE_ID: u8 = 6;
     pub const HEADER_SIZE_BYTES: usize = 8;
 
+    pub fn new(ack: bool, sequence_id: u32, entries: Vec<DataEntry>) -> Self {
+        Self {
+            ack: ack,
+            sequence_id: sequence_id,
+            entries: entries,
+        }
+    }
+
     pub fn to_bytes(&self) -> Box<[u8]> {
         let mut bytes = Vec::new();
 

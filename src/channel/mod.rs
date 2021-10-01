@@ -8,8 +8,7 @@ const TRANSFER_WINDOW_SIZE: u32 = 16384;
 // Must be an integer divisor of TRANSFER_WINDOW_SIZE
 const WINDOW_ACK_SPACING: u32 = TRANSFER_WINDOW_SIZE / 32;
 
-// TODO: Make channel constructor parameter
-const FRAGMENT_SIZE: usize = 1472-15;
+const FRAGMENT_SIZE: usize = super::MTU - 15;
 
 type Fragment = super::frame::Fragment;
 type Payload = super::frame::Payload;

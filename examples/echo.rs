@@ -1,6 +1,9 @@
 
 fn server_thread() {
-    let mut host = udpl::host::Host::bind("127.0.0.1:8888", udpl::host::Params::new()).unwrap();
+    let params = udpl::host::Params::new()
+        .num_channels(2);
+
+    let mut host = udpl::host::Host::bind("127.0.0.1:8888", params).unwrap();
     let mut clients = Vec::new();
 
     for _ in 0..220 {
@@ -24,7 +27,11 @@ fn server_thread() {
 }
 
 fn client_thread() {
-    let mut host = udpl::host::Host::bind_any(udpl::host::Params::new()).unwrap();
+    let params = udpl::host::Params::new()
+        .num_channels(2)
+        .priority_channels(0..1);
+
+    let mut host = udpl::host::Host::bind_any(params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
     for i in 0..200 {
@@ -38,7 +45,7 @@ fn client_thread() {
         let b = i*3 + 1 as u16;
         let c = i*3 + 2 as u16;
 
-        client.send(Box::new(a.to_be_bytes()), 0, udpl::SendMode::Reliable);
+        client.send(Box::new(a.to_be_bytes()), 1, udpl::SendMode::Reliable);
         client.send(Box::new(b.to_be_bytes()), 0, udpl::SendMode::Reliable);
         client.send(Box::new(c.to_be_bytes()), 0, udpl::SendMode::Reliable);
 

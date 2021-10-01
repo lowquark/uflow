@@ -19,7 +19,9 @@ type PingId = u16;
 type ProtocolVersionId = u8;
 
 pub const PROTOCOL_VERSION: ProtocolVersionId = 0;
-pub const MTU: usize = 1500;
+pub const ETHERNET_MTU: usize = 1500;
+pub const UDP_HEADER_SIZE: usize = 28;
+pub const MTU: usize = ETHERNET_MTU - UDP_HEADER_SIZE;
 
 pub const MAX_CHANNELS: u32 = 256;
 
