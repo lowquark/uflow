@@ -50,13 +50,6 @@ impl SendQueue {
         self.high_priority.iter_mut().chain(self.low_priority.iter_mut())
     }
 
-    /*
-    pub fn retain_data_some(&mut self) {
-        self.high_priority.retain(|entry| entry.data.is_some());
-        self.low_priority.retain(|entry| entry.data.is_some());
-    }
-    */
-
     pub fn retain<F>(&mut self, f: F) where F: FnMut(&SendEntry) -> bool + Copy {
         self.high_priority.retain(f);
         self.low_priority.retain(f);
@@ -88,54 +81,95 @@ impl ResendEntry {
     }
 }
 
-struct BandwidthCounter {
-    target: f64,
+struct LeakyBucket {
     alloc: usize,
-    last_alloc_time: Option<time::Instant>,
+    alloc_max: usize,
+    byte_rate: usize,
+    last_step_time: Option<time::Instant>,
 }
 
-impl BandwidthCounter {
-    const MAX_LOCAL_BANDWIDTH_FACTOR: f64 = 2.0;
+impl LeakyBucket {
+    const MIN_ALLOC_MAX: usize = MTU;
 
-    fn new(target: f64) -> Self {
+    fn new(byte_rate: usize, alloc_max: usize) -> Self {
         Self {
-            target: target,
             alloc: 0,
-            last_alloc_time: None,
+            alloc_max: alloc_max.max(Self::MIN_ALLOC_MAX),
+            byte_rate: byte_rate,
+            last_step_time: None,
         }
     }
 
     fn step(&mut self, now: time::Instant) {
-        if let Some(time) = self.last_alloc_time {
-            let delta_time = (now - time).as_secs_f64();
-
-            let delta_bytes = (self.target*delta_time).round() as usize;
-
-            let max_alloc = std::cmp::max((Self::MAX_LOCAL_BANDWIDTH_FACTOR*self.target*delta_time).round() as usize, MTU);
-
-            println!("self.alloc = {}, delta_bytes = {}, max_alloc = {}", self.alloc, delta_bytes, max_alloc);
-
-            self.alloc = std::cmp::min(self.alloc + delta_bytes, max_alloc);
-            println!("self.alloc := {}", self.alloc);
+        if let Some(last_step_time) = self.last_step_time {
+            let delta_time = (now - last_step_time).as_secs_f64();
+            let delta_bytes = ((self.byte_rate as f64)*delta_time).round() as usize;
+            self.alloc = std::cmp::min(self.alloc + delta_bytes, self.alloc_max);
         }
 
-        self.last_alloc_time = Some(now);
+        self.last_step_time = Some(now);
     }
 
     fn bytes_remaining(&self) -> usize {
         self.alloc
     }
 
-    fn should_send(&self, frame_size: usize) -> bool {
-        self.alloc >= frame_size
+    fn mark_sent(&mut self, frame_size: usize) {
+        assert!(self.alloc >= frame_size);
+        self.alloc -= frame_size;
+    }
+}
+
+struct AimdBucket {
+    alloc: usize,
+    size: usize,
+    max_size: usize,
+}
+
+impl AimdBucket {
+    // TODO: Consult RFC for TCP Reno?
+    // TODO: Slow start?
+    const ACK_INCREASE: usize = MTU;
+    const NACK_DECREASE: f64 = 0.5;
+    const MIN_SIZE: usize = MTU;
+
+    fn new(max_size: usize) -> Self {
+        Self {
+            alloc: Self::MIN_SIZE,
+            size: Self::MIN_SIZE,
+            max_size: max_size.max(Self::MIN_SIZE),
+        }
+    }
+
+    fn trigger_ack(&mut self, frame_size: usize) {
+        self.alloc += frame_size;
+        self.size += Self::ACK_INCREASE;
+        if self.size > self.max_size {
+            self.size = self.max_size;
+        }
+        self.alloc += Self::ACK_INCREASE;
+        if self.alloc > self.size {
+            self.alloc = self.size;
+        }
+    }
+
+    fn trigger_nack(&mut self) {
+        self.size = ((self.size as f64) * Self::NACK_DECREASE).round() as usize;
+        if self.size < Self::MIN_SIZE {
+            self.size = Self::MIN_SIZE;
+        }
+        if self.alloc > self.size {
+            self.alloc = self.size;
+        }
+    }
+
+    fn bytes_remaining(&self) -> usize {
+        self.alloc
     }
 
     fn mark_sent(&mut self, frame_size: usize) {
-        if self.alloc > frame_size {
-            self.alloc -= frame_size;
-        } else {
-            self.alloc = 0;
-        }
+        assert!(self.alloc >= frame_size);
+        self.alloc -= frame_size;
     }
 }
 
@@ -146,12 +180,12 @@ pub struct FrameIO {
     next_sequence_id: u32,
     base_sequence_id: u32,
 
-    bw_counter: BandwidthCounter,
+    bandwidth_throttle: LeakyBucket,
+    reliable_throttle: AimdBucket,
 }
 
 impl FrameIO {
-    // TODO: TRANSFER_WINDOW_SIZE, MTU as arguments to new()
-    const TRANSFER_WINDOW_SIZE: u32 = 1024;
+    const TRANSFER_WINDOW_SIZE: u32 = 2048;
 
     pub fn new() -> Self {
         Self {
@@ -161,7 +195,8 @@ impl FrameIO {
             next_sequence_id: 0,
             base_sequence_id: 0,
 
-            bw_counter: BandwidthCounter::new(100_000.0),
+            bandwidth_throttle: LeakyBucket::new(100_000, 3_000),
+            reliable_throttle: AimdBucket::new(100_000),
         }
     }
 
@@ -184,6 +219,7 @@ impl FrameIO {
         for sequence_id in data_ack.sequence_ids.into_iter() {
             'inner: for (idx, entry) in self.resend_queue.iter().enumerate() {
                 if entry.sequence_id == sequence_id {
+                    self.reliable_throttle.trigger_ack(entry.frame_data.len());
                     self.resend_queue.remove(idx);
 
                     if let Some(entry) = self.resend_queue.front() {
@@ -200,7 +236,7 @@ impl FrameIO {
 
     fn try_send_acks(&mut self, sink: & dyn DataSink) -> Result<(),()> {
         while !self.ack_queue.is_empty() {
-            let max_size = std::cmp::min(MTU, self.bw_counter.bytes_remaining());
+            let max_size = std::cmp::min(MTU, self.bandwidth_throttle.bytes_remaining());
 
             if max_size >= frame::DataAck::HEADER_SIZE_BYTES + frame::DataAck::SEQUENCE_ID_SIZE_BYTES {
                 let max_ids = (max_size - frame::DataAck::HEADER_SIZE_BYTES)/frame::DataAck::SEQUENCE_ID_SIZE_BYTES;
@@ -212,7 +248,7 @@ impl FrameIO {
 
                 let frame_data = frame.to_bytes();
                 sink.send(&frame_data);
-                self.bw_counter.mark_sent(frame_data.len());
+                self.bandwidth_throttle.mark_sent(frame_data.len());
             } else {
                 return Err(());
             }
@@ -224,10 +260,11 @@ impl FrameIO {
         // TODO: Efficient iteration
         for entry in self.resend_queue.iter_mut() {
             if entry.should_resend(now, timeout) {
-                if self.bw_counter.should_send(entry.frame_data.len()) {
+                if self.bandwidth_throttle.bytes_remaining() >= entry.frame_data.len() {
                     sink.send(&entry.frame_data);
                     entry.mark_sent(now);
-                    self.bw_counter.mark_sent(entry.frame_data.len());
+                    self.bandwidth_throttle.mark_sent(entry.frame_data.len());
+                    self.reliable_throttle.trigger_nack();
                 } else {
                     // Wait until we have enough bandwidth tokens
                     return Err(());
@@ -239,23 +276,21 @@ impl FrameIO {
 
     fn try_send_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
         // Assembles and sends as many frames as possible, with datagrams taken from the send queue
-        // in order, subject to the frame size limit, the total bandwidth limit, the reliable
-        // congestion window limit, and the maximum sequence id transfer window, ensuring that
+        // in order, subject to the frame size limit, a total bandwidth constraint, a reliable
+        // congestion window, and the maximum sequence id transfer window, ensuring that
         // inter-packet-wise, no reliable datagrams are sent prior to any preceding datagrams. All
         // unreliable datagrams are removed from the send queue, whether or not they've been sent.
         //
         // All entries in the send queue must have an encoded size such that they may be stored in
-        // a frame satisfying the MTU (i.e. encoded_size <= MTU - FRAME_HEADER_SIZE_BYTES).
+        // a frame satisfying the MTU (i.e. encoded_size <= MTU - HEADER_SIZE).
 
         let frame_overhead_bytes = frame::Data::HEADER_SIZE_BYTES;
         let frame_limit_bytes = MTU;
 
-        let total_limit_bytes = self.bw_counter.bytes_remaining().max(frame_limit_bytes);
-        let reliable_limit_bytes = frame_limit_bytes; // TODO: Actual reliable limit
-        let end_sequence_id = self.base_sequence_id.wrapping_add(Self::TRANSFER_WINDOW_SIZE);
+        let mut total_bytes_remaining = self.bandwidth_throttle.bytes_remaining();
+        let mut reliable_bytes_remaining = self.reliable_throttle.bytes_remaining();
 
-        let mut total_bytes_remaining = total_limit_bytes;
-        let mut reliable_bytes_remaining = reliable_limit_bytes;
+        let end_sequence_id = self.base_sequence_id.wrapping_add(Self::TRANSFER_WINDOW_SIZE);
 
         {
             let mut entry_iter = self.send_queue.iter_mut();
@@ -286,7 +321,7 @@ impl FrameIO {
                         let hyp_frame_size_reliable = frame_size_reliable.unwrap_or(frame_overhead_bytes) + encoded_size;
 
                         // This datagram alone must not exceed the reliable transfer limit, or it will never leave the queue!
-                        assert!(frame_overhead_bytes + encoded_size <= reliable_limit_bytes);
+                        //assert!(frame_overhead_bytes + encoded_size <= reliable_limit_bytes);
 
                         if hyp_frame_size_reliable > reliable_bytes_remaining {
                             // Would be too large for reliable congestion window, stop considering reliable packets
@@ -307,7 +342,7 @@ impl FrameIO {
                     let hyp_frame_size = frame_size + encoded_size;
 
                     // This datagram alone must not exceed the total transfer limit, or we will loop forever!
-                    assert!(frame_overhead_bytes + encoded_size <= total_limit_bytes);
+                    //assert!(frame_overhead_bytes + encoded_size <= total_limit_bytes);
 
                     if hyp_frame_size > total_bytes_remaining {
                         // Would be too large for bandwidth window, assemble and stop
@@ -350,49 +385,53 @@ impl FrameIO {
 
                 // Frame complete!
 
-                total_bytes_remaining -= frame_size;
-                if let Some(size) = frame_size_reliable {
-                    reliable_bytes_remaining -= size;
-                }
+                if rel_dgs.len() != 0 || unrel_dgs.len() != 0 {
+                    total_bytes_remaining -= frame_size;
+                    if let Some(size) = frame_size_reliable {
+                        reliable_bytes_remaining -= size;
+                    }
 
-                self.bw_counter.mark_sent(frame_size);
+                    self.bandwidth_throttle.mark_sent(frame_size);
 
-                if rel_dgs.len() == 0 && unrel_dgs.len() > 0 {
-                    // Send simple frame containing only unreliable datagrams
-                    let needs_ack = false;
-                    let send_frame = frame::Data::new(needs_ack, 0, unrel_dgs);
-                    let frame_data = send_frame.to_bytes();
-                    assert!(frame_data.len() == frame_size);
-                    sink.send(&frame_data);
-                } else if rel_dgs.len() > 0 && unrel_dgs.len() == 0 {
-                    // Send & save simple frame containing only reliable datagrams
-                    let needs_ack = true;
-                    let seq_id = frame_sequence_id.unwrap();
-                    let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
-                    let frame_data = resend_frame.to_bytes();
-                    assert!(frame_data.len() == frame_size);
-                    assert!(frame_data.len() == frame_size_reliable.unwrap());
-                    sink.send(&frame_data);
-                    self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
-                } else if rel_dgs.len() > 0 && unrel_dgs.len() > 0 {
-                    let needs_ack = rel_dgs.len() > 0;
-                    let seq_id = frame_sequence_id.unwrap();
-                    if rel_dgs.len() > 0 {
-                        // Save frame containing reliable datagrams
+                    if rel_dgs.len() == 0 && unrel_dgs.len() > 0 {
+                        // Send simple frame containing only unreliable datagrams
+                        let needs_ack = false;
+                        let send_frame = frame::Data::new(needs_ack, 0, unrel_dgs);
+                        let frame_data = send_frame.to_bytes();
+                        assert!(frame_data.len() == frame_size);
+                        sink.send(&frame_data);
+                    } else if rel_dgs.len() > 0 && unrel_dgs.len() == 0 {
+                        // Send & save simple frame containing only reliable datagrams
+                        let needs_ack = true;
+                        let seq_id = frame_sequence_id.unwrap();
                         let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
                         let frame_data = resend_frame.to_bytes();
+                        assert!(frame_data.len() == frame_size);
                         assert!(frame_data.len() == frame_size_reliable.unwrap());
+                        sink.send(&frame_data);
+                        self.reliable_throttle.mark_sent(frame_data.len());
                         self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
-                        // Take back the reliable datagrams
-                        rel_dgs = resend_frame.entries;
+                    } else if rel_dgs.len() > 0 && unrel_dgs.len() > 0 {
+                        let needs_ack = rel_dgs.len() > 0;
+                        let seq_id = frame_sequence_id.unwrap();
+                        if rel_dgs.len() > 0 {
+                            // Save frame containing reliable datagrams
+                            let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
+                            let frame_data = resend_frame.to_bytes();
+                            assert!(frame_data.len() == frame_size_reliable.unwrap());
+                            self.reliable_throttle.mark_sent(frame_data.len());
+                            self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
+                            // Take back the reliable datagrams
+                            rel_dgs = resend_frame.entries;
+                        }
+                        // Send frame containing all datagrams
+                        let mut all_dgs = rel_dgs;
+                        all_dgs.append(&mut unrel_dgs);
+                        let send_frame = frame::Data::new(needs_ack, seq_id, all_dgs);
+                        let frame_data = send_frame.to_bytes();
+                        assert!(frame_data.len() == frame_size);
+                        sink.send(&frame_data);
                     }
-                    // Send frame containing all datagrams
-                    let mut all_dgs = rel_dgs;
-                    all_dgs.append(&mut unrel_dgs);
-                    let send_frame = frame::Data::new(needs_ack, seq_id, all_dgs);
-                    let frame_data = send_frame.to_bytes();
-                    assert!(frame_data.len() == frame_size);
-                    sink.send(&frame_data);
                 }
             }
         }
@@ -402,7 +441,7 @@ impl FrameIO {
     }
 
     pub fn step(&mut self, now: time::Instant) {
-        self.bw_counter.step(now);
+        self.bandwidth_throttle.step(now);
     }
 
     pub fn flush(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) {
