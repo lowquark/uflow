@@ -6,15 +6,16 @@ use super::frame;
 use super::DataSink;
 use super::MTU;
 
+#[derive(Debug)]
 struct SendEntry {
-    data: frame::DataEntry,
+    data: Option<frame::DataEntry>,
     reliable: bool,
 }
 
 impl SendEntry {
     fn new(data: frame::DataEntry, reliable: bool) -> Self {
         Self {
-            data: data, 
+            data: Some(data),
             reliable: reliable,
         }
     }
@@ -41,22 +42,24 @@ impl SendQueue {
         self.low_priority.push_back(entry);
     }
 
-    pub fn peek(&self) -> Option<&SendEntry> {
-        if let Some(entry) = self.high_priority.front() {
-            return Some(entry);
-        }
-        return self.low_priority.front();
-    }
-
-    pub fn pop(&mut self) -> Option<SendEntry> {
-        if let Some(entry) = self.high_priority.pop_front() {
-            return Some(entry);
-        }
-        return self.low_priority.pop_front();
-    }
-
     pub fn is_empty(&self) -> bool {
         self.high_priority.is_empty() && self.low_priority.is_empty()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SendEntry> {
+        self.high_priority.iter_mut().chain(self.low_priority.iter_mut())
+    }
+
+    /*
+    pub fn retain_data_some(&mut self) {
+        self.high_priority.retain(|entry| entry.data.is_some());
+        self.low_priority.retain(|entry| entry.data.is_some());
+    }
+    */
+
+    pub fn retain<F>(&mut self, f: F) where F: FnMut(&SendEntry) -> bool + Copy {
+        self.high_priority.retain(f);
+        self.low_priority.retain(f);
     }
 }
 
@@ -100,10 +103,6 @@ impl BandwidthCounter {
             alloc: 0,
             last_alloc_time: None,
         }
-    }
-
-    fn set_target(&mut self, target: f64) {
-        self.target = target;
     }
 
     fn step(&mut self, now: time::Instant) {
@@ -199,67 +198,6 @@ impl FrameIO {
         }
     }
 
-    fn pull_data_frame(&mut self, now: time::Instant, max_size: usize) -> Result<Option<frame::Data>,()> {
-        if !self.send_queue.is_empty() {
-            // Assemble a new data frame from as many send entries as possible if the transfer window permits
-            if self.next_sequence_id.wrapping_sub(self.base_sequence_id) < Self::TRANSFER_WINDOW_SIZE {
-                let mut unreliable_entries = Vec::new();
-                let mut reliable_entries = Vec::new();
-                let mut num_entries = 0;
-
-                let mut frame_size = frame::Data::HEADER_SIZE_BYTES;
-
-                // Enqueue at least one datagram, then consider MTU
-                while let Some(entry) = self.send_queue.peek() {
-                    let encoded_size = entry.data.encoded_size();
-
-                    if frame_size + encoded_size <= max_size {
-                        let entry = self.send_queue.pop().unwrap();
-                        if entry.reliable {
-                            reliable_entries.push(entry.data);
-                        } else {
-                            unreliable_entries.push(entry.data);
-                        }
-                        frame_size += encoded_size;
-                        num_entries += 1;
-                    } else {
-                        // Size limit reached, assemble frame
-                        break;
-                    }
-                }
-
-                if num_entries == 0 {
-                    return Err(());
-                }
-
-                let sequence_id = self.next_sequence_id;
-
-                if reliable_entries.len() > 0 {
-                    // This claims the sequence id
-                    self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
-
-                    // Assemble frame of reliable datagrams to resend later
-                    let needs_ack = true;
-                    let resend_frame = frame::Data::new(needs_ack, sequence_id, reliable_entries);
-
-                    self.resend_queue.push_back(ResendEntry::new(resend_frame.to_bytes(), now, sequence_id));
-
-                    reliable_entries = resend_frame.entries;
-                }
-
-                // Assemble frame of all datagrams
-                let needs_ack = reliable_entries.len() != 0;
-
-                let mut all_entries = reliable_entries;
-                all_entries.append(&mut unreliable_entries);
-
-                return Ok(Some(frame::Data::new(needs_ack, sequence_id, all_entries)));
-            }
-        }
-
-        return Ok(None);
-    }
-
     fn try_send_acks(&mut self, sink: & dyn DataSink) -> Result<(),()> {
         while !self.ack_queue.is_empty() {
             let max_size = std::cmp::min(MTU, self.bw_counter.bytes_remaining());
@@ -299,13 +237,168 @@ impl FrameIO {
         return Ok(());
     }
 
-    fn try_send_datagrams(&mut self, now: time::Instant, sink: & dyn DataSink) -> Result<(),()> {
-        while let Some(frame) = self.pull_data_frame(now, self.bw_counter.bytes_remaining())? {
-            let frame_data = frame.to_bytes();
-            sink.send(&frame_data);
-            self.bw_counter.mark_sent(frame_data.len());
+    fn try_send_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
+        // Assembles and sends as many frames as possible, with datagrams taken from the send queue
+        // in order, subject to the frame size limit, the total bandwidth limit, the reliable
+        // congestion window limit, and the maximum sequence id transfer window, ensuring that
+        // inter-packet-wise, no reliable datagrams are sent prior to any preceding datagrams. All
+        // unreliable datagrams are removed from the send queue, whether or not they've been sent.
+        //
+        // All entries in the send queue must have an encoded size such that they may be stored in
+        // a frame satisfying the MTU (i.e. encoded_size <= MTU - FRAME_HEADER_SIZE_BYTES).
+
+        let frame_overhead_bytes = frame::Data::HEADER_SIZE_BYTES;
+        let frame_limit_bytes = MTU;
+
+        let total_limit_bytes = self.bw_counter.bytes_remaining().max(frame_limit_bytes);
+        let reliable_limit_bytes = frame_limit_bytes; // TODO: Actual reliable limit
+        let end_sequence_id = self.base_sequence_id.wrapping_add(Self::TRANSFER_WINDOW_SIZE);
+
+        let mut total_bytes_remaining = total_limit_bytes;
+        let mut reliable_bytes_remaining = reliable_limit_bytes;
+
+        {
+            let mut entry_iter = self.send_queue.iter_mut();
+            let mut entry_kv = entry_iter.next();
+
+            let mut permit_reliable = true;
+
+            // Assemble as many data frames as possible
+            while entry_kv.is_some() {
+                let mut frame_size = frame_overhead_bytes;
+                let mut frame_size_reliable = None;
+                let mut frame_sequence_id = None;
+
+                let mut rel_dgs = Vec::new();
+                let mut unrel_dgs = Vec::new();
+
+                // Add as many datagrams (send entries) as possible
+                while let Some(entry) = entry_kv.as_mut() {
+                    if entry.reliable && !permit_reliable {
+                        // A previous reliable datagram would have exceeded the reliable congestion window
+                        entry_kv = entry_iter.next();
+                        continue;
+                    }
+
+                    let encoded_size = entry.data.as_ref().unwrap().encoded_size();
+
+                    if entry.reliable {
+                        let hyp_frame_size_reliable = frame_size_reliable.unwrap_or(frame_overhead_bytes) + encoded_size;
+
+                        // This datagram alone must not exceed the reliable transfer limit, or it will never leave the queue!
+                        assert!(frame_overhead_bytes + encoded_size <= reliable_limit_bytes);
+
+                        if hyp_frame_size_reliable > reliable_bytes_remaining {
+                            // Would be too large for reliable congestion window, stop considering reliable packets
+                            permit_reliable = false;
+                            entry_kv = entry_iter.next();
+                            continue;
+                        }
+
+                        let hyp_sequence_id = self.next_sequence_id;
+                        if hyp_sequence_id == end_sequence_id {
+                            // Would not have a valid sequence id, stop considering reliable packets
+                            permit_reliable = false;
+                            entry_kv = entry_iter.next();
+                            continue;
+                        }
+                    }
+
+                    let hyp_frame_size = frame_size + encoded_size;
+
+                    // This datagram alone must not exceed the total transfer limit, or we will loop forever!
+                    assert!(frame_overhead_bytes + encoded_size <= total_limit_bytes);
+
+                    if hyp_frame_size > total_bytes_remaining {
+                        // Would be too large for bandwidth window, assemble and stop
+                        entry_kv = None;
+                        break;
+                    }
+
+                    // This datagram alone must not exceed the frame limit, or we will loop forever!
+                    assert!(frame_overhead_bytes + encoded_size <= frame_limit_bytes);
+
+                    if hyp_frame_size > frame_limit_bytes {
+                        // Would be too large for this frame, assemble and continue
+                        break;
+                    }
+
+                    // Verification complete, add datagram to this frame
+
+                    let data = entry.data.take();
+                    if entry.reliable {
+                        rel_dgs.push(data.unwrap());
+                    } else {
+                        unrel_dgs.push(data.unwrap());
+                    }
+
+                    frame_size += encoded_size;
+                    if entry.reliable {
+                        if let Some(size) = frame_size_reliable {
+                            // Subsequent reliable datagram added
+                            frame_size_reliable = Some(size + encoded_size);
+                        } else {
+                            // First reliable datagram added, acquire sequence id
+                            frame_size_reliable = Some(frame_overhead_bytes + encoded_size);
+                            frame_sequence_id = Some(self.next_sequence_id);
+                            self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
+                        };
+                    }
+
+                    entry_kv = entry_iter.next();
+                }
+
+                // Frame complete!
+
+                total_bytes_remaining -= frame_size;
+                if let Some(size) = frame_size_reliable {
+                    reliable_bytes_remaining -= size;
+                }
+
+                self.bw_counter.mark_sent(frame_size);
+
+                if rel_dgs.len() == 0 && unrel_dgs.len() > 0 {
+                    // Send simple frame containing only unreliable datagrams
+                    let needs_ack = false;
+                    let send_frame = frame::Data::new(needs_ack, 0, unrel_dgs);
+                    let frame_data = send_frame.to_bytes();
+                    assert!(frame_data.len() == frame_size);
+                    sink.send(&frame_data);
+                } else if rel_dgs.len() > 0 && unrel_dgs.len() == 0 {
+                    // Send & save simple frame containing only reliable datagrams
+                    let needs_ack = true;
+                    let seq_id = frame_sequence_id.unwrap();
+                    let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
+                    let frame_data = resend_frame.to_bytes();
+                    assert!(frame_data.len() == frame_size);
+                    assert!(frame_data.len() == frame_size_reliable.unwrap());
+                    sink.send(&frame_data);
+                    self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
+                } else if rel_dgs.len() > 0 && unrel_dgs.len() > 0 {
+                    let needs_ack = rel_dgs.len() > 0;
+                    let seq_id = frame_sequence_id.unwrap();
+                    if rel_dgs.len() > 0 {
+                        // Save frame containing reliable datagrams
+                        let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
+                        let frame_data = resend_frame.to_bytes();
+                        assert!(frame_data.len() == frame_size_reliable.unwrap());
+                        self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
+                        // Take back the reliable datagrams
+                        rel_dgs = resend_frame.entries;
+                    }
+                    // Send frame containing all datagrams
+                    let mut all_dgs = rel_dgs;
+                    all_dgs.append(&mut unrel_dgs);
+                    let send_frame = frame::Data::new(needs_ack, seq_id, all_dgs);
+                    let frame_data = send_frame.to_bytes();
+                    assert!(frame_data.len() == frame_size);
+                    sink.send(&frame_data);
+                }
+            }
         }
-        return Ok(());
+
+        // Retain reliable entries which still have data
+        self.send_queue.retain(|entry| entry.data.is_some() && entry.reliable == true);
     }
 
     pub fn step(&mut self, now: time::Instant) {
@@ -319,9 +412,7 @@ impl FrameIO {
         if self.try_send_resends(now, timeout, sink).is_err() {
             return;
         }
-        if self.try_send_datagrams(now, sink).is_err() {
-            return;
-        }
+        self.try_send_data(now, sink);
     }
 
     pub fn is_idle(&self) -> bool {
