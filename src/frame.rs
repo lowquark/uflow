@@ -133,6 +133,10 @@ impl DataEntry {
     const SENTINEL_TYPE_ID: u8 = 1;
     const WINDOW_ACK_TYPE_ID: u8 = 2;
 
+    pub const FRAGMENT_HEADER_SIZE_BYTES: usize = 13;
+    pub const SENTINEL_SIZE_BYTES: usize = 7;
+    pub const WINDOW_ACK_SIZE_BYTES: usize = 5;
+
     fn read_fragment(buf: &[u8]) -> Option<(DataEntry, &[u8])> {
         let header_size = 13;
 
@@ -325,10 +329,10 @@ impl DataEntry {
     pub fn encoded_size(&self) -> usize {
         match &self.message {
             Message::Datagram(dg) => match &dg.payload {
-                Payload::Fragment(fr) => 13 + fr.data.len(),
-                Payload::Sentinel => 7,
+                Payload::Fragment(fr) => Self::FRAGMENT_HEADER_SIZE_BYTES + fr.data.len(),
+                Payload::Sentinel => Self::SENTINEL_SIZE_BYTES,
             }
-            Message::WindowAck(_) => 5,
+            Message::WindowAck(_) => Self::WINDOW_ACK_SIZE_BYTES,
         }
     }
 }
