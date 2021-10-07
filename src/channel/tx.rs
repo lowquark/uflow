@@ -26,6 +26,8 @@ pub struct Tx {
 }
 
 impl Tx {
+    const MAX_PACKET_SIZE: usize = 65536*FRAGMENT_SIZE;
+
     pub fn new() -> Self {
         Self {
             next_sequence_id: 0,
@@ -35,7 +37,7 @@ impl Tx {
         }
     }
 
-    pub fn enqueue_packet(&mut self, sequence_id: seq::Id, dependent_id: Option<seq::Id>, data: Box<[u8]>, reliable: bool) {
+    fn enqueue_packet(&mut self, sequence_id: seq::Id, dependent_id: Option<seq::Id>, data: Box<[u8]>, reliable: bool) {
         let num_full_fragments = data.len() / FRAGMENT_SIZE;
         let bytes_remaining = data.len() % FRAGMENT_SIZE;
 
@@ -70,7 +72,7 @@ impl Tx {
         }
     }
 
-    pub fn enqueue_sentinel(&mut self, sequence_id: seq::Id, dependent_id: Option<seq::Id>) {
+    fn enqueue_sentinel(&mut self, sequence_id: seq::Id, dependent_id: Option<seq::Id>) {
         let dependent_lead = dependent_id.map_or(0, |id| seq::lead_unsigned(sequence_id, id) as u16);
 
         self.send_queue.push_back((
@@ -80,6 +82,8 @@ impl Tx {
     }
 
     pub fn enqueue(&mut self, data: Box<[u8]>, mode: SendMode) {
+        assert!(data.len() <= Self::MAX_PACKET_SIZE, "Packet size exceeds maximum of {} bytes", Self::MAX_PACKET_SIZE);
+
         if let Some(last_id) = self.last_reliable_id {
             if seq::lead_unsigned(self.next_sequence_id, last_id) >= TRANSFER_WINDOW_SIZE {
                 self.last_reliable_id = None;
@@ -186,6 +190,88 @@ fn test_basic_send() {
 }
 
 #[test]
+fn test_basic_send_fragmented() {
+    let mut tx = Tx::new();
+
+    let p0 = (0..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+    let p0_a = (0..FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+    let p0_b = (FRAGMENT_SIZE..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+
+    let modes = vec![ SendMode::Unreliable, SendMode::Reliable, SendMode::Passive ];
+    let sequence_ids = vec![ 0, 1, 2 ];
+    let dependent_leads = vec![ 0, 0, 1 ];
+    let reliable_flags = vec![ false, true, true ];
+
+    for i in 0..3 {
+        let mode = modes[i];
+
+        tx.enqueue(p0.clone(), mode);
+
+        let (dg0,r0) = tx.try_send().unwrap();
+        let (dg1,r1) = tx.try_send().unwrap();
+
+        assert_eq!(tx.try_send(), None);
+
+        assert_eq!(r0, reliable_flags[i]);
+        assert_eq!(r1, reliable_flags[i]);
+
+        assert_eq!(dg0, Datagram {
+            sequence_id: sequence_ids[i],
+            dependent_lead: dependent_leads[i],
+            payload: Payload::Fragment(Fragment {
+                fragment_id: 0,
+                last_fragment_id: 1,
+                data: p0_a.clone(),
+            })
+        });
+
+        assert_eq!(dg1, Datagram {
+            sequence_id: sequence_ids[i],
+            dependent_lead: dependent_leads[i],
+            payload: Payload::Fragment(Fragment {
+                fragment_id: 1,
+                last_fragment_id: 1,
+                data: p0_b.clone(),
+            })
+        });
+    }
+}
+
+#[test]
+fn test_max_packet_size() {
+    let mut tx = Tx::new();
+
+    let p0 = (0..FRAGMENT_SIZE*65536).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+
+    tx.enqueue(p0, SendMode::Reliable);
+
+    for i in 0..65536 {
+        let (dg, _) = tx.try_send().unwrap();
+        assert_eq!(dg, Datagram {
+            sequence_id: 0,
+            dependent_lead: 0,
+            payload: Payload::Fragment(Fragment {
+                fragment_id: i as u16,
+                last_fragment_id: 65535,
+                data: (i*FRAGMENT_SIZE..(i+1)*FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice(),
+            })
+        });
+    }
+
+    assert_eq!(tx.try_send(), None);
+}
+
+#[test]
+#[should_panic]
+fn test_max_packet_size_err() {
+    let mut tx = Tx::new();
+
+    let p0 = (0..FRAGMENT_SIZE*65536+1).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+
+    tx.enqueue(p0, SendMode::Reliable);
+}
+
+#[test]
 fn test_dependents() {
     let mut tx = Tx::new();
 
@@ -275,6 +361,4 @@ fn test_window_acks() {
 
     assert_eq!(tx.try_send(), None);
 }
-
-// TODO: Test fragmentation
 
