@@ -130,6 +130,10 @@ impl Client {
     pub fn is_zombie(&self) -> bool {
         self.peer_ref.borrow().is_zombie()
     }
+
+    pub fn rtt_ms(&self) -> f64 {
+        self.peer_ref.borrow().rtt_ms()
+    }
 }
 
 impl Host {

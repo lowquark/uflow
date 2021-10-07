@@ -39,13 +39,93 @@ pub enum Event {
     Timeout,
 }
 
+struct Ping {
+    sequence_id: u16,
+    instant: time::Instant,
+}
+
+struct PingRtt {
+    ping_history: Vec<Ping>,
+    next_sequence_id: u16,
+    srtt_ms: f64,
+    sdrtt_ms: f64,
+    ping_received: bool,
+}
+
+impl PingRtt {
+    const DEFAULT_RTT_MS: f64 = 100.0;
+    const PING_TIMEOUT_MS: u64 = 3000;
+    const RTT_SMOOTH_ALPHA: f64 = 0.875;
+    const DRTT_SMOOTH_ALPHA: f64 = 0.875;
+    const RTO_SDRTT_U: f64 = 4.0;
+
+    pub fn new() -> Self {
+        Self {
+            ping_history: Vec::new(),
+            next_sequence_id: 0,
+            srtt_ms: Self::DEFAULT_RTT_MS,
+            sdrtt_ms: 0.0,
+            ping_received: false,
+        }
+    }
+
+    fn update_rtt(&mut self, rtt_ms: f64) {
+        if !self.ping_received {
+            self.ping_received = true;
+            self.srtt_ms = rtt_ms;
+            self.sdrtt_ms = 0.0;
+        } else {
+            self.srtt_ms = Self::RTT_SMOOTH_ALPHA*self.srtt_ms + (1.0 - Self::RTT_SMOOTH_ALPHA)*rtt_ms;
+            self.sdrtt_ms = Self::DRTT_SMOOTH_ALPHA*self.sdrtt_ms + (1.0 - Self::DRTT_SMOOTH_ALPHA)*(rtt_ms - self.srtt_ms).abs();
+        }
+    }
+
+    pub fn new_ping(&mut self, now: time::Instant) -> u16 {
+        let sequence_id = self.next_sequence_id;
+        self.ping_history.push(Ping { sequence_id: sequence_id, instant: now } );
+        self.next_sequence_id = self.next_sequence_id.wrapping_add(1);
+        sequence_id
+    }
+
+    pub fn handle_ack(&mut self, now: time::Instant, sequence_id: u16) {
+        for (idx, ping) in self.ping_history.iter().enumerate() {
+            if sequence_id == ping.sequence_id {
+                let rtt_ms = (now - ping.instant).as_secs_f64()*1_000.0;
+                self.ping_history.remove(idx);
+                self.update_rtt(rtt_ms);
+                break;
+            }
+        }
+
+        self.ping_history.retain(|ping| (now - ping.instant).as_millis() < Self::PING_TIMEOUT_MS as u128);
+    }
+
+    pub fn rtt_ms(&self) -> f64 {
+        self.srtt_ms
+    }
+
+    pub fn rto_ms(&self) -> f64 {
+        self.srtt_ms + Self::RTO_SDRTT_U*self.sdrtt_ms
+    }
+}
+
+const PING_INTERVAL_MS: u64 = 1000;
+const CONNECT_INTERVAL_MS: u64 = 500;
+const DISCONNECT_INTERVAL_MS: u64 = 500;
+const WATCHDOG_TIMEOUT_MS: u64 = 20000;
+
+static PING_INTERVAL: time::Duration = time::Duration::from_millis(PING_INTERVAL_MS);
+static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(CONNECT_INTERVAL_MS);
+static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(DISCONNECT_INTERVAL_MS);
+static WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(WATCHDOG_TIMEOUT_MS);
+
 pub struct Peer {
     state: State,
 
     watchdog_time: time::Instant,
     meta_send_time: Option<time::Instant>,
 
-    rto_ms: f32,
+    ping_rtt: PingRtt,
 
     // Connect, Disconnect, Ping
     meta_queue: VecDeque<Box<[u8]>>,
@@ -74,7 +154,7 @@ impl Peer {
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
 
-            rto_ms: 100.0,
+            ping_rtt: PingRtt::new(),
 
             meta_queue: VecDeque::new(),
             event_queue: VecDeque::new(),
@@ -153,11 +233,8 @@ impl Peer {
         }
     }
 
-    fn await_connect_ack_step(&mut self) {
-        let now = time::Instant::now();
-        let timeout = time::Duration::from_millis(500);
-
-        if self.meta_send_time.map_or(true, |time| now - time > timeout) {
+    fn await_connect_ack_step(&mut self, now: time::Instant) {
+        if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
             self.meta_send_time = Some(now);
             self.enqueue_meta(frame::Frame::Connect(frame::Connect {
                 version: 0,
@@ -196,11 +273,8 @@ impl Peer {
         }
     }
 
-    fn send_connect_step(&mut self) {
-        let now = time::Instant::now();
-        let timeout = time::Duration::from_millis(500);
-
-        if self.meta_send_time.map_or(true, |time| now - time > timeout) {
+    fn send_connect_step(&mut self, now: time::Instant) {
+        if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
             self.meta_send_time = Some(now);
             self.enqueue_meta(frame::Frame::Connect(frame::Connect {
                 version: 0,
@@ -215,6 +289,7 @@ impl Peer {
         self.state = State::Connected;
         self.watchdog_time = time::Instant::now();
 
+        self.meta_send_time = None;
         self.was_connected = true;
         self.disconnect_flush = false;
         self.event_queue.push_back(Event::Connect);
@@ -233,9 +308,15 @@ impl Peer {
                 self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
                 self.disconnected_enter();
             }
-            frame::Frame::PingAck(_) => {
-                // Our ping has been received, pet watchdog
-                self.watchdog_time = time::Instant::now();
+            frame::Frame::Ping(ping_frame) => {
+                // A ping has been received, acknowledge
+                self.enqueue_meta(frame::Frame::PingAck(frame::PingAck { sequence_id: ping_frame.sequence_id }));
+            }
+            frame::Frame::PingAck(ping_ack_frame) => {
+                // Our ping has been acknowledged, update RTT and pet watchdog
+                let now = time::Instant::now();
+                self.ping_rtt.handle_ack(now, ping_ack_frame.sequence_id);
+                self.watchdog_time = now;
             }
             frame::Frame::Data(data_frame) => {
                 self.frame_io.acknowledge_data_frame(&data_frame);
@@ -260,6 +341,16 @@ impl Peer {
     }
 
     fn connected_step(&mut self, now: time::Instant) {
+        // Try to send a ping
+        if self.meta_send_time.map_or(true, |time| now - time > PING_INTERVAL) {
+            self.meta_send_time = Some(now);
+            let sequence_id = self.ping_rtt.new_ping(now);
+            self.enqueue_meta(frame::Frame::Ping(frame::Ping {
+                sequence_id: sequence_id,
+            }));
+        }
+
+        // Deliver packets from rx channels to application
         for channel in self.channels.iter_mut() {
             while let Some(packet) = channel.rx.receive() {
                 self.event_queue.push_back(Event::Receive(packet));
@@ -269,6 +360,7 @@ impl Peer {
         self.frame_io.step(now);
 
         if self.disconnect_flush {
+            // Disconnect if there's no pending data --the application is expected to stop calling send()!
             if self.frame_io.is_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
                 self.send_disconnect_enter();
             }
@@ -298,11 +390,8 @@ impl Peer {
         }
     }
 
-    fn send_disconnect_step(&mut self) {
-        let now = time::Instant::now();
-        let timeout = time::Duration::from_millis(500);
-
-        if self.meta_send_time.map_or(true, |time| now - time > timeout) {
+    fn send_disconnect_step(&mut self, now: time::Instant) {
+        if self.meta_send_time.map_or(true, |time| now - time > DISCONNECT_INTERVAL) {
             self.meta_send_time = Some(now);
             self.enqueue_meta(frame::Frame::Disconnect(frame::Disconnect { }));
         }
@@ -328,6 +417,7 @@ impl Peer {
         }
     }
 
+    // State::Zombie
     fn zombie_enter(&mut self) {
         self.state = State::Zombie;
 
@@ -350,19 +440,17 @@ impl Peer {
         let now = time::Instant::now();
 
         if self.state != State::Zombie {
-            let watchdog_timeout = time::Duration::from_millis(20000);
-
-            if now - self.watchdog_time > watchdog_timeout {
+            if now - self.watchdog_time > WATCHDOG_TIMEOUT {
                 self.zombie_enter();
             }
         }
 
         match self.state {
             State::AwaitConnect => (),
-            State::AwaitConnectAck => self.await_connect_ack_step(),
-            State::SendConnect => self.send_connect_step(),
+            State::AwaitConnectAck => self.await_connect_ack_step(now),
+            State::SendConnect => self.send_connect_step(now),
             State::Connected => self.connected_step(now),
-            State::SendDisconnect => self.send_disconnect_step(),
+            State::SendDisconnect => self.send_disconnect_step(now),
             State::Disconnected => (),
             State::Zombie => (),
         }
@@ -374,11 +462,18 @@ impl Peer {
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
         let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
-        channel.tx.enqueue(data, mode);
+        match self.state {
+            State::AwaitConnect |
+            State::AwaitConnectAck |
+            State::SendConnect |
+            State::Connected => channel.tx.enqueue(data, mode),
+            _ => (),
+        }
     }
 
     fn flush_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
-        // TODO: Make this round-robin
+        // Take pending messages from tx channels and enqueue them for delivery
+        // TODO: Should this be round-robin?
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
@@ -390,7 +485,8 @@ impl Peer {
             }
         }
 
-        let timeout = time::Duration::from_millis(self.rto_ms.round() as u64);
+        // Flush any pending frames using a resend timeout computed by the ping mechanism
+        let timeout = time::Duration::from_millis(self.ping_rtt.rto_ms().round() as u64);
 
         self.frame_io.flush(now, timeout, sink);
     }
@@ -418,7 +514,11 @@ impl Peer {
     }
 
     pub fn is_zombie(&self) -> bool {
-        return self.state == State::Zombie;
+        self.state == State::Zombie
+    }
+
+    pub fn rtt_ms(&self) -> f64 {
+        self.ping_rtt.rtt_ms()
     }
 }
 
