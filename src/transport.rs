@@ -59,25 +59,31 @@ impl SendQueue {
 #[derive(Debug)]
 struct ResendEntry {
     frame_data: Box<[u8]>,
-    last_send_time: time::Instant,
     sequence_id: u32,
+    last_send_time: time::Instant,
+    send_count: u32,
 }
 
 impl ResendEntry {
     fn new(frame_data: Box<[u8]>, last_send_time: time::Instant, sequence_id: u32) -> Self {
         Self {
             frame_data: frame_data,
-            last_send_time: last_send_time,
             sequence_id: sequence_id,
+            last_send_time: last_send_time,
+            send_count: 1,
         }
     }
 
     fn mark_sent(&mut self, now: time::Instant) {
         self.last_send_time = now;
+        self.send_count += 1;
+        if self.send_count > 10 {
+            self.send_count = 0;
+        }
     }
 
     fn should_resend(&self, now: time::Instant, timeout: time::Duration) -> bool {
-        now - self.last_send_time > timeout
+        now - self.last_send_time > timeout*self.send_count
     }
 }
 
@@ -320,9 +326,6 @@ impl FrameIO {
                     if entry.reliable {
                         let hyp_frame_size_reliable = frame_size_reliable.unwrap_or(frame_overhead_bytes) + encoded_size;
 
-                        // This datagram alone must not exceed the reliable transfer limit, or it will never leave the queue!
-                        //assert!(frame_overhead_bytes + encoded_size <= reliable_limit_bytes);
-
                         if hyp_frame_size_reliable > reliable_bytes_remaining {
                             // Would be too large for reliable congestion window, stop considering reliable packets
                             permit_reliable = false;
@@ -340,9 +343,6 @@ impl FrameIO {
                     }
 
                     let hyp_frame_size = frame_size + encoded_size;
-
-                    // This datagram alone must not exceed the total transfer limit, or we will loop forever!
-                    //assert!(frame_overhead_bytes + encoded_size <= total_limit_bytes);
 
                     if hyp_frame_size > total_bytes_remaining {
                         // Would be too large for bandwidth window, assemble and stop
