@@ -95,12 +95,11 @@ struct LeakyBucket {
 }
 
 impl LeakyBucket {
-    const MIN_ALLOC_MAX: usize = MTU;
-
     fn new(byte_rate: usize, alloc_max: usize) -> Self {
         Self {
             alloc: 0,
-            alloc_max: alloc_max.max(Self::MIN_ALLOC_MAX),
+            // If the bucket cannot fill to at least one MTU, the queue will stall!
+            alloc_max: alloc_max.max(MTU),
             byte_rate: byte_rate,
             last_step_time: None,
         }
@@ -193,7 +192,8 @@ pub struct FrameIO {
 impl FrameIO {
     const TRANSFER_WINDOW_SIZE: u32 = 2048;
 
-    pub fn new() -> Self {
+    pub fn new(max_tx_bandwidth: usize, max_tx_step_bandwidth: usize) -> Self {
+        println!("max_tx_bandwidth: {}", max_tx_bandwidth);
         Self {
             send_queue: SendQueue::new(),
             resend_queue: VecDeque::new(),
@@ -201,8 +201,8 @@ impl FrameIO {
             next_sequence_id: 0,
             base_sequence_id: 0,
 
-            bandwidth_throttle: LeakyBucket::new(100_000, 3_000),
-            reliable_throttle: AimdBucket::new(100_000),
+            bandwidth_throttle: LeakyBucket::new(max_tx_bandwidth, max_tx_step_bandwidth),
+            reliable_throttle: AimdBucket::new(max_tx_bandwidth),
         }
     }
 

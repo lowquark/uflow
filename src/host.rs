@@ -38,8 +38,8 @@ impl<'a> DataSink for PeerDataSink<'a> {
 pub struct Params {
     num_channels: u32,
     priority_channels: Range<u32>,
-    min_peer_tx_bandwidth: u32,
     max_peer_tx_bandwidth: u32,
+    max_peer_tx_step_bandwidth: u32,
     max_peer_rx_bandwidth: u32,
     max_connected_peers: u32,
     // TODO: Blacklist, whitelist
@@ -50,8 +50,8 @@ impl Params {
         Self {
             num_channels: 1,
             priority_channels: 0..0,
-            min_peer_tx_bandwidth: 10_000,
             max_peer_tx_bandwidth: 1_000_000,
+            max_peer_tx_step_bandwidth: 30_000,
             max_peer_rx_bandwidth: 1_000_000,
             max_connected_peers: 10,
         }
@@ -67,13 +67,9 @@ impl Params {
         self
     }
 
-    pub fn min_peer_tx_bandwidth(mut self, bandwidth: u32) -> Params {
-        self.min_peer_tx_bandwidth = bandwidth;
-        self
-    }
-
-    pub fn max_peer_tx_bandwidth(mut self, bandwidth: u32) -> Params {
+    pub fn max_peer_tx_bandwidth(mut self, bandwidth: u32, step_bandwidth: u32) -> Params {
         self.max_peer_tx_bandwidth = bandwidth;
+        self.max_peer_tx_step_bandwidth = step_bandwidth;
         self
     }
 
@@ -147,8 +143,8 @@ impl Host {
             peer_list: HashMap::new(),
             peer_params: peer::Params {
                 num_channels: params.num_channels,
-                min_tx_bandwidth: params.min_peer_tx_bandwidth,
                 max_tx_bandwidth: params.max_peer_tx_bandwidth,
+                max_tx_step_bandwidth: params.max_peer_tx_step_bandwidth,
                 max_rx_bandwidth: params.max_peer_rx_bandwidth,
                 priority_channels: params.priority_channels,
             },

@@ -17,8 +17,8 @@ use super::transport;
 #[derive(Clone,Debug)]
 pub struct Params {
     pub num_channels: u32,
-    pub min_tx_bandwidth: u32,
     pub max_tx_bandwidth: u32,
+    pub max_tx_step_bandwidth: u32,
     pub max_rx_bandwidth: u32,
     pub priority_channels: Range<u32>,
 }
@@ -52,6 +52,7 @@ static WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(WATCHDOG_T
 
 pub struct Peer {
     state: State,
+    params: Params,
 
     watchdog_time: time::Instant,
     meta_send_time: Option<time::Instant>,
@@ -63,7 +64,7 @@ pub struct Peer {
     // Connecting stuff
     connect_frame: frame::Connect,
     connect_ack_received: bool,
-    connect_received: bool,
+    connect_frame_remote: Option<frame::Connect>,
 
     // Connected stuff
     ping_rtt: rtt::PingRtt,
@@ -71,7 +72,6 @@ pub struct Peer {
     disconnect_flush: bool,
 
     channels: Vec<channel::Channel>,
-    priority_channels: Range<u32>,
     frame_io: transport::FrameIO,
 }
 
@@ -94,6 +94,7 @@ impl Peer {
 
         Self {
             state: State::Connecting,
+            params: params,
 
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
@@ -103,15 +104,14 @@ impl Peer {
 
             connect_frame: connect_frame,
             connect_ack_received: false,
-            connect_received: false,
+            connect_frame_remote: None,
 
             ping_rtt: rtt::PingRtt::new(),
             was_connected: false,
             disconnect_flush: false,
 
             channels: channels,
-            priority_channels: params.priority_channels,
-            frame_io: transport::FrameIO::new(),
+            frame_io: transport::FrameIO::new(0, 0),
         }
     }
 
@@ -119,20 +119,29 @@ impl Peer {
         self.meta_queue.push_back(frame.to_bytes());
     }
 
+    // State::Connecting
     fn verify_connect_info(&self, remote_info: &frame::Connect, local_info: &frame::Connect) -> bool {
         remote_info.num_channels == local_info.num_channels && remote_info.version == local_info.version
     }
 
-    // State::Connecting
+    fn try_enter_connected(&mut self) {
+        if self.connect_ack_received {
+            if let Some(connect_frame) = &self.connect_frame_remote {
+                let max_tx_bandwidth = self.params.max_tx_bandwidth.min(connect_frame.rx_bandwidth_max);
+
+                self.connected_enter(max_tx_bandwidth);
+            }
+        }
+    }
+
     fn connecting_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
             frame::Frame::ConnectAck(connect_ack_frame) => {
                 if connect_ack_frame.sequence_id == self.connect_frame.sequence_id {
                     // The remote peer acknowledged our connection request, stop sending more
                     self.connect_ack_received = true;
-                    if self.connect_ack_received && self.connect_received {
-                        self.connected_enter();
-                    }
+                    // Try to enter connected state
+                    self.try_enter_connected();
                 } else {
                     // The acknowledgement doesn't match our connection request id, fail lol
                     self.send_disconnect_enter();
@@ -140,13 +149,12 @@ impl Peer {
             }
             frame::Frame::Connect(connect_frame) => {
                 if self.verify_connect_info(&connect_frame, &self.connect_frame) {
-                    self.connect_received = true;
-
+                    // Connection is possible, acknowledge request
                     self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { sequence_id: connect_frame.sequence_id }));
-
-                    if self.connect_ack_received && self.connect_received {
-                        self.connected_enter();
-                    }
+                    // Save remote connection request
+                    self.connect_frame_remote = Some(connect_frame);
+                    // Try to enter connected state
+                    self.try_enter_connected();
                 } else {
                     // The connection is not possible
                     self.send_disconnect_enter();
@@ -172,7 +180,7 @@ impl Peer {
     }
 
     // State::Connected
-    fn connected_enter(&mut self) {
+    fn connected_enter(&mut self, max_tx_bandwidth: u32) {
         self.state = State::Connected;
         self.watchdog_time = time::Instant::now();
 
@@ -180,6 +188,11 @@ impl Peer {
         self.was_connected = true;
         self.disconnect_flush = false;
         self.event_queue.push_back(Event::Connect);
+
+        // TODO: This is icky, should an entire connected state object be created here?
+        // TODO: Is it problematic that max_tx_bandwidth is the min of the respective local/remote
+        // bandwidths, but that max_tx_step_bandwidth is always determined by the local peer?
+        self.frame_io = transport::FrameIO::new(max_tx_bandwidth as usize, self.params.max_tx_step_bandwidth as usize);
     }
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
@@ -356,11 +369,11 @@ impl Peer {
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
-                self.frame_io.enqueue_datagram(data_entry, is_reliable, self.priority_channels.contains(&(channel_id as u32)));
+                self.frame_io.enqueue_datagram(data_entry, is_reliable, self.params.priority_channels.contains(&(channel_id as u32)));
             }
             if let Some(window_ack) = channel.rx.take_window_ack() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::WindowAck(window_ack));
-                self.frame_io.enqueue_datagram(data_entry, true, self.priority_channels.contains(&(channel_id as u32)));
+                self.frame_io.enqueue_datagram(data_entry, true, self.params.priority_channels.contains(&(channel_id as u32)));
             }
         }
 
