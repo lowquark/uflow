@@ -210,13 +210,15 @@ pub struct FrameIO {
 impl FrameIO {
     const TRANSFER_WINDOW_SIZE: u32 = 2048;
 
-    pub fn new(max_tx_bandwidth: usize) -> Self {
+    pub fn new(tx_sequence_id: u32, _rx_sequence_id: u32, max_tx_bandwidth: usize) -> Self {
+        // TODO: Specifying an initial sequence id doesn't really protect against anything unless a
+        // receive window is used!
         Self {
             send_queue: SendQueue::new(),
             resend_queue: VecDeque::new(),
             ack_queue: VecDeque::new(),
-            next_sequence_id: 0,
-            base_sequence_id: 0,
+            next_sequence_id: tx_sequence_id,
+            base_sequence_id: tx_sequence_id,
 
             bandwidth_throttle: LeakyBucket::new(max_tx_bandwidth),
             reliable_throttle: AimdBucket::new(max_tx_bandwidth),

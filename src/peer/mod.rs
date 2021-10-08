@@ -110,7 +110,7 @@ impl Peer {
             disconnect_flush: false,
 
             channels: channels,
-            frame_io: transport::FrameIO::new(0),
+            frame_io: transport::FrameIO::new(0, 0, 0),
         }
     }
 
@@ -126,9 +126,10 @@ impl Peer {
     fn try_enter_connected(&mut self) {
         if self.connect_ack_received {
             if let Some(connect_frame) = &self.connect_frame_remote {
+                let tx_sequence_id = connect_frame.sequence_id;
+                let rx_sequence_id = self.connect_frame.sequence_id;
                 let max_tx_bandwidth = self.params.max_tx_bandwidth.min(connect_frame.rx_bandwidth_max);
-
-                self.connected_enter(max_tx_bandwidth);
+                self.connected_enter(tx_sequence_id, rx_sequence_id, max_tx_bandwidth as usize);
             }
         }
     }
@@ -179,7 +180,7 @@ impl Peer {
     }
 
     // State::Connected
-    fn connected_enter(&mut self, max_tx_bandwidth: u32) {
+    fn connected_enter(&mut self, tx_sequence_id: u32, rx_sequence_id: u32, max_tx_bandwidth: usize) {
         self.state = State::Connected;
         self.watchdog_time = time::Instant::now();
 
@@ -189,7 +190,7 @@ impl Peer {
         self.event_queue.push_back(Event::Connect);
 
         // TODO: This is icky, should an entire connected state object be created here?
-        self.frame_io = transport::FrameIO::new(max_tx_bandwidth as usize);
+        self.frame_io = transport::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
     }
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
