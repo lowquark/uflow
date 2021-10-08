@@ -51,23 +51,32 @@ impl FragAsm {
     fn new(fragment: Fragment) -> Self {
         assert!(validate_fragment(&fragment));
 
-        let num_fragments = fragment.last_fragment_id as usize + 1;
-        let fragment_id = fragment.fragment_id as usize;
+        if fragment.fragment_id == 0 && fragment.last_fragment_id == 0 {
+            Self {
+                fragments_remaining: 0,
+                total_size: fragment.data.len(),
+                data: fragment.data.into_vec(),
+                data_recv: vec![true; 0],
+            }
+        } else {
+            let num_fragments = fragment.last_fragment_id as usize + 1;
+            let fragment_id = fragment.fragment_id as usize;
 
-        let mut data = vec![0u8; num_fragments*FRAGMENT_SIZE];
-        data[fragment_id*FRAGMENT_SIZE ..
-             fragment_id*FRAGMENT_SIZE + fragment.data.len()].copy_from_slice(&fragment.data);
+            let mut data = vec![0u8; num_fragments*FRAGMENT_SIZE];
+            data[fragment_id*FRAGMENT_SIZE ..
+                 fragment_id*FRAGMENT_SIZE + fragment.data.len()].copy_from_slice(&fragment.data);
 
-        let mut data_recv = vec![false; num_fragments];
-        data_recv[fragment_id] = true;
+            let mut data_recv = vec![false; num_fragments];
+            data_recv[fragment_id] = true;
 
-        let total_size: usize = fragment.data.len();
+            let total_size: usize = fragment.data.len();
 
-        Self {
-            fragments_remaining: num_fragments - 1,
-            total_size: total_size,
-            data: data,
-            data_recv: data_recv,
+            Self {
+                fragments_remaining: num_fragments - 1,
+                total_size: total_size,
+                data: data,
+                data_recv: data_recv,
+            }
         }
     }
 
