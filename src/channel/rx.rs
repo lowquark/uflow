@@ -5,6 +5,7 @@ use super::Datagram;
 use super::WindowAck;
 
 use super::FRAGMENT_SIZE;
+use super::MAX_PACKET_SIZE;
 use super::TRANSFER_WINDOW_SIZE;
 use super::WINDOW_ACK_SPACING;
 
@@ -120,6 +121,7 @@ struct Entry {
     pub sequence_id: seq::Id,
     pub dependent_lead: u16,
     pub frag_asm: Option<FragAsm>,
+    pub dud: bool,
 }
 
 impl Entry {
@@ -128,6 +130,16 @@ impl Entry {
             sequence_id: sequence_id,
             dependent_lead: dependent_lead,
             frag_asm: None,
+            dud: false,
+        }
+    }
+
+    fn new_dud(sequence_id: seq::Id, dependent_lead: u16) -> Self {
+        Self {
+            sequence_id: sequence_id,
+            dependent_lead: dependent_lead,
+            frag_asm: None,
+            dud: true,
         }
     }
 
@@ -155,6 +167,10 @@ impl Entry {
             None
         }
     }
+
+    fn is_dud(&self) -> bool {
+        self.dud
+    }
 }
 
 pub struct Rx {
@@ -164,14 +180,19 @@ pub struct Rx {
     receive_queue: VecDeque<Entry>,
     // Pending window acknowledgement
     window_ack: Option<WindowAck>,
+    // Maximum packet size we will receive
+    max_packet_size: usize,
 }
 
 impl Rx {
-    pub fn new() -> Self {
+    pub fn new(max_packet_size: usize) -> Self {
+        assert!(max_packet_size <= MAX_PACKET_SIZE);
+
         Self {
             base_sequence_id: 0,
             receive_queue: VecDeque::new(),
             window_ack: None,
+            max_packet_size: max_packet_size,
         }
     }
 
@@ -185,6 +206,21 @@ impl Rx {
 
         if datagram_lead >= TRANSFER_WINDOW_SIZE {
             return;
+        }
+
+        if let Payload::Fragment(ref fragment) = datagram.payload {
+            if (fragment.last_fragment_id as usize)*FRAGMENT_SIZE > self.max_packet_size {
+                // A lower bound on the total packet size is greater than the maximum packet size.
+                // Enqueue a dud entry instead of allocating the required memory.
+                match self.receive_queue.binary_search_by(|entry| seq::lead_unsigned(entry.sequence_id, ref_id).cmp(&datagram_lead)) {
+                    Err(idx) => {
+                        let entry = Entry::new_dud(datagram.sequence_id, datagram.dependent_lead);
+                        self.receive_queue.insert(idx, entry);
+                    }
+                    _ => ()
+                }
+                return;
+            }
         }
 
         match self.receive_queue.binary_search_by(|entry| seq::lead_unsigned(entry.sequence_id, ref_id).cmp(&datagram_lead)) {
@@ -222,26 +258,40 @@ impl Rx {
                 let lead = entry.dependent_lead as u32;
 
                 if lead != 0 && lead <= seq::lead_unsigned(entry.sequence_id, self.base_sequence_id) {
+                    // Dependency not yet received
                     return None;
                 }
 
-                if let Some(packet) = entry.try_assemble() {
+                let mut deliver = false;
+                let mut deliver_packet = None;
+
+                if entry.is_dud() {
+                    deliver = true;
+                    deliver_packet = None;
+                } else if let Some(packet) = entry.try_assemble() {
+                    deliver = true;
+                    if packet.len() <= self.max_packet_size {
+                        deliver_packet = Some(packet);
+                    } else {
+                        // Packet sizes can't be predicted up front, deliver None in case the
+                        // application relies on the maximum packet size.
+                        deliver_packet = None;
+                    }
+                } else {
+                    let last_lead = seq::lead_unsigned(last_id, entry.sequence_id);
+                    if last_lead >= TRANSFER_WINDOW_SIZE - WINDOW_ACK_SPACING {
+                        deliver = true;
+                        deliver_packet = None;
+                    }
+                }
+
+                if deliver {
                     self.base_sequence_id = seq::add(entry.sequence_id, 1);
                     self.receive_queue.drain(..idx+1);
                     if let Some(ack) = Self::new_window_ack(prev_base_id, self.base_sequence_id) {
                         self.window_ack = Some(ack);
                     }
-                    return Some(packet);
-                } else {
-                    let last_lead = seq::lead_unsigned(last_id, entry.sequence_id);
-                    if last_lead >= TRANSFER_WINDOW_SIZE - WINDOW_ACK_SPACING {
-                        self.base_sequence_id = seq::add(entry.sequence_id, 1);
-                        self.receive_queue.drain(..idx+1);
-                        if let Some(ack) = Self::new_window_ack(prev_base_id, self.base_sequence_id) {
-                            self.window_ack = Some(ack);
-                        }
-                        return None;
-                    }
+                    return deliver_packet;
                 }
             }
         }
@@ -252,7 +302,7 @@ impl Rx {
 
 #[test]
 fn test_basic_receive() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -302,7 +352,7 @@ fn test_basic_receive() {
 
 #[test]
 fn test_basic_receive_fragments() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = (0..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
     let p0_a = (0..FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
@@ -339,7 +389,7 @@ fn test_basic_receive_fragments() {
 
 #[test]
 fn test_max_packet_size() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     for i in 0..65536 {
         let dg = Datagram {
@@ -361,8 +411,30 @@ fn test_max_packet_size() {
 }
 
 #[test]
+fn test_max_packet_size_exceeded() {
+    let mut rx = Rx::new(3*FRAGMENT_SIZE + FRAGMENT_SIZE-1);
+
+    for i in 0..4 {
+        let dg = Datagram {
+            sequence_id: 0,
+            dependent_lead: 0,
+            payload: Payload::Fragment(Fragment {
+                fragment_id: i as u16,
+                last_fragment_id: 3,
+                data: (i*FRAGMENT_SIZE..(i+1)*FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice(),
+            })
+        };
+
+        rx.handle_datagram(dg);
+    }
+
+    assert_eq!(rx.receive(), None);
+    assert_eq!(rx.base_sequence_id, 1);
+}
+
+#[test]
 fn test_invalid_fragments() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -455,7 +527,7 @@ fn test_invalid_fragments() {
 
 #[test]
 fn test_reorder() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -505,7 +577,7 @@ fn test_reorder() {
 
 #[test]
 fn test_duplicates() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -560,7 +632,7 @@ fn test_duplicates() {
 
 #[test]
 fn test_stall() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0   = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = (0..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
@@ -642,7 +714,7 @@ fn test_stall() {
 
 #[test]
 fn test_skip() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0   = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1_b = vec![ 0,  1,  2,  3].into_boxed_slice();
@@ -703,7 +775,7 @@ fn test_skip() {
 
 #[test]
 fn test_sentinels() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -755,7 +827,7 @@ fn test_sentinels() {
 
 #[test]
 fn test_receive_window() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     let dg0 = Datagram {
         sequence_id: 0xFFFFFF,
@@ -793,7 +865,7 @@ fn test_receive_window() {
 
 #[test]
 fn test_window_acks() {
-    let mut rx = Rx::new();
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
 
     for i in 0..TRANSFER_WINDOW_SIZE {
         let dg0 = Datagram {

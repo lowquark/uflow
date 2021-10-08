@@ -20,6 +20,7 @@ pub struct Params {
     pub max_tx_bandwidth: u32,
     pub max_rx_bandwidth: u32,
     pub priority_channels: Range<u32>,
+    pub max_packet_size: u32,
 }
 
 #[derive(Clone,Copy,Debug,PartialEq)]
@@ -76,13 +77,8 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(params: Params) -> Self {
-        let mut channels = Vec::new();
-
         assert!(params.num_channels > 0, "Must have at least one channel");
         assert!(params.num_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
-        for _ in 0..params.num_channels {
-            channels.push(channel::Channel::new());
-        }
 
         let connect_frame = frame::Connect {
             version: PROTOCOL_VERSION,
@@ -109,7 +105,7 @@ impl Peer {
             was_connected: false,
             disconnect_flush: false,
 
-            channels: channels,
+            channels: Vec::new(),
             frame_io: transport::FrameIO::new(0, 0, 0),
         }
     }
@@ -190,6 +186,11 @@ impl Peer {
         self.event_queue.push_back(Event::Connect);
 
         // TODO: This is icky, should an entire connected state object be created here?
+        let mut channels = Vec::new();
+        for _ in 0..self.params.num_channels {
+            channels.push(channel::Channel::new(self.params.max_packet_size as usize));
+        }
+
         self.frame_io = transport::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
     }
 

@@ -5,6 +5,7 @@ use super::Datagram;
 use super::WindowAck;
 
 use super::FRAGMENT_SIZE;
+use super::MAX_PACKET_SIZE;
 use super::TRANSFER_WINDOW_SIZE;
 use super::WINDOW_ACK_SPACING;
 
@@ -23,17 +24,20 @@ pub struct Tx {
     base_sequence_id: u32,
     // Queue of outbound datagrams
     send_queue: VecDeque<(Datagram, bool)>,
+    // Maximum packet size we will attempt to transmit
+    max_packet_size: usize,
 }
 
 impl Tx {
-    const MAX_PACKET_SIZE: usize = 65536*FRAGMENT_SIZE;
+    pub fn new(max_packet_size: usize) -> Self {
+        assert!(max_packet_size <= MAX_PACKET_SIZE);
 
-    pub fn new() -> Self {
         Self {
             next_sequence_id: 0,
             last_reliable_id: None,
             base_sequence_id: 0,
             send_queue: VecDeque::new(),
+            max_packet_size: max_packet_size,
         }
     }
 
@@ -82,7 +86,7 @@ impl Tx {
     }
 
     pub fn enqueue(&mut self, data: Box<[u8]>, mode: SendMode) {
-        assert!(data.len() <= Self::MAX_PACKET_SIZE, "Packet size exceeds maximum of {} bytes", Self::MAX_PACKET_SIZE);
+        assert!(data.len() <= self.max_packet_size, "Packet size exceeds maximum of {} bytes", self.max_packet_size);
 
         if let Some(last_id) = self.last_reliable_id {
             if seq::lead_unsigned(self.next_sequence_id, last_id) >= TRANSFER_WINDOW_SIZE {
@@ -138,7 +142,7 @@ impl Tx {
 
 #[test]
 fn test_basic_send() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     let p1 = vec![ 4,  5,  6,  7].into_boxed_slice();
@@ -191,7 +195,7 @@ fn test_basic_send() {
 
 #[test]
 fn test_basic_send_fragmented() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     let p0 = (0..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
     let p0_a = (0..FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
@@ -239,7 +243,7 @@ fn test_basic_send_fragmented() {
 
 #[test]
 fn test_max_packet_size() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     let p0 = (0..FRAGMENT_SIZE*65536).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
 
@@ -264,16 +268,16 @@ fn test_max_packet_size() {
 #[test]
 #[should_panic]
 fn test_max_packet_size_err() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(2*FRAGMENT_SIZE);
 
-    let p0 = (0..FRAGMENT_SIZE*65536+1).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+    let p0 = (0..2*FRAGMENT_SIZE+1).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
 
     tx.enqueue(p0, SendMode::Reliable);
 }
 
 #[test]
 fn test_dependents() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     let p0 = vec![ 0,  1,  2,  3].into_boxed_slice();
     tx.enqueue(p0, SendMode::Reliable);
@@ -297,7 +301,7 @@ fn test_dependents() {
 
 #[test]
 fn test_sentinels() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     for _ in 0 .. TRANSFER_WINDOW_SIZE {
         tx.enqueue(vec![ 0,  1,  2,  3].into_boxed_slice(), SendMode::Unreliable);
@@ -326,7 +330,7 @@ fn test_sentinels() {
 
 #[test]
 fn test_window_acks() {
-    let mut tx = Tx::new();
+    let mut tx = Tx::new(MAX_PACKET_SIZE);
 
     for _ in 0 .. 2*TRANSFER_WINDOW_SIZE {
         tx.enqueue(vec![ 0,  1,  2,  3].into_boxed_slice(), SendMode::Unreliable);

@@ -1,8 +1,11 @@
 
-use super::peer;
+use super::channel;
 use super::frame;
-use super::MTU;
+use super::peer;
+
 use super::ChannelId;
+use super::DataSink;
+use super::MTU;
 use super::SendMode;
 
 use std::cell::RefCell;
@@ -10,8 +13,6 @@ use std::collections::HashMap;
 use std::net;
 use std::ops::Range;
 use std::rc::Rc;
-
-use super::DataSink;
 
 struct PeerDataSink<'a> {
     socket: &'a net::UdpSocket,
@@ -41,6 +42,7 @@ pub struct Params {
     max_peer_tx_bandwidth: u32,
     max_peer_rx_bandwidth: u32,
     max_connected_peers: u32,
+    max_packet_size: u32,
     // TODO: Blacklist, whitelist
 }
 
@@ -52,6 +54,7 @@ impl Params {
             max_peer_tx_bandwidth: 1_000_000,
             max_peer_rx_bandwidth: 1_000_000,
             max_connected_peers: 10,
+            max_packet_size: channel::MAX_PACKET_SIZE as u32,
         }
     }
 
@@ -77,6 +80,11 @@ impl Params {
 
     pub fn max_connected_peers(mut self, num_peers: u32) -> Params {
         self.max_connected_peers = num_peers;
+        self
+    }
+
+    pub fn max_packet_size(mut self, packet_size: u32) -> Params {
+        self.max_packet_size = packet_size;
         self
     }
 }
@@ -143,6 +151,7 @@ impl Host {
                 max_tx_bandwidth: params.max_peer_tx_bandwidth,
                 max_rx_bandwidth: params.max_peer_rx_bandwidth,
                 priority_channels: params.priority_channels,
+                max_packet_size: params.max_packet_size,
             },
             new_clients: Vec::new(),
             max_connected_peers: params.max_connected_peers,

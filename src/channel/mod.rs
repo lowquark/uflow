@@ -14,12 +14,15 @@ const WINDOW_ACK_SPACING: u32 = TRANSFER_WINDOW_SIZE / 32;
 // The largest permitted size for a given fragment
 const FRAGMENT_SIZE: usize = super::MTU - super::frame::Data::HEADER_SIZE_BYTES - super::frame::DataEntry::FRAGMENT_HEADER_SIZE_BYTES;
 
+// The largest possible size of a fragmented packet
+pub const MAX_PACKET_SIZE: usize = 65536*FRAGMENT_SIZE;
+
+type SendMode = super::SendMode;
+
 type Fragment = super::frame::Fragment;
 type Payload = super::frame::Payload;
 type Datagram = super::frame::Datagram;
 type WindowAck = super::frame::WindowAck;
-
-type SendMode = super::SendMode;
 
 pub struct Channel {
     pub tx: tx::Tx,
@@ -27,18 +30,18 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn new() -> Self {
+    pub fn new(max_packet_size: usize) -> Self {
         Self {
-            tx: tx::Tx::new(),
-            rx: rx::Rx::new(),
+            tx: tx::Tx::new(max_packet_size),
+            rx: rx::Rx::new(max_packet_size),
         }
     }
 }
 
 #[test]
 fn test_transmission() {
-    let mut tx = tx::Tx::new();
-    let mut rx = rx::Rx::new();
+    let mut tx = tx::Tx::new(MAX_PACKET_SIZE);
+    let mut rx = rx::Rx::new(MAX_PACKET_SIZE);
 
     let min_packet_size: usize = 0;
     let max_packet_size: usize = 5000;
