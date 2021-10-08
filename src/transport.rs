@@ -89,27 +89,45 @@ impl ResendEntry {
 
 struct LeakyBucket {
     alloc: usize,
-    alloc_max: usize,
     byte_rate: usize,
     last_step_time: Option<time::Instant>,
+    sdt: f64,
+    step_occurred: bool,
 }
 
 impl LeakyBucket {
-    fn new(byte_rate: usize, alloc_max: usize) -> Self {
+    const STEP_TIME_ALPHA: f64 = 0.875;
+    const BURSTINESS_FACTOR: f64 = 2.0;
+
+    fn new(byte_rate: usize) -> Self {
         Self {
             alloc: 0,
-            // If the bucket cannot fill to at least one MTU, the queue will stall!
-            alloc_max: alloc_max.max(MTU),
             byte_rate: byte_rate,
             last_step_time: None,
+            sdt: 0.0,
+            step_occurred: false,
         }
     }
 
     fn step(&mut self, now: time::Instant) {
         if let Some(last_step_time) = self.last_step_time {
             let delta_time = (now - last_step_time).as_secs_f64();
+
+            // Estimating the time delta is obnoxious, but having the user specify alloc_max makes
+            // for an odd bandwidth negotiation.
+            if self.step_occurred {
+                self.sdt = self.sdt * Self::STEP_TIME_ALPHA + delta_time * (1.0 - Self::STEP_TIME_ALPHA);
+            } else {
+                self.sdt = delta_time;
+                self.step_occurred = true;
+            }
+
+            let alloc_max = ((self.byte_rate as f64)*self.sdt*Self::BURSTINESS_FACTOR).round() as usize;
+
             let delta_bytes = ((self.byte_rate as f64)*delta_time).round() as usize;
-            self.alloc = std::cmp::min(self.alloc + delta_bytes, self.alloc_max);
+
+            // If the bucket cannot fill to at least one MTU, the queue will stall!
+            self.alloc = std::cmp::min(self.alloc + delta_bytes, alloc_max.max(MTU));
         }
 
         self.last_step_time = Some(now);
@@ -192,8 +210,7 @@ pub struct FrameIO {
 impl FrameIO {
     const TRANSFER_WINDOW_SIZE: u32 = 2048;
 
-    pub fn new(max_tx_bandwidth: usize, max_tx_step_bandwidth: usize) -> Self {
-        println!("max_tx_bandwidth: {}", max_tx_bandwidth);
+    pub fn new(max_tx_bandwidth: usize) -> Self {
         Self {
             send_queue: SendQueue::new(),
             resend_queue: VecDeque::new(),
@@ -201,7 +218,7 @@ impl FrameIO {
             next_sequence_id: 0,
             base_sequence_id: 0,
 
-            bandwidth_throttle: LeakyBucket::new(max_tx_bandwidth, max_tx_step_bandwidth),
+            bandwidth_throttle: LeakyBucket::new(max_tx_bandwidth),
             reliable_throttle: AimdBucket::new(max_tx_bandwidth),
         }
     }

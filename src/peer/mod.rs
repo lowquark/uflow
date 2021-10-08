@@ -18,7 +18,6 @@ use super::transport;
 pub struct Params {
     pub num_channels: u32,
     pub max_tx_bandwidth: u32,
-    pub max_tx_step_bandwidth: u32,
     pub max_rx_bandwidth: u32,
     pub priority_channels: Range<u32>,
 }
@@ -111,7 +110,7 @@ impl Peer {
             disconnect_flush: false,
 
             channels: channels,
-            frame_io: transport::FrameIO::new(0, 0),
+            frame_io: transport::FrameIO::new(0),
         }
     }
 
@@ -190,9 +189,7 @@ impl Peer {
         self.event_queue.push_back(Event::Connect);
 
         // TODO: This is icky, should an entire connected state object be created here?
-        // TODO: Is it problematic that max_tx_bandwidth is the min of the respective local/remote
-        // bandwidths, but that max_tx_step_bandwidth is always determined by the local peer?
-        self.frame_io = transport::FrameIO::new(max_tx_bandwidth as usize, self.params.max_tx_step_bandwidth as usize);
+        self.frame_io = transport::FrameIO::new(max_tx_bandwidth as usize);
     }
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
