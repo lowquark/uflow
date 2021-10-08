@@ -1,6 +1,8 @@
 
 use std::time;
 
+// A basic implementation of https://datatracker.ietf.org/doc/html/rfc6298
+
 struct Ping {
     sequence_id: u16,
     instant: time::Instant,
@@ -10,23 +12,26 @@ pub struct PingRtt {
     ping_history: Vec<Ping>,
     next_sequence_id: u16,
     srtt_ms: f64,
-    sdrtt_ms: f64,
+    rttvar_ms: f64,
     ping_received: bool,
 }
 
 impl PingRtt {
     const DEFAULT_RTT_MS: f64 = 100.0;
     const PING_TIMEOUT_MS: u64 = 3000;
-    const RTT_SMOOTH_ALPHA: f64 = 0.875;
-    const DRTT_SMOOTH_ALPHA: f64 = 0.875;
-    const RTO_SDRTT_U: f64 = 4.0;
+    const SRTT_SMOOTH: f64 = 0.125;
+    const RTTVAR_SMOOTH: f64 = 0.25;
+    const RTO_RTTVAR_K: f64 = 4.0;
+    // Our clock is extremely granular, but a minimum here ought to eliminate some resends for
+    // highly regular RTTs.
+    const RTO_RTTVAR_G: f64 = 1.0;
 
     pub fn new() -> Self {
         Self {
             ping_history: Vec::new(),
             next_sequence_id: 0,
             srtt_ms: Self::DEFAULT_RTT_MS,
-            sdrtt_ms: 0.0,
+            rttvar_ms: Self::DEFAULT_RTT_MS/2.0,
             ping_received: false,
         }
     }
@@ -35,10 +40,10 @@ impl PingRtt {
         if !self.ping_received {
             self.ping_received = true;
             self.srtt_ms = rtt_ms;
-            self.sdrtt_ms = 0.0;
+            self.rttvar_ms = rtt_ms/2.0;
         } else {
-            self.srtt_ms = Self::RTT_SMOOTH_ALPHA*self.srtt_ms + (1.0 - Self::RTT_SMOOTH_ALPHA)*rtt_ms;
-            self.sdrtt_ms = Self::DRTT_SMOOTH_ALPHA*self.sdrtt_ms + (1.0 - Self::DRTT_SMOOTH_ALPHA)*(rtt_ms - self.srtt_ms).abs();
+            self.rttvar_ms = (1.0 - Self::RTTVAR_SMOOTH)*self.rttvar_ms + Self::RTTVAR_SMOOTH*(self.srtt_ms - rtt_ms).abs();
+            self.srtt_ms = (1.0 - Self::SRTT_SMOOTH)*self.srtt_ms + Self::SRTT_SMOOTH*rtt_ms;
         }
     }
 
@@ -67,6 +72,7 @@ impl PingRtt {
     }
 
     pub fn rto_ms(&self) -> f64 {
-        self.srtt_ms + Self::RTO_SDRTT_U*self.sdrtt_ms
+        self.srtt_ms + (Self::RTO_RTTVAR_K*self.rttvar_ms).max(Self::RTO_RTTVAR_G)
     }
 }
+
