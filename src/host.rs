@@ -163,7 +163,7 @@ impl Host {
     }
 
     pub fn connect(&mut self, addr: net::SocketAddr) -> Client {
-        let peer = peer::Peer::new_active(self.peer_params.clone());
+        let peer = peer::Peer::new(self.peer_params.clone());
 
         let peer_ref = Rc::new(RefCell::new(peer));
         self.peer_list.insert(addr, peer_ref.clone());
@@ -181,7 +181,7 @@ impl Host {
                     }
                     None => {
                         if self.peer_list.len() < self.max_connected_peers as usize {
-                            let mut peer = peer::Peer::new_passive(self.peer_params.clone());
+                            let mut peer = peer::Peer::new(self.peer_params.clone());
                             peer.handle_frame(frame);
 
                             let peer_ref = Rc::new(RefCell::new(peer));

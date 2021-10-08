@@ -40,43 +40,45 @@ pub struct DataEntry {
     pub message: Message,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct Connect {
+    pub sequence_id: u32,
     pub version: ProtocolVersionId,
     pub num_channels: u8,
     pub rx_bandwidth_max: u32,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct ConnectAck {
+    pub sequence_id: u32,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct Disconnect {
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct DisconnectAck {
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct Ping {
     pub sequence_id: PingId,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct PingAck {
     pub sequence_id: PingId,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct Data {
     pub ack: bool,
     pub sequence_id: FrameId,
     pub entries: Vec<DataEntry>,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)]
 pub struct DataAck {
     pub sequence_ids: Vec<FrameId>,
 }
@@ -339,7 +341,7 @@ impl DataEntry {
 
 impl Connect {
     const TYPE_ID: u8 = 0;
-    const HEADER_SIZE_BYTES: usize = 7;
+    pub const HEADER_SIZE_BYTES: usize = 11;
 
     pub fn to_bytes(&self) -> Box<[u8]> {
         let mut bytes = Vec::new();
@@ -352,6 +354,10 @@ impl Connect {
             (self.rx_bandwidth_max >> 16) as u8,
             (self.rx_bandwidth_max >>  8) as u8,
             (self.rx_bandwidth_max      ) as u8,
+            (self.sequence_id >> 24) as u8,
+            (self.sequence_id >> 16) as u8,
+            (self.sequence_id >>  8) as u8,
+            (self.sequence_id      ) as u8,
         ];
 
         bytes.extend_from_slice(&header);
@@ -367,28 +373,43 @@ impl Connect {
         if bytes[0] != Self::TYPE_ID {
             return None;
         }
-        let version = bytes[1];
-        let num_channels = bytes[2];
-        let rx_bandwidth_max = ((bytes[3] as u32) << 24) |
-                               ((bytes[4] as u32) << 16) |
-                               ((bytes[5] as u32) <<  8) |
-                               ((bytes[6] as u32)      );
+        let version          =   bytes[ 1];
+        let num_channels     =   bytes[ 2];
+        let rx_bandwidth_max = ((bytes[ 3] as u32) << 24) |
+                               ((bytes[ 4] as u32) << 16) |
+                               ((bytes[ 5] as u32) <<  8) |
+                               ((bytes[ 6] as u32)      );
+        let sequence_id      = ((bytes[ 7] as u32) << 24) |
+                               ((bytes[ 8] as u32) << 16) |
+                               ((bytes[ 9] as u32) <<  8) |
+                               ((bytes[10] as u32)      );
 
         Some(Self {
             version: version,
             num_channels: num_channels,
             rx_bandwidth_max: rx_bandwidth_max,
+            sequence_id: sequence_id,
         })
     }
 }
 
 impl ConnectAck {
     const TYPE_ID: u8 = 1;
-    const HEADER_SIZE_BYTES: usize = 1;
+    pub const HEADER_SIZE_BYTES: usize = 5;
 
     pub fn to_bytes(&self) -> Box<[u8]> {
         let mut bytes = Vec::new();
-        bytes.push(Self::TYPE_ID);
+
+        let header = [
+            Self::TYPE_ID,
+            (self.sequence_id >> 24) as u8,
+            (self.sequence_id >> 16) as u8,
+            (self.sequence_id >>  8) as u8,
+            (self.sequence_id      ) as u8,
+        ];
+
+        bytes.extend_from_slice(&header);
+
         bytes.into_boxed_slice()
     }
 
@@ -400,8 +421,13 @@ impl ConnectAck {
         if bytes[0] != Self::TYPE_ID {
             return None;
         }
+        let sequence_id  = ((bytes[1] as u32) << 24) |
+                           ((bytes[2] as u32) << 16) |
+                           ((bytes[3] as u32) <<  8) |
+                           ((bytes[4] as u32)      );
 
         Some(Self {
+            sequence_id: sequence_id,
         })
     }
 }
@@ -745,6 +771,7 @@ fn test_connect_basic() {
         version: 0x7F,
         num_channels: 3,
         rx_bandwidth_max: 0xBEEFBEEF,
+        sequence_id: 0x13371337,
     });
     verify_consistent(&f);
     verify_extra_bytes_fail(&f);
@@ -753,7 +780,9 @@ fn test_connect_basic() {
 
 #[test]
 fn test_connect_ack_basic() {
-    let f = Frame::ConnectAck(ConnectAck {});
+    let f = Frame::ConnectAck(ConnectAck {
+        sequence_id: 0x13371337,
+    });
     verify_consistent(&f);
     verify_extra_bytes_fail(&f);
     verify_truncation_fails(&f);
@@ -835,6 +864,21 @@ fn test_connect_random() {
             version: rand::random::<u8>(),
             num_channels: rand::random::<u8>(),
             rx_bandwidth_max: rand::random::<u32>(),
+            sequence_id: rand::random::<u32>(),
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+}
+
+#[test]
+fn test_connect_ack_random() {
+    const NUM_ROUNDS: usize = 100;
+
+    for _ in 0..NUM_ROUNDS {
+        let f = Frame::ConnectAck(ConnectAck {
+            sequence_id: rand::random::<u32>(),
         });
         verify_consistent(&f);
         verify_extra_bytes_fail(&f);

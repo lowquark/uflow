@@ -10,6 +10,7 @@ use super::channel;
 use super::ChannelId;
 use super::DataSink;
 use super::MAX_CHANNELS;
+use super::PROTOCOL_VERSION;
 use super::SendMode;
 use super::transport;
 
@@ -24,10 +25,8 @@ pub struct Params {
 
 #[derive(Clone,Copy,Debug,PartialEq)]
 enum State {
-    AwaitConnect,     // Host: Do nothing (Connect => AwaitConnectAck, Bad Connect => SendDisconnect)
-    AwaitConnectAck,  // Host: Send Connect (ConnectAck -> Connected)
-    SendConnect,      // Client: Send Connect (Connect -> Connected, Bad Connect => SendDisconnect)
-    Connected,        // Send/receive data (disconnect() => SendDisconnect)
+    Connecting,       // Send Connect until acked (Connect & ConnectAck => Connected, Bad Connect => SendDisconnect)
+    Connected,        // Send/receive data (disconnect() => SendDisconnect, after all pending data transferred)
     SendDisconnect,   // Send disconnect (DisconnectAck -> Disconnected)
     Disconnected,     // Continue to acknowledge Disconnect (30s => Zombie)
     Zombie,           // Nothing
@@ -57,12 +56,17 @@ pub struct Peer {
     watchdog_time: time::Instant,
     meta_send_time: Option<time::Instant>,
 
-    ping_rtt: rtt::PingRtt,
-
     // Connect, Disconnect, Ping
     meta_queue: VecDeque<Box<[u8]>>,
     event_queue: VecDeque<Event>,
 
+    // Connecting stuff
+    connect_frame: frame::Connect,
+    connect_ack_received: bool,
+    connect_received: bool,
+
+    // Connected stuff
+    ping_rtt: rtt::PingRtt,
     was_connected: bool,
     disconnect_flush: bool,
 
@@ -72,25 +76,36 @@ pub struct Peer {
 }
 
 impl Peer {
-    fn new(params: Params) -> Self {
+    pub fn new(params: Params) -> Self {
         let mut channels = Vec::new();
 
+        assert!(params.num_channels > 0, "Must have at least one channel");
         assert!(params.num_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
         for _ in 0..params.num_channels {
             channels.push(channel::Channel::new());
         }
 
+        let connect_frame = frame::Connect {
+            version: PROTOCOL_VERSION,
+            num_channels: (params.num_channels - 1) as u8,
+            rx_bandwidth_max: params.max_rx_bandwidth,
+            sequence_id: rand::random::<u32>(),
+        };
+
         Self {
-            state: State::Zombie,
+            state: State::Connecting,
 
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
 
-            ping_rtt: rtt::PingRtt::new(),
-
             meta_queue: VecDeque::new(),
             event_queue: VecDeque::new(),
 
+            connect_frame: connect_frame,
+            connect_ack_received: false,
+            connect_received: false,
+
+            ping_rtt: rtt::PingRtt::new(),
             was_connected: false,
             disconnect_flush: false,
 
@@ -100,64 +115,45 @@ impl Peer {
         }
     }
 
-    pub fn new_passive(params: Params) -> Self {
-        let mut peer = Self::new(params);
-        peer.await_connect_enter();
-        peer
-    }
-
-    pub fn new_active(params: Params) -> Self {
-        let mut peer = Self::new(params);
-        peer.send_connect_enter();
-        peer
-    }
-
     fn enqueue_meta(&mut self, frame: frame::Frame) {
         self.meta_queue.push_back(frame.to_bytes());
     }
 
-    fn verify_connect_info(&self, _remote_info: frame::Connect) -> bool {
-        true
+    fn verify_connect_info(&self, remote_info: &frame::Connect, local_info: &frame::Connect) -> bool {
+        remote_info.num_channels == local_info.num_channels && remote_info.version == local_info.version
     }
 
-    // State::AwaitConnect
-    fn await_connect_enter(&mut self) {
-        self.state = State::AwaitConnect;
-        self.watchdog_time = time::Instant::now();
-
-        self.meta_send_time = None;
-    }
-
-    fn await_connect_handle_frame(&mut self, frame: frame::Frame) {
+    // State::Connecting
+    fn connecting_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Connect(frame) => {
-                if self.verify_connect_info(frame) {
-                    self.await_connect_ack_enter();
+            frame::Frame::ConnectAck(connect_ack_frame) => {
+                if connect_ack_frame.sequence_id == self.connect_frame.sequence_id {
+                    // The remote peer acknowledged our connection request, stop sending more
+                    self.connect_ack_received = true;
+                    if self.connect_ack_received && self.connect_received {
+                        self.connected_enter();
+                    }
                 } else {
-                    // No likey connect
+                    // The acknowledgement doesn't match our connection request id, fail lol
                     self.send_disconnect_enter();
                 }
             }
-            _ => ()
-        }
-    }
+            frame::Frame::Connect(connect_frame) => {
+                if self.verify_connect_info(&connect_frame, &self.connect_frame) {
+                    self.connect_received = true;
 
-    // State::AwaitConnectAck
-    fn await_connect_ack_enter(&mut self) {
-        self.state = State::AwaitConnectAck;
-        self.watchdog_time = time::Instant::now();
+                    self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { sequence_id: connect_frame.sequence_id }));
 
-        self.meta_send_time = None;
-    }
-
-    fn await_connect_ack_handle_frame(&mut self, frame: frame::Frame) {
-        match frame {
-            frame::Frame::ConnectAck(_) => {
-                // TODO: Exchange random connection ids
-                self.connected_enter();
+                    if self.connect_ack_received && self.connect_received {
+                        self.connected_enter();
+                    }
+                } else {
+                    // The connection is not possible
+                    self.send_disconnect_enter();
+                }
             }
             frame::Frame::Disconnect(_) => {
-                // Client must not have liked our connect info
+                // Peer must not have liked our connect info
                 self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
                 self.disconnected_enter();
             }
@@ -165,54 +161,13 @@ impl Peer {
         }
     }
 
-    fn await_connect_ack_step(&mut self, now: time::Instant) {
-        if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
-            self.meta_send_time = Some(now);
-            self.enqueue_meta(frame::Frame::Connect(frame::Connect {
-                version: 0,
-                num_channels: 5,
-                rx_bandwidth_max: 100000,
-            }));
-        }
-    }
-
-    // State::SendConnect
-    fn send_connect_enter(&mut self) {
-        self.state = State::SendConnect;
-        self.watchdog_time = time::Instant::now();
-
-        self.meta_send_time = None;
-    }
-
-    fn send_connect_handle_frame(&mut self, frame: frame::Frame) {
-        match frame {
-            frame::Frame::Connect(frame) => {
-                // TODO: Exchange random connection ids
-                if self.verify_connect_info(frame) {
-                    self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { }));
-                    self.connected_enter();
-                } else {
-                    // No likey connect
-                    self.send_disconnect_enter();
-                }
+    fn connecting_step(&mut self, now: time::Instant) {
+        // Send connection requests until acked
+        if !self.connect_ack_received {
+            if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
+                self.meta_send_time = Some(now);
+                self.enqueue_meta(frame::Frame::Connect(self.connect_frame.clone()));
             }
-            frame::Frame::Disconnect(_) => {
-                // Server must not have liked our connect info
-                self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
-                self.disconnected_enter();
-            }
-            _ => ()
-        }
-    }
-
-    fn send_connect_step(&mut self, now: time::Instant) {
-        if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
-            self.meta_send_time = Some(now);
-            self.enqueue_meta(frame::Frame::Connect(frame::Connect {
-                version: 0,
-                num_channels: 5,
-                rx_bandwidth_max: 100000,
-            }));
         }
     }
 
@@ -229,10 +184,9 @@ impl Peer {
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Connect(_) => {
+            frame::Frame::Connect(connect_frame) => {
                 // In this state, we've already verified any connection parameters, just ack
-                // If both client & host ack here, NAT punchthrough might work
-                self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { }));
+                self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { sequence_id: connect_frame.sequence_id }));
             }
             frame::Frame::Disconnect(_) => {
                 // Welp
@@ -358,9 +312,7 @@ impl Peer {
 
     pub fn handle_frame(&mut self, frame: frame::Frame) {
         match self.state {
-            State::AwaitConnect => self.await_connect_handle_frame(frame),
-            State::AwaitConnectAck => self.await_connect_ack_handle_frame(frame),
-            State::SendConnect => self.send_connect_handle_frame(frame),
+            State::Connecting => self.connecting_handle_frame(frame),
             State::Connected => self.connected_handle_frame(frame),
             State::SendDisconnect => self.send_disconnect_handle_frame(frame),
             State::Disconnected => self.disconnected_handle_frame(frame),
@@ -378,9 +330,7 @@ impl Peer {
         }
 
         match self.state {
-            State::AwaitConnect => (),
-            State::AwaitConnectAck => self.await_connect_ack_step(now),
-            State::SendConnect => self.send_connect_step(now),
+            State::Connecting => self.connecting_step(now),
             State::Connected => self.connected_step(now),
             State::SendDisconnect => self.send_disconnect_step(now),
             State::Disconnected => (),
@@ -395,10 +345,7 @@ impl Peer {
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
         let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
         match self.state {
-            State::AwaitConnect |
-            State::AwaitConnectAck |
-            State::SendConnect |
-            State::Connected => channel.tx.enqueue(data, mode),
+            State::Connecting | State::Connected => channel.tx.enqueue(data, mode),
             _ => (),
         }
     }
