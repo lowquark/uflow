@@ -83,9 +83,15 @@ impl Peer {
         let connect_frame = frame::Connect {
             version: PROTOCOL_VERSION,
             num_channels: (params.num_channels - 1) as u8,
-            rx_bandwidth_max: params.max_rx_bandwidth,
+            max_rx_bandwidth: params.max_rx_bandwidth,
             sequence_id: rand::random::<u32>(),
         };
+
+        // Preallocate channels so that data may be enqueued before a connection is established
+        let mut channels = Vec::new();
+        for _ in 0..params.num_channels {
+            channels.push(channel::Channel::new(params.max_packet_size as usize));
+        }
 
         Self {
             state: State::Connecting,
@@ -105,7 +111,7 @@ impl Peer {
             was_connected: false,
             disconnect_flush: false,
 
-            channels: Vec::new(),
+            channels: channels,
             frame_io: transport::FrameIO::new(0, 0, 0),
         }
     }
@@ -124,7 +130,7 @@ impl Peer {
             if let Some(connect_frame) = &self.connect_frame_remote {
                 let tx_sequence_id = connect_frame.sequence_id;
                 let rx_sequence_id = self.connect_frame.sequence_id;
-                let max_tx_bandwidth = self.params.max_tx_bandwidth.min(connect_frame.rx_bandwidth_max);
+                let max_tx_bandwidth = self.params.max_tx_bandwidth.min(connect_frame.max_rx_bandwidth);
                 self.connected_enter(tx_sequence_id, rx_sequence_id, max_tx_bandwidth as usize);
             }
         }
@@ -186,11 +192,6 @@ impl Peer {
         self.event_queue.push_back(Event::Connect);
 
         // TODO: This is icky, should an entire connected state object be created here?
-        let mut channels = Vec::new();
-        for _ in 0..self.params.num_channels {
-            channels.push(channel::Channel::new(self.params.max_packet_size as usize));
-        }
-
         self.frame_io = transport::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
     }
 

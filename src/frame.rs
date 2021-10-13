@@ -45,7 +45,7 @@ pub struct Connect {
     pub sequence_id: u32,
     pub version: ProtocolVersionId,
     pub num_channels: u8,
-    pub rx_bandwidth_max: u32,
+    pub max_rx_bandwidth: u32,
 }
 
 #[derive(Clone,Debug,PartialEq)]
@@ -350,10 +350,10 @@ impl Connect {
             Self::TYPE_ID,
             self.version,
             self.num_channels,
-            (self.rx_bandwidth_max >> 24) as u8,
-            (self.rx_bandwidth_max >> 16) as u8,
-            (self.rx_bandwidth_max >>  8) as u8,
-            (self.rx_bandwidth_max      ) as u8,
+            (self.max_rx_bandwidth >> 24) as u8,
+            (self.max_rx_bandwidth >> 16) as u8,
+            (self.max_rx_bandwidth >>  8) as u8,
+            (self.max_rx_bandwidth      ) as u8,
             (self.sequence_id >> 24) as u8,
             (self.sequence_id >> 16) as u8,
             (self.sequence_id >>  8) as u8,
@@ -375,7 +375,7 @@ impl Connect {
         }
         let version          =   bytes[ 1];
         let num_channels     =   bytes[ 2];
-        let rx_bandwidth_max = ((bytes[ 3] as u32) << 24) |
+        let max_rx_bandwidth = ((bytes[ 3] as u32) << 24) |
                                ((bytes[ 4] as u32) << 16) |
                                ((bytes[ 5] as u32) <<  8) |
                                ((bytes[ 6] as u32)      );
@@ -387,7 +387,7 @@ impl Connect {
         Some(Self {
             version: version,
             num_channels: num_channels,
-            rx_bandwidth_max: rx_bandwidth_max,
+            max_rx_bandwidth: max_rx_bandwidth,
             sequence_id: sequence_id,
         })
     }
@@ -770,7 +770,7 @@ fn test_connect_basic() {
     let f = Frame::Connect(Connect {
         version: 0x7F,
         num_channels: 3,
-        rx_bandwidth_max: 0xBEEFBEEF,
+        max_rx_bandwidth: 0xBEEFBEEF,
         sequence_id: 0x13371337,
     });
     verify_consistent(&f);
@@ -863,7 +863,7 @@ fn test_connect_random() {
         let f = Frame::Connect(Connect {
             version: rand::random::<u8>(),
             num_channels: rand::random::<u8>(),
-            rx_bandwidth_max: rand::random::<u32>(),
+            max_rx_bandwidth: rand::random::<u32>(),
             sequence_id: rand::random::<u32>(),
         });
         verify_consistent(&f);

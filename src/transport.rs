@@ -6,6 +6,62 @@ use super::frame;
 use super::DataSink;
 use super::MTU;
 
+struct LeakyBucket {
+    alloc: usize,
+    byte_rate: usize,
+    last_step_time: Option<time::Instant>,
+    sdt: f64,
+    step_occurred: bool,
+}
+
+impl LeakyBucket {
+    const STEP_TIME_ALPHA: f64 = 0.875;
+    const BURSTINESS_FACTOR: f64 = 2.0;
+
+    fn new(byte_rate: usize) -> Self {
+        Self {
+            alloc: 0,
+            byte_rate: byte_rate,
+            last_step_time: None,
+            sdt: 0.0,
+            step_occurred: false,
+        }
+    }
+
+    fn step(&mut self, now: time::Instant) {
+        if let Some(last_step_time) = self.last_step_time {
+            let delta_time = (now - last_step_time).as_secs_f64();
+
+            // Estimating the time delta is obnoxious, but having the user specify alloc_max makes
+            // for an odd bandwidth negotiation.
+            if self.step_occurred {
+                self.sdt = self.sdt * Self::STEP_TIME_ALPHA + delta_time * (1.0 - Self::STEP_TIME_ALPHA);
+            } else {
+                self.sdt = delta_time;
+                self.step_occurred = true;
+            }
+
+            let alloc_max = ((self.byte_rate as f64)*self.sdt*Self::BURSTINESS_FACTOR).round() as usize;
+
+            let delta_bytes = ((self.byte_rate as f64)*delta_time).round() as usize;
+
+            // If the bucket cannot fill to at least one MTU, the queue will stall!
+            self.alloc = std::cmp::min(self.alloc + delta_bytes, alloc_max.max(MTU));
+        }
+
+        self.last_step_time = Some(now);
+    }
+
+    fn bytes_remaining(&self) -> usize {
+        self.alloc
+    }
+
+    fn mark_sent(&mut self, frame_size: usize) {
+        assert!(self.alloc >= frame_size);
+        self.alloc -= frame_size;
+    }
+}
+
 #[derive(Debug)]
 struct SendEntry {
     data: Option<frame::DataEntry>,
@@ -65,7 +121,7 @@ struct ResendEntry {
 }
 
 impl ResendEntry {
-    fn new(frame_data: Box<[u8]>, last_send_time: time::Instant, sequence_id: u32) -> Self {
+    fn new(frame_data: Box<[u8]>, sequence_id: u32, last_send_time: time::Instant) -> Self {
         Self {
             frame_data: frame_data,
             sequence_id: sequence_id,
@@ -87,124 +143,101 @@ impl ResendEntry {
     }
 }
 
-struct LeakyBucket {
-    alloc: usize,
-    byte_rate: usize,
-    last_step_time: Option<time::Instant>,
-    sdt: f64,
-    step_occurred: bool,
-}
-
-impl LeakyBucket {
-    const STEP_TIME_ALPHA: f64 = 0.875;
-    const BURSTINESS_FACTOR: f64 = 2.0;
-
-    fn new(byte_rate: usize) -> Self {
-        Self {
-            alloc: 0,
-            byte_rate: byte_rate,
-            last_step_time: None,
-            sdt: 0.0,
-            step_occurred: false,
-        }
-    }
-
-    fn step(&mut self, now: time::Instant) {
-        if let Some(last_step_time) = self.last_step_time {
-            let delta_time = (now - last_step_time).as_secs_f64();
-
-            // Estimating the time delta is obnoxious, but having the user specify alloc_max makes
-            // for an odd bandwidth negotiation.
-            if self.step_occurred {
-                self.sdt = self.sdt * Self::STEP_TIME_ALPHA + delta_time * (1.0 - Self::STEP_TIME_ALPHA);
-            } else {
-                self.sdt = delta_time;
-                self.step_occurred = true;
-            }
-
-            let alloc_max = ((self.byte_rate as f64)*self.sdt*Self::BURSTINESS_FACTOR).round() as usize;
-
-            let delta_bytes = ((self.byte_rate as f64)*delta_time).round() as usize;
-
-            // If the bucket cannot fill to at least one MTU, the queue will stall!
-            self.alloc = std::cmp::min(self.alloc + delta_bytes, alloc_max.max(MTU));
-        }
-
-        self.last_step_time = Some(now);
-    }
-
-    fn bytes_remaining(&self) -> usize {
-        self.alloc
-    }
-
-    fn mark_sent(&mut self, frame_size: usize) {
-        assert!(self.alloc >= frame_size);
-        self.alloc -= frame_size;
-    }
-}
-
-struct AimdBucket {
-    alloc: usize,
+struct ResendQueue {
+    entries: VecDeque<ResendEntry>,
     size: usize,
-    max_size: usize,
 }
 
-impl AimdBucket {
+impl ResendQueue {
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            size: 0,
+        }
+    }
+
+    pub fn push(&mut self, frame_data: Box<[u8]>, sequence_id: u32, now: time::Instant) {
+        self.size += frame_data.len();
+        self.entries.push_back(ResendEntry::new(frame_data, sequence_id, now));
+    }
+
+    pub fn remove(&mut self, sequence_id: u32) -> bool {
+        // TODO: Binary search?
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if entry.sequence_id == sequence_id {
+                self.size -= entry.frame_data.len();
+                self.entries.remove(idx);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn front(&self) -> Option<&ResendEntry> {
+        self.entries.front()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ResendEntry> {
+        self.entries.iter_mut()
+    }
+}
+
+struct CongestionWindow {
+    size: usize,
+}
+
+impl CongestionWindow {
     // TODO: Consult RFC for TCP Reno?
     // TODO: Slow start?
     const ACK_INCREASE: usize = MTU;
     const NACK_DECREASE: f64 = 0.5;
     const MIN_SIZE: usize = MTU;
+    const MAX_SIZE: usize = 1024*1024*1024;
 
-    fn new(max_size: usize) -> Self {
+    fn new() -> Self {
         Self {
-            alloc: Self::MIN_SIZE,
             size: Self::MIN_SIZE,
-            max_size: max_size.max(Self::MIN_SIZE),
         }
     }
 
-    fn trigger_ack(&mut self, frame_size: usize) {
-        self.alloc += frame_size;
+    fn signal_ack(&mut self) {
         self.size += Self::ACK_INCREASE;
-        if self.size > self.max_size {
-            self.size = self.max_size;
-        }
-        self.alloc += Self::ACK_INCREASE;
-        if self.alloc > self.size {
-            self.alloc = self.size;
+        if self.size > Self::MAX_SIZE {
+            self.size = Self::MAX_SIZE;
         }
     }
 
-    fn trigger_nack(&mut self) {
+    fn signal_nack(&mut self) {
         self.size = ((self.size as f64) * Self::NACK_DECREASE).round() as usize;
         if self.size < Self::MIN_SIZE {
             self.size = Self::MIN_SIZE;
         }
-        if self.alloc > self.size {
-            self.alloc = self.size;
-        }
     }
 
-    fn bytes_remaining(&self) -> usize {
-        self.alloc
-    }
-
-    fn mark_sent(&mut self, frame_size: usize) {
-        assert!(self.alloc >= frame_size);
-        self.alloc -= frame_size;
+    fn size(&self) -> usize {
+        self.size
     }
 }
 
 pub struct FrameIO {
     send_queue: SendQueue,
-    resend_queue: VecDeque<ResendEntry>,
-    ack_queue: VecDeque<u32>,
     next_sequence_id: u32,
+
+    resend_queue: ResendQueue,
     base_sequence_id: u32,
 
+    ack_queue: VecDeque<u32>,
+
     bandwidth_throttle: LeakyBucket,
-    reliable_throttle: AimdBucket,
+    congestion_window: CongestionWindow,
 }
 
 impl FrameIO {
@@ -215,13 +248,15 @@ impl FrameIO {
         // receive window is used!
         Self {
             send_queue: SendQueue::new(),
-            resend_queue: VecDeque::new(),
-            ack_queue: VecDeque::new(),
             next_sequence_id: tx_sequence_id,
+
+            resend_queue: ResendQueue::new(),
             base_sequence_id: tx_sequence_id,
 
+            ack_queue: VecDeque::new(),
+
             bandwidth_throttle: LeakyBucket::new(max_tx_bandwidth),
-            reliable_throttle: AimdBucket::new(max_tx_bandwidth),
+            congestion_window: CongestionWindow::new(),
         }
     }
 
@@ -240,20 +275,14 @@ impl FrameIO {
     }
 
     pub fn handle_data_ack(&mut self, data_ack: frame::DataAck) {
-        // TODO: At least binary search, man
         for sequence_id in data_ack.sequence_ids.into_iter() {
-            'inner: for (idx, entry) in self.resend_queue.iter().enumerate() {
-                if entry.sequence_id == sequence_id {
-                    self.reliable_throttle.trigger_ack(entry.frame_data.len());
-                    self.resend_queue.remove(idx);
+            if self.resend_queue.remove(sequence_id) {
+                self.congestion_window.signal_ack();
 
-                    if let Some(entry) = self.resend_queue.front() {
-                        self.base_sequence_id = entry.sequence_id;
-                    } else {
-                        self.base_sequence_id = sequence_id.wrapping_add(1);
-                    }
-
-                    break 'inner;
+                if let Some(entry) = self.resend_queue.front() {
+                    self.base_sequence_id = entry.sequence_id;
+                } else {
+                    self.base_sequence_id = sequence_id.wrapping_add(1);
                 }
             }
         }
@@ -282,18 +311,27 @@ impl FrameIO {
     }
 
     fn try_send_resends(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) -> Result<(),()> {
-        // TODO: Efficient iteration
+        // The congestion window will shrink as packets are nack'd, save an initial value
+        let congestion_window_size = self.congestion_window.size();
+        let mut size_sent = 0;
+
         for entry in self.resend_queue.iter_mut() {
-            if entry.should_resend(now, timeout) {
-                if self.bandwidth_throttle.bytes_remaining() >= entry.frame_data.len() {
-                    sink.send(&entry.frame_data);
-                    entry.mark_sent(now);
-                    self.bandwidth_throttle.mark_sent(entry.frame_data.len());
-                    self.reliable_throttle.trigger_nack();
-                } else {
-                    // Wait until we have enough bandwidth tokens
-                    return Err(());
+            if size_sent + entry.frame_data.len() <= congestion_window_size {
+                if entry.should_resend(now, timeout) {
+                    if self.bandwidth_throttle.bytes_remaining() >= entry.frame_data.len() {
+                        sink.send(&entry.frame_data);
+                        entry.mark_sent(now);
+                        self.bandwidth_throttle.mark_sent(entry.frame_data.len());
+                        self.congestion_window.signal_nack();
+                        size_sent += entry.frame_data.len();
+                    } else {
+                        // Wait until we have enough bandwidth tokens
+                        return Err(());
+                    }
                 }
+            } else {
+                // Congestion window must have shrunk, stop here
+                break;
             }
         }
         return Ok(());
@@ -312,8 +350,16 @@ impl FrameIO {
         let frame_overhead_bytes = frame::Data::HEADER_SIZE_BYTES;
         let frame_limit_bytes = MTU;
 
+        // Total number of bytes we can send now
         let mut total_bytes_remaining = self.bandwidth_throttle.bytes_remaining();
-        let mut reliable_bytes_remaining = self.reliable_throttle.bytes_remaining();
+
+        // Total new congestion window bytes we can send now
+        let mut reliable_bytes_remaining =
+            if self.congestion_window.size() >= self.resend_queue.size() {
+                self.congestion_window.size() - self.resend_queue.size()
+            } else {
+                0
+            };
 
         let end_sequence_id = self.base_sequence_id.wrapping_add(Self::TRANSFER_WINDOW_SIZE);
 
@@ -428,8 +474,7 @@ impl FrameIO {
                         assert!(frame_data.len() == frame_size);
                         assert!(frame_data.len() == frame_size_reliable.unwrap());
                         sink.send(&frame_data);
-                        self.reliable_throttle.mark_sent(frame_data.len());
-                        self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
+                        self.resend_queue.push(frame_data, seq_id, now);
                     } else if rel_dgs.len() > 0 && unrel_dgs.len() > 0 {
                         let needs_ack = rel_dgs.len() > 0;
                         let seq_id = frame_sequence_id.unwrap();
@@ -438,8 +483,7 @@ impl FrameIO {
                             let resend_frame = frame::Data::new(needs_ack, seq_id, rel_dgs);
                             let frame_data = resend_frame.to_bytes();
                             assert!(frame_data.len() == frame_size_reliable.unwrap());
-                            self.reliable_throttle.mark_sent(frame_data.len());
-                            self.resend_queue.push_back(ResendEntry::new(frame_data, now, seq_id));
+                            self.resend_queue.push(frame_data, seq_id, now);
                             // Take back the reliable datagrams
                             rel_dgs = resend_frame.entries;
                         }
