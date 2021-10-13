@@ -121,7 +121,8 @@ struct Entry {
     pub sequence_id: seq::Id,
     pub dependent_lead: u16,
     pub frag_asm: Option<FragAsm>,
-    pub dud: bool,
+    pub is_dud: bool,
+    pub is_sentinel: bool,
 }
 
 impl Entry {
@@ -130,7 +131,8 @@ impl Entry {
             sequence_id: sequence_id,
             dependent_lead: dependent_lead,
             frag_asm: None,
-            dud: false,
+            is_dud: false,
+            is_sentinel: false,
         }
     }
 
@@ -139,7 +141,8 @@ impl Entry {
             sequence_id: sequence_id,
             dependent_lead: dependent_lead,
             frag_asm: None,
-            dud: true,
+            is_dud: true,
+            is_sentinel: false,
         }
     }
 
@@ -156,7 +159,9 @@ impl Entry {
                     self.frag_asm = Some(FragAsm::new(fragment));
                 }
             }
-            Payload::Sentinel => ()
+            Payload::Sentinel => {
+                self.is_sentinel = true;
+            }
         }
     }
 
@@ -168,8 +173,12 @@ impl Entry {
         }
     }
 
+    fn is_sentinel(&self) -> bool {
+        self.is_sentinel
+    }
+
     fn is_dud(&self) -> bool {
-        self.dud
+        self.is_dud
     }
 }
 
@@ -273,11 +282,11 @@ impl Rx {
                     if packet.len() <= self.max_packet_size {
                         deliver_packet = Some(packet);
                     } else {
-                        // Packet sizes can't be predicted up front, deliver None in case the
+                        // Packet sizes can't be determined up front, deliver None in case the
                         // application relies on the maximum packet size.
                         deliver_packet = None;
                     }
-                } else {
+                } else if entry.is_sentinel() {
                     let last_lead = seq::lead_unsigned(last_id, entry.sequence_id);
                     if last_lead >= TRANSFER_WINDOW_SIZE - WINDOW_ACK_SPACING {
                         deliver = true;
@@ -822,6 +831,73 @@ fn test_sentinels() {
     assert_eq!(rx.receive().unwrap(), p1);
     assert_eq!(rx.receive(), None);
 
+    assert_eq!(rx.base_sequence_id, 2);
+}
+
+#[test]
+fn test_sentinel_expiration() {
+    let mut rx = Rx::new(MAX_PACKET_SIZE);
+
+    let pk_0 = (0..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+    let pk_0_a = (0..FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+    let pk_0_b = (FRAGMENT_SIZE..FRAGMENT_SIZE*2).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
+
+    let dg_0_a = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 0,
+            last_fragment_id: 1,
+            data: pk_0_a.clone(),
+        }),
+    };
+
+    let dg_0_b = Datagram {
+        sequence_id: 0,
+        dependent_lead: 0,
+        payload: Payload::Fragment(Fragment {
+            fragment_id: 1,
+            last_fragment_id: 1,
+            data: pk_0_b.clone(),
+        }),
+    };
+
+    let dg_1_snt = Datagram {
+        sequence_id: 1,
+        dependent_lead: 1,
+        payload: Payload::Sentinel,
+    };
+
+    let dg_n_snt = Datagram {
+        sequence_id: 1 + TRANSFER_WINDOW_SIZE - WINDOW_ACK_SPACING,
+        dependent_lead: 0,
+        payload: Payload::Sentinel,
+    };
+
+    rx.handle_datagram(dg_n_snt);
+
+    // Sentinels not skippable alone
+    assert_eq!(rx.receive(), None);
+    assert_eq!(rx.base_sequence_id, 0);
+
+    rx.handle_datagram(dg_1_snt);
+
+    // Sentinels not skippable when they have dependencies
+    assert_eq!(rx.receive(), None);
+    assert_eq!(rx.base_sequence_id, 0);
+
+    rx.handle_datagram(dg_0_a);
+
+    // Sentinels not skippable when they have incomplete dependencies
+    // Incomplete dependencies do not skip unless they are sentinels
+    assert_eq!(rx.receive(), None);
+    assert_eq!(rx.base_sequence_id, 0);
+
+    rx.handle_datagram(dg_0_b);
+
+    // Sentinels skippable when they have complete dependencies
+    assert_eq!(rx.receive().unwrap(), pk_0);
+    assert_eq!(rx.receive(), None);
     assert_eq!(rx.base_sequence_id, 2);
 }
 
