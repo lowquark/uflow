@@ -3,7 +3,7 @@ mod channel;
 mod frame;
 pub mod host;
 mod peer;
-mod transport;
+mod transfer;
 
 pub type ChannelId = u8;
 

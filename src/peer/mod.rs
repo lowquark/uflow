@@ -12,7 +12,7 @@ use super::DataSink;
 use super::MAX_CHANNELS;
 use super::PROTOCOL_VERSION;
 use super::SendMode;
-use super::transport;
+use super::transfer;
 
 #[derive(Clone,Debug)]
 pub struct Params {
@@ -72,7 +72,7 @@ pub struct Peer {
     disconnect_flush: bool,
 
     channels: Vec<channel::Channel>,
-    frame_io: transport::FrameIO,
+    frame_io: transfer::FrameIO,
 }
 
 impl Peer {
@@ -112,7 +112,7 @@ impl Peer {
             disconnect_flush: false,
 
             channels: channels,
-            frame_io: transport::FrameIO::new(0, 0, 0),
+            frame_io: transfer::FrameIO::new(0, 0, 0),
         }
     }
 
@@ -192,7 +192,7 @@ impl Peer {
         self.event_queue.push_back(Event::Connect);
 
         // TODO: This is icky, should an entire connected state object be created here?
-        self.frame_io = transport::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
+        self.frame_io = transfer::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
     }
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
