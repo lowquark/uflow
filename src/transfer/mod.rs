@@ -111,10 +111,8 @@ impl FrameIO {
         }
     }
 
-    pub fn handle_data_ack(&mut self, data_ack: frame::DataAck) {
-        for sequence_id in data_ack.sequence_ids.into_iter() {
-            self.transfer_queue.acknowledge_frame(sequence_id);
-        }
+    pub fn handle_data_ack_frame(&mut self, data_ack: frame::DataAck) {
+        self.transfer_queue.acknowledge_frames(data_ack.sequence_ids);
     }
 
     fn send_acks(&mut self, sink: & dyn DataSink) {
@@ -130,12 +128,6 @@ impl FrameIO {
             sink.send(&frame_data);
         }
     }
-
-    /*
-    pub fn step(&mut self, now: time::Instant) {
-        //self.bandwidth_throttle.step(now);
-    }
-    */
 
     pub fn flush(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) {
         self.send_acks(sink);

@@ -234,7 +234,7 @@ impl Peer {
                 }
             }
             frame::Frame::DataAck(data_ack_frame) => {
-                self.frame_io.handle_data_ack(data_ack_frame);
+                self.frame_io.handle_data_ack_frame(data_ack_frame);
             }
             _ => ()
         }
