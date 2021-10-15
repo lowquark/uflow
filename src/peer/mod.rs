@@ -218,15 +218,16 @@ impl Peer {
                 self.watchdog_time = now;
             }
             frame::Frame::Data(data_frame) => {
-                self.frame_io.acknowledge_data_frame(&data_frame);
-                for entry in data_frame.entries.into_iter() {
-                    if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                        match entry.message {
-                            frame::Message::Datagram(dg) => {
-                                channel.rx.handle_datagram(dg);
-                            }
-                            frame::Message::WindowAck(wa) => {
-                                channel.tx.handle_window_ack(wa);
+                if let Some(entries) = self.frame_io.handle_data_frame(data_frame) {
+                    for entry in entries.into_iter() {
+                        if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
+                            match entry.message {
+                                frame::Message::Datagram(dg) => {
+                                    channel.rx.handle_datagram(dg);
+                                }
+                                frame::Message::WindowAck(wa) => {
+                                    channel.tx.handle_window_ack(wa);
+                                }
                             }
                         }
                     }
@@ -256,7 +257,7 @@ impl Peer {
             }
         }
 
-        self.frame_io.step(now);
+        //self.frame_io.step(now);
 
         if self.disconnect_flush {
             // Disconnect if there's no pending data --the application is expected to stop calling send()!
