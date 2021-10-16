@@ -407,3 +407,213 @@ pub fn send_new_data(send_queue: &mut SendQueue, transfer_queue: &mut TransferQu
     send_queue.retain(|entry| entry.reliable == true);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::ProtoFrame;
+    use super::TransferQueue;
+    use super::frame;
+    use super::DataSink;
+    use super::SENTINEL_FRAME_SPACING;
+    use std::time;
+    use std::collections::VecDeque;
+
+    struct TestSink {
+        expected_frames: std::cell::RefCell<VecDeque<Box<[u8]>>>,
+    }
+
+    impl TestSink {
+        fn new(expected_frames: Vec<Box<[u8]>>) -> Self {
+            Self {
+                expected_frames: std::cell::RefCell::new(VecDeque::from(expected_frames)),
+            }
+        }
+
+        fn is_finished(&self) -> bool {
+            self.expected_frames.borrow().is_empty()
+        }
+    }
+
+    impl DataSink for TestSink {
+        fn send(&self, data: &[u8]) {
+            assert_eq!(*self.expected_frames.borrow_mut().pop_front().unwrap(), *data);
+        }
+    }
+
+    fn random_data(size: usize) -> Box<[u8]> {
+        (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
+    }
+
+    fn random_frame_data_entry() -> frame::DataEntry {
+        frame::DataEntry::new(rand::random::<u8>(), frame::Message::Datagram(
+            frame::Datagram::new(rand::random::<u32>() & 0xFFFFFF, 0x0000, frame::Payload::Fragment(
+                frame::Fragment::new(0x0000, 0x0000, random_data(32))))))
+    }
+
+    fn random_combined_frame(sequence_id: u32) -> (ProtoFrame, Box<[u8]>, Box<[u8]>) {
+        let proto_frame = ProtoFrame {
+            rel_dgs: (1..2).map(|_| random_frame_data_entry()).collect(),
+            unrel_dgs: (1..2).map(|_| random_frame_data_entry()).collect(),
+        };
+
+        let mut all_dgs = proto_frame.rel_dgs.clone();
+        all_dgs.append(&mut proto_frame.unrel_dgs.clone());
+
+        let first_frame = frame::Data::new(true, sequence_id, all_dgs).to_bytes();
+        let resend_frame = frame::Data::new(true, sequence_id, proto_frame.rel_dgs.clone()).to_bytes();
+
+        (proto_frame, first_frame, resend_frame)
+    }
+
+    fn random_reliable_frame(sequence_id: u32) -> (ProtoFrame, Box<[u8]>) {
+        let proto_frame = ProtoFrame {
+            rel_dgs: (1..2).map(|_| random_frame_data_entry()).collect(),
+            unrel_dgs: Vec::new(),
+        };
+
+        let frame = frame::Data::new(true, sequence_id, proto_frame.rel_dgs.clone()).to_bytes();
+
+        (proto_frame, frame)
+    }
+
+    fn random_unreliable_frame(sequence_id: u32) -> (ProtoFrame, Box<[u8]>) {
+        let proto_frame = ProtoFrame {
+            rel_dgs: Vec::new(),
+            unrel_dgs: (1..2).map(|_| random_frame_data_entry()).collect(),
+        };
+
+        let first_frame = frame::Data::new(false, sequence_id, proto_frame.unrel_dgs.clone()).to_bytes();
+
+        (proto_frame, first_frame)
+    }
+
+    fn test_send_frame(transfer_queue: &mut TransferQueue, proto_frame: ProtoFrame, now: time::Instant, frames: Vec<Box<[u8]>>) {
+        let test_sink = TestSink::new(frames);
+        transfer_queue.send_frame(proto_frame, now, &test_sink);
+        assert!(test_sink.is_finished());
+    }
+
+    fn test_flush(transfer_queue: &mut TransferQueue, now: time::Instant, rto: time::Duration, frames: Vec<Box<[u8]>>) {
+        let test_sink = TestSink::new(frames);
+        transfer_queue.flush(now, rto, &test_sink);
+        assert!(test_sink.is_finished());
+    }
+
+    #[test]
+    fn test_transfer_queue_resend() {
+        let mut transfer_queue = TransferQueue::new(0);
+
+        let t0 = time::Instant::now();
+        let t1 = t0 + time::Duration::from_millis(105);
+        let t2 = t1 + time::Duration::from_millis(205);
+        let t3 = t2 + time::Duration::from_millis(305);
+        let rto = time::Duration::from_millis(100);
+
+        let (proto_frame, frame) = random_reliable_frame(0);
+
+        test_send_frame(&mut transfer_queue, proto_frame, t0, vec![frame.clone()]);
+        test_flush(&mut transfer_queue, t0, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, frame.len());
+
+        test_flush(&mut transfer_queue, t1, rto, vec![frame.clone()]);
+        test_flush(&mut transfer_queue, t1, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, frame.len());
+
+        test_flush(&mut transfer_queue, t2, rto, vec![frame.clone()]);
+        test_flush(&mut transfer_queue, t2, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, frame.len());
+
+        transfer_queue.acknowledge_frames(vec![0]);
+
+        assert_eq!(transfer_queue.size, 0);
+
+        test_flush(&mut transfer_queue, t3, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, 0);
+    }
+
+    #[test]
+    fn test_transfer_queue_combined_resend() {
+        let mut transfer_queue = TransferQueue::new(0);
+
+        let t0 = time::Instant::now();
+        let t1 = t0 + time::Duration::from_millis(105);
+        let t2 = t1 + time::Duration::from_millis(205);
+        let rto = time::Duration::from_millis(100);
+
+        let (proto_frame, first_frame, resend_frame) = random_combined_frame(0);
+
+        test_send_frame(&mut transfer_queue, proto_frame, t0, vec![first_frame.clone()]);
+        test_flush(&mut transfer_queue, t0, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, first_frame.len());
+
+        test_flush(&mut transfer_queue, t1, rto, vec![resend_frame.clone()]);
+        test_flush(&mut transfer_queue, t1, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, resend_frame.len());
+
+        transfer_queue.acknowledge_frames(vec![0]);
+
+        assert_eq!(transfer_queue.size, 0);
+
+        test_flush(&mut transfer_queue, t2, rto, vec![]);
+    }
+
+    #[test]
+    fn test_transfer_queue_unreliable_timeout() {
+        let mut transfer_queue = TransferQueue::new(0);
+
+        let t0 = time::Instant::now();
+        let t1 = t0 + time::Duration::from_millis(105);
+        let rto = time::Duration::from_millis(100);
+
+        let (proto_frame, frame) = random_unreliable_frame(0);
+
+        test_send_frame(&mut transfer_queue, proto_frame, t0, vec![frame.clone()]);
+        test_flush(&mut transfer_queue, t0, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, frame.len());
+
+        test_flush(&mut transfer_queue, t1, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, 0);
+    }
+
+    #[test]
+    fn test_transfer_queue_unreliable_sentinel() {
+        let mut transfer_queue = TransferQueue::new(SENTINEL_FRAME_SPACING-1);
+
+        let t0 = time::Instant::now();
+        let t1 = t0 + time::Duration::from_millis(105);
+        let t2 = t1 + time::Duration::from_millis(205);
+        let t3 = t2 + time::Duration::from_millis(305);
+        let rto = time::Duration::from_millis(100);
+
+        let (proto_frame, frame) = random_unreliable_frame(SENTINEL_FRAME_SPACING-1);
+        let sentinel_frame = frame::Data::new(true, SENTINEL_FRAME_SPACING-1, vec![]).to_bytes();
+
+        test_send_frame(&mut transfer_queue, proto_frame, t0, vec![frame.clone()]);
+        test_flush(&mut transfer_queue, t0, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, frame.len());
+
+        test_flush(&mut transfer_queue, t1, rto, vec![sentinel_frame.clone()]);
+        test_flush(&mut transfer_queue, t1, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, sentinel_frame.len());
+
+        test_flush(&mut transfer_queue, t2, rto, vec![sentinel_frame.clone()]);
+        test_flush(&mut transfer_queue, t2, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, sentinel_frame.len());
+
+        transfer_queue.acknowledge_frames(vec![SENTINEL_FRAME_SPACING-1]);
+        test_flush(&mut transfer_queue, t3, rto, vec![]);
+
+        assert_eq!(transfer_queue.size, 0);
+    }
+}
+
