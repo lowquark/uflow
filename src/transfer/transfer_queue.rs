@@ -113,7 +113,7 @@ impl TransferEntry {
 
     fn apply_drop(&mut self) {
         match self.frame {
-            Frame::Unreliable(ref frame) => {
+            Frame::Unreliable(_) => {
                 if self.sequence_id % SENTINEL_FRAME_SPACING == SENTINEL_FRAME_SPACING - 1 {
                     // Convert to sentinel before resending
                     self.frame = Frame::Reliable(ReliableFrame {
@@ -124,7 +124,7 @@ impl TransferEntry {
                     self.remove = true;
                 }
             }
-            Frame::Reliable(ref frame) => {
+            Frame::Reliable(_) => {
                 // Do nothing, just resend
             }
             Frame::Mixed(ref mut frame) => {
@@ -189,7 +189,7 @@ impl TransferQueue {
         self.push(entry);
     }
 
-    fn remove_partial(&mut self, sequence_id: u32) -> u32 {
+    fn remove_frame_partial(&mut self, sequence_id: u32) -> usize {
         let lead = sequence_id.wrapping_sub(self.base_sequence_id);
 
         match self.entries.binary_search_by(|entry| entry.sequence_id.wrapping_sub(self.base_sequence_id).cmp(&lead)) {
@@ -197,10 +197,12 @@ impl TransferQueue {
                 let ref mut entry = self.entries[idx];
                 assert!(entry.sequence_id == sequence_id);
 
-                self.size -= entry.frame_data().len();
+                let entry_size = entry.frame_data().len();
+
+                self.size -= entry_size;
                 entry.remove = true;
 
-                return 1;
+                return entry_size;
             }
             _ => {
                 return 0;
@@ -208,11 +210,11 @@ impl TransferQueue {
         }
     }
 
-    pub fn remove_frames(&mut self, sequence_ids: Vec<u32>) -> u32 {
-        let mut num_removals = 0;
+    pub fn remove_frames(&mut self, sequence_ids: Vec<u32>) -> usize {
+        let mut bytes_removed = 0;
 
         for sequence_id in sequence_ids.into_iter() {
-            num_removals += self.remove_partial(sequence_id);
+            bytes_removed += self.remove_frame_partial(sequence_id);
         }
 
         if let Some(newest_entry) = self.entries.back() {
@@ -227,7 +229,7 @@ impl TransferQueue {
             }
         }
 
-        return num_removals;
+        return bytes_removed;
     }
 
     fn send_frame(entry: &mut TransferEntry, now: time::Instant, sink: & dyn DataSink) {
@@ -241,8 +243,8 @@ impl TransferQueue {
         }
     }
 
-    pub fn send_pending_frames(&mut self, now: time::Instant, time_rto: time::Duration, sink: & dyn DataSink) -> u32 {
-        let mut num_resends = 0;
+    pub fn send_pending_frames(&mut self, now: time::Instant, time_rto: time::Duration, sink: & dyn DataSink) -> usize {
+        let mut bytes_resent = 0;
 
         for entry in self.entries.iter_mut() {
             if let Some(time_sent) = entry.last_send_time {
@@ -250,13 +252,15 @@ impl TransferQueue {
                 let was_dropped = now - time_sent >= time_rto*timeout_scale;
 
                 if was_dropped {
-                    num_resends += 1;
-
                     self.size -= entry.frame_data().len();
                     entry.apply_drop();
 
                     if !entry.remove {
-                        self.size += entry.frame_data().len();
+                        let entry_size = entry.frame_data().len();
+
+                        self.size += entry_size;
+
+                        bytes_resent += entry_size;
 
                         Self::send_frame(entry, now, sink);
                     }
@@ -268,11 +272,19 @@ impl TransferQueue {
 
         self.entries.retain(|entry| !entry.remove);
 
-        return num_resends;
+        return bytes_resent;
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn sequence_id_span(&self) -> u32 {
+        self.next_sequence_id.wrapping_sub(self.base_sequence_id)
     }
 }
 

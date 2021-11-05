@@ -6,8 +6,13 @@ use super::frame;
 use super::DataSink;
 use super::MTU;
 
-mod queuing;
+mod congestion_window;
+mod send_queue;
 mod transfer_queue;
+
+use congestion_window::CongestionWindow;
+use send_queue::SendQueue;
+use transfer_queue::TransferQueue;
 
 const TRANSFER_WINDOW_SIZE: u32 = 128;
 
@@ -69,9 +74,67 @@ impl LeakyBucket {
 }
 */
 
+fn assemble_frame(send_queue: &mut send_queue::SendQueue, max_size: usize) -> (Vec<frame::DataEntry>, Vec<frame::DataEntry>) {
+    let mut frame_size = frame::Data::HEADER_SIZE_BYTES;
+    let mut unrel_msgs = Vec::new();
+    let mut rel_msgs = Vec::new();
+
+    while let Some(entry) = send_queue.front() {
+        let encoded_size = entry.data.encoded_size();
+        let hyp_frame_size = frame_size + encoded_size;
+
+        if hyp_frame_size > max_size {
+            // Would be too large for congestion window, return what we have
+            break;
+        }
+
+        if hyp_frame_size > MTU {
+            // Would be too large for this frame, return what we have
+            break;
+        }
+
+        // Verification complete, add datagram to this frame
+        frame_size += encoded_size;
+
+        let entry = send_queue.pop_front().unwrap();
+        if entry.reliable {
+            rel_msgs.push(entry.data);
+        } else {
+            unrel_msgs.push(entry.data);
+        }
+    }
+
+    return (unrel_msgs, rel_msgs);
+}
+
+// Assembles and sends as many frames as possible, with datagrams taken from the send queue
+// in order, subject to the frame size limit, the congestion window, and the sequence id
+// transfer window.
+//
+// All entries in the send queue must have an encoded size such that they may be stored in
+// a frame satisfying the MTU (i.e. encoded_size <= MTU - HEADER_SIZE).
+fn enqueue_new_data(send_queue: &mut SendQueue, transfer_queue: &mut TransferQueue, cwnd: usize) {
+    while cwnd > transfer_queue.size() && transfer_queue.sequence_id_span() <= TRANSFER_WINDOW_SIZE {
+        let free_space = cwnd - transfer_queue.size();
+
+        let (unrel_msgs, rel_msgs) = assemble_frame(send_queue, free_space);
+
+        if unrel_msgs.len() > 0 && rel_msgs.len() > 0 {
+            transfer_queue.push_mixed(unrel_msgs, rel_msgs);
+        } else if unrel_msgs.len() > 0 {
+            transfer_queue.push_unreliable(unrel_msgs);
+        } else if rel_msgs.len() > 0 {
+            transfer_queue.push_reliable(rel_msgs);
+        } else {
+            break;
+        }
+    }
+}
+
 pub struct FrameIO {
-    send_queue: queuing::SendQueue,
-    transfer_queue: queuing::TransferQueue,
+    send_queue: SendQueue,
+    transfer_queue: TransferQueue,
+    congestion_window: CongestionWindow,
     ack_queue: VecDeque<u32>,
     recv_sequence_id: u32,
 }
@@ -79,14 +142,17 @@ pub struct FrameIO {
 impl FrameIO {
     pub fn new(tx_sequence_id: u32, rx_sequence_id: u32, max_tx_bandwidth: usize) -> Self {
         Self {
-            send_queue: queuing::SendQueue::new(),
-            transfer_queue: queuing::TransferQueue::new(tx_sequence_id),
+            send_queue: SendQueue::new(),
+            transfer_queue: TransferQueue::new(tx_sequence_id),
+            congestion_window: CongestionWindow::new(),
             ack_queue: VecDeque::new(),
             recv_sequence_id: rx_sequence_id,
         }
     }
 
     pub fn enqueue_datagram(&mut self, data: frame::DataEntry, reliable: bool, high_priority: bool) {
+        debug_assert!(data.encoded_size() <= MTU - frame::Data::HEADER_SIZE_BYTES);
+
         self.send_queue.push(data, reliable, high_priority);
     }
 
@@ -111,7 +177,11 @@ impl FrameIO {
     }
 
     pub fn handle_data_ack_frame(&mut self, data_ack: frame::DataAck) {
-        self.transfer_queue.acknowledge_frames(data_ack.sequence_ids);
+        let bytes_acked = self.transfer_queue.remove_frames(data_ack.sequence_ids);
+
+        if bytes_acked > 0 {
+            self.congestion_window.signal_ack(bytes_acked);
+        }
     }
 
     fn send_acks(&mut self, sink: & dyn DataSink) {
@@ -131,9 +201,13 @@ impl FrameIO {
     pub fn flush(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) {
         self.send_acks(sink);
 
-        self.transfer_queue.flush(now, timeout, sink);
+        enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, self.congestion_window.size());
 
-        queuing::send_new_data(&mut self.send_queue, &mut self.transfer_queue, now, sink);
+        let num_resends = self.transfer_queue.send_pending_frames(now, timeout, sink);
+
+        if num_resends > 0 {
+            self.congestion_window.signal_nack(now, timeout);
+        }
     }
 
     pub fn is_idle(&self) -> bool {
