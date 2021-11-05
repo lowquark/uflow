@@ -7,6 +7,7 @@ use super::DataSink;
 use super::MTU;
 
 mod queuing;
+mod transfer_queue;
 
 const TRANSFER_WINDOW_SIZE: u32 = 128;
 
@@ -101,9 +102,7 @@ impl FrameIO {
                 self.recv_sequence_id = data.sequence_id.wrapping_add(1);
             }
 
-            if data.ack {
-                self.ack_queue.push_back(data.sequence_id);
-            }
+            self.ack_queue.push_back(data.sequence_id);
 
             Some(data.entries)
         } else {
