@@ -3,18 +3,17 @@ use std::time;
 
 use super::MTU;
 
-// TODO: Max cwnd a function of max bandwidth and RTT
-
 pub struct CongestionWindow {
     cwnd: usize,
     ssthresh: usize,
+    max_cwnd: usize,
     ca_count: usize,
     nack_exp: Option<time::Instant>,
     reset_exp: Option<time::Instant>,
 }
 
 impl CongestionWindow {
-    const MAX_SIZE: usize = 1024*1024*1024;
+    const MAX_CWND: usize = 1024*1024*1024;
     const MIN_CWND: usize = MTU;
     const MIN_SSTHRESH: usize = 2*MTU;
     const RESET_RTT_SCALE: u32 = 8;
@@ -22,7 +21,8 @@ impl CongestionWindow {
     pub fn new() -> Self {
         Self {
             cwnd: MTU,
-            ssthresh: Self::MAX_SIZE,
+            max_cwnd: Self::MAX_CWND,
+            ssthresh: Self::MAX_CWND,
             ca_count: 0,
             nack_exp: None,
             reset_exp: None,
@@ -33,8 +33,8 @@ impl CongestionWindow {
     // "appropriate byte counting"?
     fn grow(&mut self) {
         self.cwnd += MTU;
-        if self.cwnd > Self::MAX_SIZE {
-            self.cwnd = Self::MAX_SIZE;
+        if self.cwnd > self.max_cwnd {
+            self.cwnd = self.max_cwnd;
         }
     }
 
@@ -108,6 +108,13 @@ impl CongestionWindow {
 
     pub fn size(&self) -> usize {
         self.cwnd
+    }
+
+    pub fn set_max_size(&mut self, max_size: usize) {
+        self.max_cwnd = max_size.min(Self::MAX_CWND).max(Self::MIN_CWND);
+        if self.cwnd > self.max_cwnd {
+            self.cwnd = self.max_cwnd;
+        }
     }
 }
 

@@ -137,6 +137,7 @@ pub struct FrameIO {
     congestion_window: CongestionWindow,
     ack_queue: VecDeque<u32>,
     recv_sequence_id: u32,
+    max_tx_bandwidth: usize,
 }
 
 impl FrameIO {
@@ -147,6 +148,7 @@ impl FrameIO {
             congestion_window: CongestionWindow::new(),
             ack_queue: VecDeque::new(),
             recv_sequence_id: rx_sequence_id,
+            max_tx_bandwidth: max_tx_bandwidth,
         }
     }
 
@@ -198,8 +200,10 @@ impl FrameIO {
         }
     }
 
-    pub fn flush(&mut self, now: time::Instant, rto: time::Duration, sink: & dyn DataSink) {
+    pub fn flush(&mut self, now: time::Instant, rtt: time::Duration, rto: time::Duration, sink: & dyn DataSink) {
         self.send_acks(sink);
+
+        self.congestion_window.set_max_size((rtt.as_secs_f64() * (self.max_tx_bandwidth as f64)).round() as usize);
 
         let cwnd = self.congestion_window.size();
 
