@@ -25,11 +25,11 @@ pub struct Params {
 
 #[derive(Clone,Copy,Debug,PartialEq)]
 enum State {
-    Connecting,       // Send Connect until acked (Connect & ConnectAck => Connected, Bad Connect => SendDisconnect)
-    Connected,        // Send/receive data (disconnect() => SendDisconnect, after all pending data transferred)
-    SendDisconnect,   // Send disconnect (DisconnectAck -> Disconnected)
-    Disconnected,     // Continue to acknowledge Disconnect (30s => Zombie)
-    Zombie,           // Nothing
+    Connecting,
+    Connected,
+    Disconnecting,
+    Disconnected,
+    Zombie,
 }
 
 #[derive(Clone,Debug,PartialEq)]
@@ -155,7 +155,7 @@ impl Peer {
                     self.try_enter_connected();
                 } else {
                     // The acknowledgement doesn't match our connection request id, fail lol
-                    self.send_disconnect_enter();
+                    self.disconnected_enter();
                 }
             }
             frame::Frame::Connect(connect_frame) => {
@@ -168,7 +168,7 @@ impl Peer {
                     self.try_enter_connected();
                 } else {
                     // The connection is not possible
-                    self.send_disconnect_enter();
+                    self.disconnected_enter();
                 }
             }
             frame::Frame::Disconnect(_) => {
@@ -271,20 +271,20 @@ impl Peer {
         if self.disconnect_flush {
             // Disconnect if there's no pending data --the application is expected to stop calling send()!
             if self.frame_io.is_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
-                self.send_disconnect_enter();
+                self.disconnecting_enter();
             }
         }
     }
 
-    // State::SendDisconnect
-    fn send_disconnect_enter(&mut self) {
-        self.state = State::SendDisconnect;
+    // State::Disconnecting
+    fn disconnecting_enter(&mut self) {
+        self.state = State::Disconnecting;
         self.watchdog_time = time::Instant::now();
 
         self.meta_send_time = None;
     }
 
-    fn send_disconnect_handle_frame(&mut self, frame: frame::Frame) {
+    fn disconnecting_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
             frame::Frame::Disconnect(_) => {
                 // The remote is also disconnecting
@@ -299,7 +299,7 @@ impl Peer {
         }
     }
 
-    fn send_disconnect_step(&mut self, now: time::Instant) {
+    fn disconnecting_step(&mut self, now: time::Instant) {
         if self.meta_send_time.map_or(true, |time| now - time > DISCONNECT_INTERVAL) {
             self.meta_send_time = Some(now);
             self.enqueue_meta(frame::Frame::Disconnect(frame::Disconnect { }));
@@ -337,7 +337,7 @@ impl Peer {
         match self.state {
             State::Connecting => self.connecting_handle_frame(frame),
             State::Connected => self.connected_handle_frame(frame),
-            State::SendDisconnect => self.send_disconnect_handle_frame(frame),
+            State::Disconnecting => self.disconnecting_handle_frame(frame),
             State::Disconnected => self.disconnected_handle_frame(frame),
             State::Zombie => (),
         }
@@ -361,7 +361,7 @@ impl Peer {
         match self.state {
             State::Connecting => self.connecting_step(now),
             State::Connected => self.connected_step(now),
-            State::SendDisconnect => self.send_disconnect_step(now),
+            State::Disconnecting => self.disconnecting_step(now),
             State::Disconnected => (),
             State::Zombie => (),
         }
