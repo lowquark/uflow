@@ -7,7 +7,6 @@ use super::DataSink;
 use super::TRANSFER_WINDOW_SIZE;
 
 const SENTINEL_FRAME_SPACING: u32 = TRANSFER_WINDOW_SIZE/2;
-const FRAME_SEND_COUNT_MAX: u8 = 3;
 
 #[derive(Debug)]
 struct MixedFrame {
@@ -49,6 +48,7 @@ struct TransferEntry {
     last_send_time: Option<time::Instant>,
     send_count: u8,
     remove: bool,
+    pending: bool,
 }
 
 impl TransferEntry {
@@ -81,6 +81,7 @@ impl TransferEntry {
             last_send_time: None,
             send_count: 0,
             remove: false,
+            pending: true,
         }
     }
 
@@ -93,6 +94,7 @@ impl TransferEntry {
             last_send_time: None,
             send_count: 0,
             remove: false,
+            pending: true,
         }
     }
 
@@ -108,6 +110,7 @@ impl TransferEntry {
             last_send_time: None,
             send_count: 0,
             remove: false,
+            pending: true,
         }
     }
 
@@ -232,6 +235,7 @@ impl TransferQueue {
         return bytes_removed;
     }
 
+    /*
     fn send_frame(entry: &mut TransferEntry, now: time::Instant, sink: & dyn DataSink) {
         sink.send(&entry.frame_data());
 
@@ -242,37 +246,56 @@ impl TransferQueue {
             entry.send_count = FRAME_SEND_COUNT_MAX;
         }
     }
+    */
 
-    pub fn send_pending_frames(&mut self, now: time::Instant, time_rto: time::Duration, sink: & dyn DataSink) -> usize {
-        let mut bytes_resent = 0;
+    pub fn process_timeouts(&mut self, now: time::Instant, time_rto: time::Duration) -> bool {
+        let mut any_timeouts = false;
 
         for entry in self.entries.iter_mut() {
             if let Some(time_sent) = entry.last_send_time {
-                let timeout_scale = 1 << (entry.send_count - 1);
-                let was_dropped = now - time_sent >= time_rto*timeout_scale;
+                let was_dropped = now - time_sent >= time_rto;
 
                 if was_dropped {
-                    self.size -= entry.frame_data().len();
+                    any_timeouts = true;
+
+                    let entry_size = entry.frame_data().len();
+                    self.size -= entry_size;
+
                     entry.apply_drop();
 
                     if !entry.remove {
-                        let entry_size = entry.frame_data().len();
+                        let new_entry_size = entry.frame_data().len();
+                        self.size += new_entry_size;
 
-                        self.size += entry_size;
-
-                        bytes_resent += entry_size;
-
-                        Self::send_frame(entry, now, sink);
+                        entry.pending = true;
                     }
                 }
-            } else {
-                Self::send_frame(entry, now, sink);
             }
         }
 
         self.entries.retain(|entry| !entry.remove);
 
-        return bytes_resent;
+        return any_timeouts;
+    }
+
+    pub fn send_pending_frames(&mut self, now: time::Instant, cwnd_size: usize, sink: & dyn DataSink) {
+        let mut cwnd_bytes = 0;
+
+        for entry in self.entries.iter_mut() {
+            if entry.pending {
+                let frame_data = entry.frame_data();
+
+                cwnd_bytes += frame_data.len();
+                if cwnd_bytes > cwnd_size {
+                    break;
+                }
+
+                sink.send(&frame_data);
+
+                entry.last_send_time = Some(now);
+                entry.pending = false;
+            }
+        }
     }
 
     pub fn size(&self) -> usize {
@@ -365,9 +388,12 @@ mod tests {
     fn test_schedule(transfer_queue: &mut TransferQueue, rto: time::Duration, schedule: Vec<TestScheduleEntry>) {
         for entry in schedule.into_iter() {
             let test_sink = TestSink::new();
-            transfer_queue.send_pending_frames(entry.time, rto, &test_sink);
-            test_sink.assert_sent(entry.frames);
+            let cwnd_size = 1000000;
 
+            transfer_queue.process_timeouts(entry.time, rto);
+            transfer_queue.send_pending_frames(entry.time, cwnd_size, &test_sink);
+
+            test_sink.assert_sent(entry.frames);
             assert_eq!(transfer_queue.size(), entry.size);
         }
     }
@@ -407,17 +433,17 @@ mod tests {
             TestScheduleEntry{ time: t0              , frames: vec![ frame.clone()          ], size: frame.len() },
             TestScheduleEntry{ time: t0         + eps, frames: vec![                        ], size: frame.len() },
 
-            TestScheduleEntry{ time: t0 +   rto - eps, frames: vec![                        ], size: frame.len() },
-            TestScheduleEntry{ time: t0 +   rto      , frames: vec![ sentinel_frame.clone() ], size: sentinel_frame.len() },
-            TestScheduleEntry{ time: t0 +   rto + eps, frames: vec![                        ], size: sentinel_frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto - eps, frames: vec![                        ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto      , frames: vec![ sentinel_frame.clone() ], size: sentinel_frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto + eps, frames: vec![                        ], size: sentinel_frame.len() },
+
+            TestScheduleEntry{ time: t0 + 2*rto - eps, frames: vec![                        ], size: sentinel_frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto      , frames: vec![ sentinel_frame.clone() ], size: sentinel_frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto + eps, frames: vec![                        ], size: sentinel_frame.len() },
 
             TestScheduleEntry{ time: t0 + 3*rto - eps, frames: vec![                        ], size: sentinel_frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto      , frames: vec![ sentinel_frame.clone() ], size: sentinel_frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto + eps, frames: vec![                        ], size: sentinel_frame.len() },
-
-            TestScheduleEntry{ time: t0 + 7*rto - eps, frames: vec![                        ], size: sentinel_frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto      , frames: vec![ sentinel_frame.clone() ], size: sentinel_frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto + eps, frames: vec![                        ], size: sentinel_frame.len() },
         ]);
     }
 
@@ -435,17 +461,17 @@ mod tests {
             TestScheduleEntry{ time: t0              , frames: vec![ frame.clone() ], size: frame.len() },
             TestScheduleEntry{ time: t0         + eps, frames: vec![               ], size: frame.len() },
 
-            TestScheduleEntry{ time: t0 +   rto - eps, frames: vec![               ], size: frame.len() },
-            TestScheduleEntry{ time: t0 +   rto      , frames: vec![ frame.clone() ], size: frame.len() },
-            TestScheduleEntry{ time: t0 +   rto + eps, frames: vec![               ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto - eps, frames: vec![               ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto      , frames: vec![ frame.clone() ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto + eps, frames: vec![               ], size: frame.len() },
+
+            TestScheduleEntry{ time: t0 + 2*rto - eps, frames: vec![               ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto      , frames: vec![ frame.clone() ], size: frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto + eps, frames: vec![               ], size: frame.len() },
 
             TestScheduleEntry{ time: t0 + 3*rto - eps, frames: vec![               ], size: frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto      , frames: vec![ frame.clone() ], size: frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto + eps, frames: vec![               ], size: frame.len() },
-
-            TestScheduleEntry{ time: t0 + 7*rto - eps, frames: vec![               ], size: frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto      , frames: vec![ frame.clone() ], size: frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto + eps, frames: vec![               ], size: frame.len() },
         ]);
     }
 
@@ -463,17 +489,17 @@ mod tests {
             TestScheduleEntry{ time: t0              , frames: vec![ first_frame.clone()  ], size: first_frame.len() },
             TestScheduleEntry{ time: t0         + eps, frames: vec![                      ], size: first_frame.len() },
 
-            TestScheduleEntry{ time: t0 +   rto - eps, frames: vec![                      ], size: first_frame.len() },
-            TestScheduleEntry{ time: t0 +   rto      , frames: vec![ resend_frame.clone() ], size: resend_frame.len() },
-            TestScheduleEntry{ time: t0 +   rto + eps, frames: vec![                      ], size: resend_frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto - eps, frames: vec![                      ], size: first_frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto      , frames: vec![ resend_frame.clone() ], size: resend_frame.len() },
+            TestScheduleEntry{ time: t0 + 1*rto + eps, frames: vec![                      ], size: resend_frame.len() },
+
+            TestScheduleEntry{ time: t0 + 2*rto - eps, frames: vec![                      ], size: resend_frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto      , frames: vec![ resend_frame.clone() ], size: resend_frame.len() },
+            TestScheduleEntry{ time: t0 + 2*rto + eps, frames: vec![                      ], size: resend_frame.len() },
 
             TestScheduleEntry{ time: t0 + 3*rto - eps, frames: vec![                      ], size: resend_frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto      , frames: vec![ resend_frame.clone() ], size: resend_frame.len() },
             TestScheduleEntry{ time: t0 + 3*rto + eps, frames: vec![                      ], size: resend_frame.len() },
-
-            TestScheduleEntry{ time: t0 + 7*rto - eps, frames: vec![                      ], size: resend_frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto      , frames: vec![ resend_frame.clone() ], size: resend_frame.len() },
-            TestScheduleEntry{ time: t0 + 7*rto + eps, frames: vec![                      ], size: resend_frame.len() },
         ]);
     }
 

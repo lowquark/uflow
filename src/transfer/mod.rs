@@ -198,16 +198,20 @@ impl FrameIO {
         }
     }
 
-    pub fn flush(&mut self, now: time::Instant, rtt: time::Duration, rto: time::Duration, sink: & dyn DataSink) {
+    pub fn flush(&mut self, now: time::Instant, rto: time::Duration, sink: & dyn DataSink) {
         self.send_acks(sink);
 
-        enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, self.congestion_window.size());
+        let cwnd = self.congestion_window.size();
 
-        let bytes_nacked = self.transfer_queue.send_pending_frames(now, rto, sink);
+        enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, cwnd);
 
-        if bytes_nacked > 0 {
-            self.congestion_window.signal_nack(now, rtt);
+        let any_nacks = self.transfer_queue.process_timeouts(now, rto);
+
+        if any_nacks {
+            self.congestion_window.signal_nack(now, rto);
         }
+
+        self.transfer_queue.send_pending_frames(now, cwnd, sink);
     }
 
     pub fn is_idle(&self) -> bool {

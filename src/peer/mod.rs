@@ -394,10 +394,9 @@ impl Peer {
         }
 
         // Flush any pending frames
-        let rtt = time::Duration::from_millis(self.ping.rtt_ms().round() as u64);
         let rto = time::Duration::from_millis(self.ping.rto_ms(self.avg_step_ms).round() as u64);
 
-        self.frame_io.flush(now, rtt, rto, sink);
+        self.frame_io.flush(now, rto, sink);
     }
 
     fn flush_meta(&mut self, sink: & dyn DataSink) {
