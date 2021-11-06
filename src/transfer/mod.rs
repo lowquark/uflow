@@ -203,9 +203,9 @@ impl FrameIO {
 
         enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, self.congestion_window.size());
 
-        let num_resends = self.transfer_queue.send_pending_frames(now, timeout, sink);
+        let bytes_nacked = self.transfer_queue.send_pending_frames(now, timeout, sink);
 
-        if num_resends > 0 {
+        if bytes_nacked > 0 {
             self.congestion_window.signal_nack(now, timeout);
         }
     }
