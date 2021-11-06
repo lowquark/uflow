@@ -50,12 +50,18 @@ static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(CONNECT_IN
 static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(DISCONNECT_INTERVAL_MS);
 static WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(WATCHDOG_TIMEOUT_MS);
 
+const STEP_TIME_SMOOTH: f64 = 0.125;
+const DEFAULT_STEP_TIME_MS: f64 = 0.015;
+
 pub struct Peer {
     state: State,
     params: Params,
 
     watchdog_time: time::Instant,
     meta_send_time: Option<time::Instant>,
+
+    last_step_time: Option<time::Instant>,
+    avg_step_ms: f64,
 
     // Connect, Disconnect, Ping
     meta_queue: VecDeque<Box<[u8]>>,
@@ -67,7 +73,7 @@ pub struct Peer {
     connect_frame_remote: Option<frame::Connect>,
 
     // Connected stuff
-    ping_rtt: rtt::PingRtt,
+    ping: rtt::PingRtt,
     was_connected: bool,
     disconnect_flush: bool,
 
@@ -100,6 +106,9 @@ impl Peer {
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
 
+            last_step_time: None,
+            avg_step_ms: DEFAULT_STEP_TIME_MS,
+
             meta_queue: VecDeque::new(),
             event_queue: VecDeque::new(),
 
@@ -107,7 +116,7 @@ impl Peer {
             connect_ack_received: false,
             connect_frame_remote: None,
 
-            ping_rtt: rtt::PingRtt::new(),
+            ping: rtt::PingRtt::new(),
             was_connected: false,
             disconnect_flush: false,
 
@@ -214,7 +223,7 @@ impl Peer {
             frame::Frame::PingAck(ping_ack_frame) => {
                 // Our ping has been acknowledged, update RTT and pet watchdog
                 let now = time::Instant::now();
-                self.ping_rtt.handle_ack(now, ping_ack_frame.sequence_id);
+                self.ping.handle_ack(now, ping_ack_frame.sequence_id);
                 self.watchdog_time = now;
             }
             frame::Frame::Data(data_frame) => {
@@ -244,7 +253,7 @@ impl Peer {
         // Try to send a ping
         if self.meta_send_time.map_or(true, |time| now - time > PING_INTERVAL) {
             self.meta_send_time = Some(now);
-            let sequence_id = self.ping_rtt.new_ping(now);
+            let sequence_id = self.ping.new_ping(now);
             self.enqueue_meta(frame::Frame::Ping(frame::Ping {
                 sequence_id: sequence_id,
             }));
@@ -337,6 +346,12 @@ impl Peer {
     pub fn step(&mut self) {
         let now = time::Instant::now();
 
+        // TODO: Make this quantity resettable, and its default configurable
+        if let Some(last_step_time) = self.last_step_time {
+            let step_ms = (now - last_step_time).as_secs_f64()*1_000.0;
+            self.avg_step_ms = (1.0 - STEP_TIME_SMOOTH)*self.avg_step_ms + STEP_TIME_SMOOTH * step_ms;
+        }
+
         if self.state != State::Zombie {
             if now - self.watchdog_time > WATCHDOG_TIMEOUT {
                 self.zombie_enter();
@@ -366,7 +381,7 @@ impl Peer {
 
     fn flush_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
         // Take pending messages from tx channels and enqueue them for delivery
-        // TODO: Should this be round-robin?
+        // TODO: Should this be round-robin? (Maybe on a per-packet basis?)
         for (channel_id, channel) in self.channels.iter_mut().enumerate() {
             while let Some((datagram, is_reliable)) = channel.tx.try_send() {
                 let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
@@ -378,10 +393,11 @@ impl Peer {
             }
         }
 
-        // Flush any pending frames using a resend timeout computed by the ping mechanism
-        let timeout = time::Duration::from_millis(self.ping_rtt.rto_ms().round() as u64);
+        // Flush any pending frames
+        let rtt = time::Duration::from_millis(self.ping.rtt_ms().round() as u64);
+        let rto = time::Duration::from_millis(self.ping.rto_ms(self.avg_step_ms).round() as u64);
 
-        self.frame_io.flush(now, timeout, sink);
+        self.frame_io.flush(now, rtt, rto, sink);
     }
 
     fn flush_meta(&mut self, sink: & dyn DataSink) {
@@ -411,7 +427,7 @@ impl Peer {
     }
 
     pub fn rtt_ms(&self) -> f64 {
-        self.ping_rtt.rtt_ms()
+        self.ping.rtt_ms()
     }
 }
 

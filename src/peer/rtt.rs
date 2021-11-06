@@ -22,9 +22,6 @@ impl PingRtt {
     const SRTT_SMOOTH: f64 = 0.125;
     const RTTVAR_SMOOTH: f64 = 0.25;
     const RTO_RTTVAR_K: f64 = 4.0;
-    // Our clock is extremely granular, but a minimum here ought to eliminate some resends for
-    // highly regular RTTs.
-    const RTO_RTTVAR_G: f64 = 1.0;
 
     pub fn new() -> Self {
         Self {
@@ -71,8 +68,8 @@ impl PingRtt {
         self.srtt_ms
     }
 
-    pub fn rto_ms(&self) -> f64 {
-        self.srtt_ms + (Self::RTO_RTTVAR_K*self.rttvar_ms).max(Self::RTO_RTTVAR_G)
+    pub fn rto_ms(&self, avg_step_ms: f64) -> f64 {
+        self.srtt_ms + (Self::RTO_RTTVAR_K*self.rttvar_ms).max(avg_step_ms)
     }
 }
 

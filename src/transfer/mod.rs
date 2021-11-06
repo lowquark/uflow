@@ -198,15 +198,15 @@ impl FrameIO {
         }
     }
 
-    pub fn flush(&mut self, now: time::Instant, timeout: time::Duration, sink: & dyn DataSink) {
+    pub fn flush(&mut self, now: time::Instant, rtt: time::Duration, rto: time::Duration, sink: & dyn DataSink) {
         self.send_acks(sink);
 
         enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, self.congestion_window.size());
 
-        let bytes_nacked = self.transfer_queue.send_pending_frames(now, timeout, sink);
+        let bytes_nacked = self.transfer_queue.send_pending_frames(now, rto, sink);
 
         if bytes_nacked > 0 {
-            self.congestion_window.signal_nack(now, timeout);
+            self.congestion_window.signal_nack(now, rtt);
         }
     }
 
