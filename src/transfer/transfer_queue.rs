@@ -53,11 +53,11 @@ struct TransferEntry {
 
 impl TransferEntry {
     fn encode_null_frame(sequence_id: u32) -> Box<[u8]> {
-        return frame::Data::new(false, sequence_id, vec![]).to_bytes();
+        return frame::Data::new(sequence_id, vec![]).to_bytes();
     }
 
     fn encode_basic_frame(sequence_id: u32, msgs: Box<[frame::DataEntry]>) -> Box<[u8]> {
-        return frame::Data::new(false, sequence_id, msgs.into_vec()).to_bytes();
+        return frame::Data::new(sequence_id, msgs.into_vec()).to_bytes();
     }
 
     fn encode_mixed_frame(sequence_id: u32,
@@ -67,7 +67,7 @@ impl TransferEntry {
         let mut all_msgs = rel_msgs.clone().into_vec();
         all_msgs.append(&mut unrel_msgs.into_vec());
 
-        let frame = frame::Data::new(false, sequence_id, all_msgs).to_bytes();
+        let frame = frame::Data::new(sequence_id, all_msgs).to_bytes();
 
         return (frame, rel_msgs);
     }
@@ -361,7 +361,7 @@ mod tests {
     fn random_frame(sequence_id: u32) -> (Vec<frame::DataEntry>, Box<[u8]>) {
         let msgs = (1..2).map(|_| random_frame_data_entry()).collect::<Vec<_>>();
 
-        let frame = frame::Data::new(false, sequence_id, msgs.clone()).to_bytes();
+        let frame = frame::Data::new(sequence_id, msgs.clone()).to_bytes();
 
         (msgs, frame)
     }
@@ -373,8 +373,8 @@ mod tests {
         let mut all_msgs = rel_msgs.clone();
         all_msgs.append(&mut unrel_msgs.clone());
 
-        let first_frame = frame::Data::new(false, sequence_id, all_msgs).to_bytes();
-        let resend_frame = frame::Data::new(false, sequence_id, rel_msgs.clone()).to_bytes();
+        let first_frame = frame::Data::new(sequence_id, all_msgs).to_bytes();
+        let resend_frame = frame::Data::new(sequence_id, rel_msgs.clone()).to_bytes();
 
         (unrel_msgs, rel_msgs, first_frame, resend_frame)
     }
@@ -423,7 +423,7 @@ mod tests {
         let (msgs, frame) = random_frame(SENTINEL_FRAME_SPACING-1);
         transfer_queue.push_unreliable(msgs);
 
-        let sentinel_frame = frame::Data::new(false, SENTINEL_FRAME_SPACING-1, vec![]).to_bytes();
+        let sentinel_frame = frame::Data::new(SENTINEL_FRAME_SPACING-1, vec![]).to_bytes();
 
         let t0 = time::Instant::now();
         let rto = time::Duration::from_millis(100);

@@ -73,7 +73,6 @@ pub struct PingAck {
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct Data {
-    pub ack: bool,
     pub sequence_id: FrameId,
     pub entries: Vec<DataEntry>,
 }
@@ -546,11 +545,10 @@ impl PingAck {
 
 impl Data {
     const TYPE_ID: u8 = 6;
-    pub const HEADER_SIZE_BYTES: usize = 8;
+    pub const HEADER_SIZE_BYTES: usize = 7;
 
-    pub fn new(ack: bool, sequence_id: u32, entries: Vec<DataEntry>) -> Self {
+    pub fn new(sequence_id: u32, entries: Vec<DataEntry>) -> Self {
         Self {
-            ack: ack,
             sequence_id: sequence_id,
             entries: entries,
         }
@@ -564,7 +562,6 @@ impl Data {
 
         let header = [
             Self::TYPE_ID,
-            self.ack as u8,
             (self.sequence_id >> 24) as u8,
             (self.sequence_id >> 16) as u8,
             (self.sequence_id >>  8) as u8,
@@ -593,13 +590,12 @@ impl Data {
             return None;
         }
 
-        let ack         = match header[1] { 0 => false, 1 => true, _ => { return None } };
-        let sequence_id = ((header[2] as u32) << 24) |
-                          ((header[3] as u32) << 16) |
-                          ((header[4] as u32) <<  8) |
-                          ((header[5] as u32)      );
-        let entry_num   = ((header[6] as u16) <<  8) |
-                          ((header[7] as u16)      );
+        let sequence_id = ((header[1] as u32) << 24) |
+                          ((header[2] as u32) << 16) |
+                          ((header[3] as u32) <<  8) |
+                          ((header[4] as u32)      );
+        let entry_num   = ((header[5] as u16) <<  8) |
+                          ((header[6] as u16)      );
 
         let mut entries = Vec::new();
 
@@ -616,7 +612,6 @@ impl Data {
 
         if buf.len() == 0 {
             Some(Self {
-                ack: ack,
                 sequence_id: sequence_id,
                 entries: entries,
             })
@@ -827,7 +822,6 @@ fn test_ping_ack_basic() {
 #[test]
 fn test_data_basic() {
     let f = Frame::Data(Data {
-        ack: true,
         sequence_id: 0x010203,
         entries: vec![
             DataEntry::new(69, Message::Datagram(
@@ -951,7 +945,6 @@ fn test_data_random() {
         }
 
         let f = Frame::Data(Data {
-            ack: rand::random::<bool>(),
             sequence_id: rand::random::<u32>(),
             entries: entries,
         });
