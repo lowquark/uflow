@@ -342,10 +342,6 @@ mod tests {
             let frames_deque: VecDeque<Box<[u8]>> = frames.into();
             assert_eq!(*self.sent_frames.borrow(), frames_deque);
         }
-
-        fn clear_sent(&mut self) {
-            self.sent_frames.borrow_mut().clear();
-        }
     }
 
     fn random_data(size: usize) -> Box<[u8]> {

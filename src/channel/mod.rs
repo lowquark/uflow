@@ -5,7 +5,7 @@ mod seq;
 
 // Maximum transfer window size, in units of sequence ids
 // Must be a power of two
-const TRANSFER_WINDOW_SIZE: u32 = 16384;
+const TRANSFER_WINDOW_SIZE: u32 = 65536;
 
 // Spacing for both window acknowledgements and sentinel datagrams
 // Must be an integer divisor of TRANSFER_WINDOW_SIZE

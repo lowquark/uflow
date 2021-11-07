@@ -147,7 +147,7 @@ mod tests {
         cw.ssthresh = initial_cwnd;
 
         for i in 0..100 {
-            for i in 0..cw.cwnd/MTU {
+            for _ in 0..cw.cwnd/MTU {
                 cw.signal_ack(MTU/2);
                 cw.signal_ack(MTU - MTU/2);
             }

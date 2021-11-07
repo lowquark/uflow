@@ -14,7 +14,7 @@ use congestion_window::CongestionWindow;
 use send_queue::SendQueue;
 use transfer_queue::TransferQueue;
 
-const TRANSFER_WINDOW_SIZE: u32 = 128;
+const TRANSFER_WINDOW_SIZE: u32 = 32768;
 
 /*
 struct LeakyBucket {
@@ -107,14 +107,12 @@ fn assemble_frame(send_queue: &mut send_queue::SendQueue, max_size: usize) -> (V
     return (unrel_msgs, rel_msgs);
 }
 
-// Assembles and sends as many frames as possible, with datagrams taken from the send queue
-// in order, subject to the frame size limit, the congestion window, and the sequence id
-// transfer window.
-//
-// All entries in the send queue must have an encoded size such that they may be stored in
+// Assembles and sends as many frames as possible, with datagrams taken from the send queue in
+// order, subject to the frame size limit, the congestion window, and the sequence id transfer
+// window. All entries in the send queue must have an encoded size such that they may be stored in
 // a frame satisfying the MTU (i.e. encoded_size <= MTU - HEADER_SIZE).
 fn enqueue_new_data(send_queue: &mut SendQueue, transfer_queue: &mut TransferQueue, cwnd: usize) {
-    while cwnd > transfer_queue.size() && transfer_queue.sequence_id_span() <= TRANSFER_WINDOW_SIZE {
+    while transfer_queue.size() < cwnd && transfer_queue.sequence_id_span() < TRANSFER_WINDOW_SIZE {
         let free_space = cwnd - transfer_queue.size();
 
         let (unrel_msgs, rel_msgs) = assemble_frame(send_queue, free_space);
@@ -205,9 +203,7 @@ impl FrameIO {
 
         self.congestion_window.set_max_size((rtt.as_secs_f64() * (self.max_tx_bandwidth as f64)).round() as usize);
 
-        let cwnd = self.congestion_window.size();
-
-        enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, cwnd);
+        enqueue_new_data(&mut self.send_queue, &mut self.transfer_queue, self.congestion_window.size());
 
         let any_nacks = self.transfer_queue.process_timeouts(now, rto);
 
@@ -215,7 +211,7 @@ impl FrameIO {
             self.congestion_window.signal_nack(now, rto);
         }
 
-        self.transfer_queue.send_pending_frames(now, cwnd, sink);
+        self.transfer_queue.send_pending_frames(now, self.congestion_window.size(), sink);
     }
 
     pub fn is_idle(&self) -> bool {

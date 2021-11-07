@@ -17,7 +17,7 @@ pub struct PingRtt {
 }
 
 impl PingRtt {
-    const DEFAULT_RTT_MS: f64 = 100.0;
+    const DEFAULT_RTT_MS: f64 = 200.0;
     const PING_TIMEOUT_MS: u64 = 3000;
     const SRTT_SMOOTH: f64 = 0.125;
     const RTTVAR_SMOOTH: f64 = 0.25;
