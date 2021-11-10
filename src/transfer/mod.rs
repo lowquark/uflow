@@ -208,7 +208,7 @@ impl FrameIO {
         let any_nacks = self.transfer_queue.process_timeouts(now, rto);
 
         if any_nacks {
-            self.congestion_window.signal_nack(now, rto);
+            self.congestion_window.signal_nack(now, rtt);
         }
 
         self.transfer_queue.send_pending_frames(now, self.congestion_window.size(), sink);
