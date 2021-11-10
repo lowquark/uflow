@@ -102,7 +102,7 @@ pub struct Host {
     max_connected_peers: u32,
 }
 
-type Event = peer::Event;
+pub type Event = peer::Event;
 
 impl Client {
     fn new(address: net::SocketAddr, peer_ref: Rc<RefCell<peer::Peer>>) -> Self {

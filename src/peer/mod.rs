@@ -36,7 +36,7 @@ enum State {
 pub enum Event {
     Connect,
     Disconnect,
-    Receive(Box<[u8]>),
+    Receive(Box<[u8]>, ChannelId),
     Timeout,
 }
 
@@ -212,7 +212,6 @@ impl Peer {
             }
             frame::Frame::Disconnect(_) => {
                 // Welp
-                println!("welp.");
                 self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
                 self.disconnected_enter();
             }
@@ -260,9 +259,9 @@ impl Peer {
         }
 
         // Deliver packets from rx channels to application
-        for channel in self.channels.iter_mut() {
+        for (id, channel) in self.channels.iter_mut().enumerate() {
             while let Some(packet) = channel.rx.receive() {
-                self.event_queue.push_back(Event::Receive(packet));
+                self.event_queue.push_back(Event::Receive(packet, id as ChannelId));
             }
         }
 

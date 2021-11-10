@@ -11,3 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 rand = "0.8.4"
+
+[dev-dependencies]
+md5 = "0.7.0"
+
