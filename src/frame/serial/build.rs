@@ -6,6 +6,11 @@ use super::Message;
 
 use super::MESSAGE_FRAME_ID;
 
+use super::DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT;
+use super::DATAGRAM_MESSAGE_HEADER_SIZE_FULL;
+use super::ACK_MESSAGE_SIZE;
+use super::RESYNC_MESSAGE_SIZE;
+
 pub struct MessageFrameBuilder {
     buffer: Vec<u8>,
     count: u16,
@@ -81,15 +86,16 @@ impl MessageFrameBuilder {
 
     fn add_ack(&mut self, ack: &Ack) {
         let header = [
-            ack.frame_bits_nonce as u8,
-            (ack.frame_bits_base_id >> 24) as u8,
-            (ack.frame_bits_base_id >> 16) as u8,
-            (ack.frame_bits_base_id >>  8) as u8,
-            (ack.frame_bits_base_id      ) as u8,
-            (ack.frame_bits >> 24) as u8,
-            (ack.frame_bits >> 16) as u8,
-            (ack.frame_bits >>  8) as u8,
-            (ack.frame_bits      ) as u8,
+            ack.frames.nonce as u8,
+            (ack.frames.base_id >> 24) as u8,
+            (ack.frames.base_id >> 16) as u8,
+            (ack.frames.base_id >>  8) as u8,
+            (ack.frames.base_id      ) as u8,
+            ack.frames.size,
+            (ack.frames.bitfield >> 24) as u8,
+            (ack.frames.bitfield >> 16) as u8,
+            (ack.frames.bitfield >>  8) as u8,
+            (ack.frames.bitfield      ) as u8,
             (ack.receiver_base_id >> 24) as u8,
             (ack.receiver_base_id >> 16) as u8,
             (ack.receiver_base_id >>  8) as u8,
@@ -141,13 +147,13 @@ impl MessageFrameBuilder {
         match message {
             Message::Datagram(datagram) => {
                 if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
-                    11 + datagram.data.len()
+                    DATAGRAM_MESSAGE_HEADER_SIZE_FULL + datagram.data.len()
                 } else {
-                    15 + datagram.data.len()
+                    DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT + datagram.data.len()
                 }
             }
-            Message::Ack(_) => 13,
-            Message::Resync(_) => 5,
+            Message::Ack(_) => ACK_MESSAGE_SIZE,
+            Message::Resync(_) => RESYNC_MESSAGE_SIZE,
         }
     }
 }

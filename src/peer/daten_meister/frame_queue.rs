@@ -1,7 +1,7 @@
 
 use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 
-use crate::frame::AckGroup;
+use crate::frame::FrameAck;
 use crate::frame::Message;
 use crate::frame::MessageFrameBuilder;
 
@@ -211,13 +211,13 @@ impl FrameQueue {
         return Ok((fbuilder.build(), frame_id, nonce));
     }
 
-    pub fn acknowledge_frames(&mut self, ack_group: AckGroup) {
-        let frame_bits_size = ack_group.frame_bits_size.min(32) as u32;
+    pub fn acknowledge_frames(&mut self, ack: FrameAck) {
+        let ack_size = ack.size.min(32) as u32;
 
-        for i in 0 .. frame_bits_size {
-            let frame_id = ack_group.frame_bits_base_id.wrapping_add(i);
+        for i in 0 .. ack_size {
+            let frame_id = ack.base_id.wrapping_add(i);
 
-            if ack_group.frame_bits & (1 << i) != 0 {
+            if ack.bitfield & (1 << i) != 0 {
                 if let Some(sent_frame) = self.sent_frames.get_mut(frame_id.wrapping_sub(self.base_id) as usize) {
                     let persistent_messages = std::mem::take(&mut sent_frame.persistent_messages);
 

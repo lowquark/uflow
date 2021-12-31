@@ -3,6 +3,7 @@ pub mod build;
 
 use super::FragmentId;
 use super::Datagram;
+use super::FrameAck;
 use super::Ack;
 use super::Resync;
 use super::Message;
@@ -14,40 +15,58 @@ use super::DisconnectAckFrame;
 use super::MessageFrame;
 use super::Frame;
 
-
-pub trait Serialize {
-    fn read(data: &[u8]) -> Option<Self> where Self: Sized;
-    fn write(&self) -> Box<[u8]>;
-}
-
-
 const CONNECT_FRAME_ID: u8 = 0;
 const CONNECT_ACK_FRAME_ID: u8 = 1;
 const DISCONNECT_FRAME_ID: u8 = 2;
 const DISCONNECT_ACK_FRAME_ID: u8 = 3;
 const MESSAGE_FRAME_ID: u8 = 4;
 
+const CONNECT_FRAME_PAYLOAD_SIZE: usize = 14;
+const CONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
+const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
+const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
+
+const MESSAGE_HEADER_SIZE: usize = 1;
+const DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT: usize = 15;
+const DATAGRAM_MESSAGE_HEADER_SIZE_FULL: usize = 11;
+const ACK_MESSAGE_SIZE: usize = 14;
+const RESYNC_MESSAGE_SIZE: usize = 5;
 
 fn read_connect(data: &[u8]) -> Option<Frame> {
-    if data.len() != 4 {
+    if data.len() != CONNECT_FRAME_PAYLOAD_SIZE {
         return None;
     }
 
-    let nonce = ((data[0] as u32) << 24) |
-                ((data[1] as u32) << 16) |
-                ((data[2] as u32) <<  8) |
-                ((data[3] as u32)      );
+    let version = data[0];
+
+    let nonce = ((data[1] as u32) << 24) |
+                ((data[2] as u32) << 16) |
+                ((data[3] as u32) <<  8) |
+                ((data[4] as u32)      );
+
+    let tx_channels_sup = data[5];
+
+    let max_rx_alloc = ((data[6] as u32) << 24) |
+                       ((data[7] as u32) << 16) |
+                       ((data[8] as u32) <<  8) |
+                       ((data[9] as u32)      );
+
+    let max_rx_bandwidth = ((data[10] as u32) << 24) |
+                           ((data[11] as u32) << 16) |
+                           ((data[12] as u32) <<  8) |
+                           ((data[13] as u32)      );
 
     Some(Frame::ConnectFrame(ConnectFrame {
+        version,
         nonce,
-        version: 0,
-        num_channels: 0,
-        max_rx_bandwidth: 0,
+        tx_channels_sup,
+        max_rx_alloc,
+        max_rx_bandwidth,
     }))
 }
 
 fn read_connect_ack(data: &[u8]) -> Option<Frame> {
-    if data.len() != 4 {
+    if data.len() != CONNECT_ACK_FRAME_PAYLOAD_SIZE {
         return None;
     }
 
@@ -60,7 +79,7 @@ fn read_connect_ack(data: &[u8]) -> Option<Frame> {
 }
 
 fn read_disconnect(data: &[u8]) -> Option<Frame> {
-    if data.len() != 0 {
+    if data.len() != DISCONNECT_FRAME_PAYLOAD_SIZE {
         return None;
     }
 
@@ -68,7 +87,7 @@ fn read_disconnect(data: &[u8]) -> Option<Frame> {
 }
 
 fn read_disconnect_ack(data: &[u8]) -> Option<Frame> {
-    if data.len() != 0 {
+    if data.len() != DISCONNECT_ACK_FRAME_PAYLOAD_SIZE {
         return None;
     }
 
@@ -76,7 +95,7 @@ fn read_disconnect_ack(data: &[u8]) -> Option<Frame> {
 }
 
 fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
-    if data.len() < 1 {
+    if data.len() < MESSAGE_HEADER_SIZE {
         return None;
     }
 
@@ -85,13 +104,13 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
     if header_byte & 0x80 == 0x80 {
         // Datagram
         if header_byte & 0x40 == 0x40 {
-            const HEADER_SIZE: usize = 15;
+            // Fragment
+            let header_size = DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT;
 
-            if data.len() < HEADER_SIZE {
+            if data.len() < header_size {
                 return None;
             }
 
-            // Fragment
             let channel_id = header_byte & 0x3F;
 
             let sequence_id = ((data[1] as u32) << 24) |
@@ -115,11 +134,11 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                                ((data[14] as u16)     );
             let data_len = data_len_u16 as usize;
 
-            if data.len() < HEADER_SIZE + data_len {
+            if data.len() < header_size + data_len {
                 return None;
             }
 
-            let data = data[HEADER_SIZE .. HEADER_SIZE + data_len].into();
+            let data = data[header_size .. header_size + data_len].into();
 
             return Some((Message::Datagram(Datagram {
                 channel_id,
@@ -128,15 +147,15 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                 channel_parent_lead,
                 fragment_id: FragmentId { id: fragment_id, last: fragment_id_last },
                 data,
-            }), HEADER_SIZE + data_len));
+            }), header_size + data_len));
         } else {
-            const HEADER_SIZE: usize = 11;
+            // Full
+            let header_size = DATAGRAM_MESSAGE_HEADER_SIZE_FULL;
 
-            if data.len() < HEADER_SIZE {
+            if data.len() < header_size {
                 return None;
             }
 
-            // Full
             let channel_id = header_byte & 0x3F;
 
             let sequence_id = ((data[1] as u32) << 24) |
@@ -154,11 +173,11 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                                ((data[10] as u16)     );
             let data_len = data_len_u16 as usize;
 
-            if data.len() < HEADER_SIZE + data_len {
+            if data.len() < header_size + data_len {
                 return None;
             }
 
-            let data = data[HEADER_SIZE .. HEADER_SIZE + data_len].into();
+            let data = data[header_size .. header_size + data_len].into();
 
             return Some((Message::Datagram(Datagram {
                 channel_id,
@@ -167,36 +186,56 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                 channel_parent_lead,
                 fragment_id: FragmentId { id: 0, last: 0 },
                 data,
-            }), HEADER_SIZE + data_len));
+            }), header_size + data_len));
         }
     } else if header_byte & 0xC == 0x00 {
         // Ack
-        let frame_bits_nonce = header_byte & 0x01 == 0x01;
+        if data.len() < ACK_MESSAGE_SIZE {
+            return None;
+        }
 
-        let frame_bits_base_id = ((data[1] as u32) << 24) |
-                                 ((data[2] as u32) << 16) |
-                                 ((data[3] as u32) <<  8) |
-                                 ((data[4] as u32)      );
+        let frame_ack_nonce = header_byte & 0x01 == 0x01;
 
-        let frame_bits = ((data[5] as u32) << 24) |
-                         ((data[6] as u32) << 16) |
-                         ((data[7] as u32) <<  8) |
-                         ((data[8] as u32)      );
+        let frame_ack_base_id = ((data[1] as u32) << 24) |
+                                ((data[2] as u32) << 16) |
+                                ((data[3] as u32) <<  8) |
+                                ((data[4] as u32)      );
 
-        let receiver_base_id = ((data[ 9] as u32) << 24) |
-                               ((data[10] as u32) << 16) |
-                               ((data[11] as u32) <<  8) |
-                               ((data[12] as u32)      );
+        let frame_ack_size = data[5];
 
-        return Some((Message::Ack(Ack { frame_bits_nonce, frame_bits_base_id, frame_bits, receiver_base_id }), 13));
+        let frame_ack_bitfield = ((data[6] as u32) << 24) |
+                                 ((data[7] as u32) << 16) |
+                                 ((data[8] as u32) <<  8) |
+                                 ((data[9] as u32)      );
+
+        let receiver_base_id = ((data[10] as u32) << 24) |
+                               ((data[11] as u32) << 16) |
+                               ((data[12] as u32) <<  8) |
+                               ((data[13] as u32)      );
+
+        return Some((Message::Ack(Ack {
+            frames: FrameAck {
+                base_id: frame_ack_base_id,
+                size: frame_ack_size,
+                bitfield: frame_ack_bitfield,
+                nonce: frame_ack_nonce,
+            },
+            receiver_base_id,
+        }), ACK_MESSAGE_SIZE));
     } else if header_byte & 0xC == 0x40 {
         // Resync
+        if data.len() < RESYNC_MESSAGE_SIZE {
+            return None;
+        }
+
         let sender_next_id = ((data[1] as u32) << 24) |
                              ((data[2] as u32) << 16) |
                              ((data[3] as u32) <<  8) |
                              ((data[4] as u32)      );
 
-        return Some((Message::Resync(Resync { sender_next_id }), 5));
+        return Some((Message::Resync(Resync {
+            sender_next_id,
+        }), RESYNC_MESSAGE_SIZE));
     }
 
     None
@@ -242,10 +281,20 @@ fn read_message(data: &[u8]) -> Option<Frame> {
 fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
     Box::new([
         CONNECT_FRAME_ID,
+        frame.version,
         (frame.nonce >> 24) as u8,
         (frame.nonce >> 16) as u8,
         (frame.nonce >>  8) as u8,
         (frame.nonce      ) as u8,
+        frame.tx_channels_sup,
+        (frame.max_rx_alloc >> 24) as u8,
+        (frame.max_rx_alloc >> 16) as u8,
+        (frame.max_rx_alloc >>  8) as u8,
+        (frame.max_rx_alloc      ) as u8,
+        (frame.max_rx_bandwidth >> 24) as u8,
+        (frame.max_rx_bandwidth >> 16) as u8,
+        (frame.max_rx_bandwidth >>  8) as u8,
+        (frame.max_rx_bandwidth      ) as u8,
     ])
 }
 
@@ -281,6 +330,10 @@ fn write_message(frame: &MessageFrame) -> Box<[u8]> {
     builder.build()
 }
 
+pub trait Serialize {
+    fn read(data: &[u8]) -> Option<Self> where Self: Sized;
+    fn write(&self) -> Box<[u8]>;
+}
 
 impl Serialize for Frame {
     fn read(data: &[u8]) -> Option<Self> {

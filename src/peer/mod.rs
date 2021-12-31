@@ -63,7 +63,7 @@ enum State {
 }
 
 fn compare_connect_info(remote_info: &frame::ConnectFrame, local_info: &frame::ConnectFrame) -> bool {
-    remote_info.num_channels == local_info.num_channels && remote_info.version == local_info.version
+    remote_info.tx_channels_sup == local_info.tx_channels_sup && remote_info.version == local_info.version
 }
 
 static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
@@ -109,7 +109,8 @@ impl Peer {
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
-            num_channels: (params.tx_channels - 1) as u8,
+            tx_channels_sup: (params.tx_channels - 1) as u8,
+            max_rx_alloc: params.max_rx_alloc.min(u32::MAX as usize) as u32,
             max_rx_bandwidth: params.max_rx_bandwidth.min(u32::MAX as usize) as u32,
             nonce: rand::random::<u32>(),
         };

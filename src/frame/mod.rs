@@ -45,18 +45,16 @@ impl Datagram {
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct AckGroup {
-    pub frame_bits_base_id: u32,
-    pub frame_bits_size: u8,
-    pub frame_bits: u32,
-    pub frame_bits_nonce: bool,
+pub struct FrameAck {
+    pub base_id: u32,
+    pub size: u8,
+    pub bitfield: u32,
+    pub nonce: bool,
 }
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct Ack {
-    pub frame_bits_base_id: u32,
-    pub frame_bits: u32,
-    pub frame_bits_nonce: bool,
+    pub frames: FrameAck,
     pub receiver_base_id: u32,
 }
 
@@ -72,13 +70,12 @@ pub enum Message {
     Resync(Resync),
 }
 
-
 #[derive(Clone,Debug,PartialEq)]
 pub struct ConnectFrame {
-    pub nonce: u32,
     pub version: u8,
-    // TODO: Rename to tx_channels
-    pub num_channels: u8,
+    pub nonce: u32,
+    pub tx_channels_sup: u8,
+    pub max_rx_alloc: u32,
     pub max_rx_bandwidth: u32,
 }
 

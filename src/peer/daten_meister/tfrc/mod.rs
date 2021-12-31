@@ -8,7 +8,7 @@ use frame_log::SentFrame;
 use loss::LossRateComp;
 use recv_rate_set::RecvRateSet;
 
-use crate::frame::AckGroup;
+use crate::frame::FrameAck;
 
 use std::time;
 
@@ -166,19 +166,19 @@ impl SendRateComp {
         self.next_frame_rate_limited = true;
     }
 
-    pub fn acknowledge_frames(&mut self, ack_group: AckGroup, now_ms: u64) {
+    pub fn acknowledge_frames(&mut self, ack: FrameAck, now_ms: u64) {
         let mut true_nonce = false;
         let mut recv_size = 0;
         let mut last_id = None;
         let mut rate_limited = false;
 
-        let frame_bits_size = ack_group.frame_bits_size.min(32) as u32;
+        let ack_size = ack.size.min(32) as u32;
 
-        for i in 0 .. frame_bits_size {
-            let frame_id = ack_group.frame_bits_base_id.wrapping_add(i);
+        for i in 0 .. ack_size {
+            let frame_id = ack.base_id.wrapping_add(i);
 
             if let Some(ref sent_frame) = self.frame_log.get(frame_id) {
-                if ack_group.frame_bits & (1 << i) != 0 {
+                if ack.bitfield & (1 << i) != 0 {
                     // Receiver claims to have received this packet
                     true_nonce ^= sent_frame.nonce;
                     recv_size += sent_frame.size;
@@ -193,14 +193,14 @@ impl SendRateComp {
         }
 
         // Penalize bad nonce
-        if ack_group.frame_bits_nonce != true_nonce {
+        if ack.nonce != true_nonce {
             return;
         }
 
-        for i in 0 .. frame_bits_size {
-            if ack_group.frame_bits & (1 << i) != 0 {
+        for i in 0 .. ack_size {
+            if ack.bitfield & (1 << i) != 0 {
                 // Receiver has received this packet
-                let frame_id = ack_group.frame_bits_base_id.wrapping_add(i);
+                let frame_id = ack.base_id.wrapping_add(i);
 
                 self.loss_rate_comp.acknowledge_frame(frame_id, &self.frame_log, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
             }

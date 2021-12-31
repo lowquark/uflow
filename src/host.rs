@@ -38,7 +38,7 @@ impl<'a> FrameSink for PeerFrameSink<'a> {
 pub struct Params {
     tx_channels: usize,
     priority_channels: Range<usize>,
-    max_rx_alloc: usize,
+    max_peer_rx_alloc: usize,
     max_peer_tx_bandwidth: usize,
     max_peer_rx_bandwidth: usize,
     max_connected_peers: usize,
@@ -51,7 +51,7 @@ impl Params {
         Self {
             tx_channels: 1,
             priority_channels: 0..0,
-            max_rx_alloc: 1_000_000,
+            max_peer_rx_alloc: 1_000_000,
             max_peer_tx_bandwidth: 10_000_000,
             max_peer_rx_bandwidth: 10_000_000,
             max_connected_peers: 16,
@@ -68,8 +68,8 @@ impl Params {
         self
     }
 
-    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Params {
-        self.max_rx_alloc = max_rx_alloc;
+    pub fn max_peer_rx_alloc(mut self, max_peer_rx_alloc: usize) -> Params {
+        self.max_peer_rx_alloc = max_peer_rx_alloc;
         self
     }
 
@@ -94,7 +94,7 @@ impl From<Params> for peer::Params {
         Self {
             tx_channels: params.tx_channels,
             priority_channels: params.priority_channels,
-            max_rx_alloc: params.max_rx_alloc,
+            max_rx_alloc: params.max_peer_rx_alloc,
             max_tx_bandwidth: params.max_peer_tx_bandwidth,
             max_rx_bandwidth: params.max_peer_rx_bandwidth,
         }

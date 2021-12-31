@@ -84,15 +84,8 @@ impl DatenMeister {
                     self.packet_receiver.handle_datagram(datagram);
                 }
                 frame::Message::Ack(ack) => {
-                    let ack_group = frame::AckGroup {
-                        frame_bits_base_id: ack.frame_bits_base_id,
-                        frame_bits_size: 32,
-                        frame_bits: ack.frame_bits,
-                        frame_bits_nonce: ack.frame_bits_nonce,
-                    };
-
-                    self.frame_queue.acknowledge_frames(ack_group.clone());
-                    self.send_rate_comp.acknowledge_frames(ack_group, now_ms);
+                    self.frame_queue.acknowledge_frames(ack.frames.clone());
+                    self.send_rate_comp.acknowledge_frames(ack.frames, now_ms);
 
                     self.packet_sender.acknowledge(ack.receiver_base_id);
                 }
@@ -118,9 +111,7 @@ impl DatenMeister {
 
         while let Some(frame_ack) = self.frame_ack_queue.pop() {
             let ack_message = frame::Message::Ack(frame::Ack {
-                frame_bits_base_id: frame_ack.frame_bits_base_id,
-                frame_bits: frame_ack.frame_bits,
-                frame_bits_nonce: frame_ack.frame_bits_nonce,
+                frames: frame_ack,
                 receiver_base_id: packet_base_id,
             });
 
