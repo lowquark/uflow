@@ -27,7 +27,7 @@ impl packet_sender::DatagramSink for FrameQueue {
 }
 
 pub trait PacketSink {
-    fn send(&mut self, packet_data: Box<[u8]>);
+    fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8);
 }
 
 pub struct DatenMeister {

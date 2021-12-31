@@ -208,7 +208,7 @@ impl PacketReceiver {
 
                     if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
                         if let Some(data) = entry.data.take() {
-                            sink.send(data);
+                            sink.send(data, channel_id);
                         }
 
                         // TODO: This only needs to be performed once per channel with packets
@@ -326,7 +326,7 @@ mod tests {
     }
 
     impl super::PacketSink for TestPacketSink {
-        fn send(&mut self, packet: Box<[u8]>) {
+        fn send(&mut self, packet: Box<[u8]>, channel_id: u8) {
             self.packets.push_back(packet);
         }
     }

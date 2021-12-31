@@ -87,8 +87,8 @@ impl<'a> EventPacketSink<'a> {
 }
 
 impl<'a> daten_meister::PacketSink for EventPacketSink<'a> {
-    fn send(&mut self, packet_data: Box<[u8]>) {
-        self.event_queue.push_back(Event::Receive(packet_data, 0));
+    fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8) {
+        self.event_queue.push_back(Event::Receive(packet_data, channel_id));
     }
 }
 
