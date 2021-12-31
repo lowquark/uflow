@@ -77,6 +77,7 @@ pub enum Message {
 pub struct ConnectFrame {
     pub nonce: u32,
     pub version: u8,
+    // TODO: Rename to tx_channels
     pub num_channels: u8,
     pub max_rx_bandwidth: u32,
 }

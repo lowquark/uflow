@@ -19,11 +19,11 @@ use std::collections::VecDeque;
 
 #[derive(Clone,Debug)]
 pub struct Params {
-    pub num_channels: u32,
-    pub max_tx_bandwidth: u32,
-    pub max_rx_bandwidth: u32,
-    pub priority_channels: Range<u32>,
-    pub max_packet_size: u32,
+    pub tx_channels: usize,
+    pub priority_channels: Range<usize>,
+    pub max_rx_alloc: usize,
+    pub max_tx_bandwidth: usize,
+    pub max_rx_bandwidth: usize,
 }
 
 #[derive(Clone,Debug,PartialEq)]
@@ -104,13 +104,13 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(params: Params) -> Self {
-        assert!(params.num_channels > 0, "Must have at least one channel");
-        assert!(params.num_channels <= MAX_CHANNELS as u32, "Number of channels exceeds maximum");
+        assert!(params.tx_channels > 0, "Must have at least one channel");
+        assert!(params.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
-            num_channels: (params.num_channels - 1) as u8,
-            max_rx_bandwidth: params.max_rx_bandwidth,
+            num_channels: (params.tx_channels - 1) as u8,
+            max_rx_bandwidth: params.max_rx_bandwidth.min(u32::MAX as usize) as u32,
             nonce: rand::random::<u32>(),
         };
 

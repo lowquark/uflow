@@ -1,5 +1,4 @@
 
-use crate::MAX_PACKET_SIZE;
 use crate::MAX_TRANSFER_UNIT;
 use crate::frame;
 use crate::peer;
@@ -37,55 +36,68 @@ impl<'a> FrameSink for PeerFrameSink<'a> {
 
 #[derive(Clone)]
 pub struct Params {
-    num_channels: u32,
-    priority_channels: Range<u32>,
-    max_peer_tx_bandwidth: u32,
-    max_peer_rx_bandwidth: u32,
-    max_connected_peers: u32,
-    max_packet_size: u32,
+    tx_channels: usize,
+    priority_channels: Range<usize>,
+    max_rx_alloc: usize,
+    max_peer_tx_bandwidth: usize,
+    max_peer_rx_bandwidth: usize,
+    max_connected_peers: usize,
+
     // TODO: Blacklist, whitelist
 }
 
 impl Params {
     pub fn new() -> Self {
         Self {
-            num_channels: 1,
+            tx_channels: 1,
             priority_channels: 0..0,
-            max_peer_tx_bandwidth: 1_000_000,
-            max_peer_rx_bandwidth: 1_000_000,
-            max_connected_peers: 10,
-            max_packet_size: MAX_PACKET_SIZE as u32,
+            max_rx_alloc: 1_000_000,
+            max_peer_tx_bandwidth: 10_000_000,
+            max_peer_rx_bandwidth: 10_000_000,
+            max_connected_peers: 16,
         }
     }
 
-    pub fn num_channels(mut self, num_channels: u32) -> Params {
-        self.num_channels = num_channels;
+    pub fn tx_channels(mut self, tx_channels: usize) -> Params {
+        self.tx_channels = tx_channels;
         self
     }
 
-    pub fn priority_channels(mut self, priority_channels: Range<u32>) -> Params {
+    pub fn priority_channels(mut self, priority_channels: Range<usize>) -> Params {
         self.priority_channels = priority_channels;
         self
     }
 
-    pub fn max_peer_tx_bandwidth(mut self, bandwidth: u32) -> Params {
+    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Params {
+        self.max_rx_alloc = max_rx_alloc;
+        self
+    }
+
+    pub fn max_peer_tx_bandwidth(mut self, bandwidth: usize) -> Params {
         self.max_peer_tx_bandwidth = bandwidth;
         self
     }
 
-    pub fn max_peer_rx_bandwidth(mut self, bandwidth: u32) -> Params {
+    pub fn max_peer_rx_bandwidth(mut self, bandwidth: usize) -> Params {
         self.max_peer_rx_bandwidth = bandwidth;
         self
     }
 
-    pub fn max_connected_peers(mut self, num_peers: u32) -> Params {
+    pub fn max_connected_peers(mut self, num_peers: usize) -> Params {
         self.max_connected_peers = num_peers;
         self
     }
+}
 
-    pub fn max_packet_size(mut self, packet_size: u32) -> Params {
-        self.max_packet_size = packet_size;
-        self
+impl From<Params> for peer::Params {
+    fn from(params: Params) -> Self {
+        Self {
+            tx_channels: params.tx_channels,
+            priority_channels: params.priority_channels,
+            max_rx_alloc: params.max_rx_alloc,
+            max_tx_bandwidth: params.max_peer_tx_bandwidth,
+            max_rx_bandwidth: params.max_peer_rx_bandwidth,
+        }
     }
 }
 
@@ -99,7 +111,7 @@ pub struct Host {
     peer_list: HashMap<net::SocketAddr, Rc<RefCell<peer::Peer>>>,
     peer_params: peer::Params,
     new_clients: Vec<Client>,
-    max_connected_peers: u32,
+    max_connected_peers: usize,
 }
 
 pub type Event = peer::Event;
@@ -143,18 +155,14 @@ impl Host {
 
         socket.set_nonblocking(true)?;
 
+        let max_connected_peers = params.max_connected_peers;
+
         Ok(Host {
-            socket: socket,
+            socket,
             peer_list: HashMap::new(),
-            peer_params: peer::Params {
-                num_channels: params.num_channels,
-                max_tx_bandwidth: params.max_peer_tx_bandwidth,
-                max_rx_bandwidth: params.max_peer_rx_bandwidth,
-                priority_channels: params.priority_channels,
-                max_packet_size: params.max_packet_size,
-            },
+            peer_params: params.into(),
             new_clients: Vec::new(),
-            max_connected_peers: params.max_connected_peers,
+            max_connected_peers,
         })
     }
 
@@ -162,12 +170,15 @@ impl Host {
         Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), params)
     }
 
+    // TODO: It would be possible to use special peer parameters here
+    // As a bonus, if self.peer_params were set to None, incoming connections would not be accepted
     pub fn connect(&mut self, addr: net::SocketAddr) -> Client {
         let peer = peer::Peer::new(self.peer_params.clone());
 
         let peer_ref = Rc::new(RefCell::new(peer));
         self.peer_list.insert(addr, peer_ref.clone());
-        Client::new(addr, peer_ref)
+
+        return Client::new(addr, peer_ref);
     }
 
     pub fn step(&mut self) {
