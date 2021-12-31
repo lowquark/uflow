@@ -176,14 +176,16 @@ impl Host {
 
         while let Ok((recv_size, src_addr)) = self.socket.recv_from(&mut recv_buf) {
             if let Some(frame) = frame::Frame::read(&recv_buf[..recv_size]) {
+                let data_sink = PeerDataSink::new(&self.socket, src_addr);
+
                 match self.peer_list.get_mut(&src_addr) {
                     Some(peer) => {
-                        peer.borrow_mut().handle_frame(frame);
+                        peer.borrow_mut().handle_frame(frame, &data_sink);
                     }
                     None => {
                         if self.peer_list.len() < self.max_connected_peers as usize {
                             let mut peer = peer::Peer::new(self.peer_params.clone());
-                            peer.handle_frame(frame);
+                            peer.handle_frame(frame, &data_sink);
 
                             let peer_ref = Rc::new(RefCell::new(peer));
                             self.peer_list.insert(src_addr, peer_ref.clone());
@@ -194,16 +196,10 @@ impl Host {
             }
         }
 
-        for (_, peer) in self.peer_list.iter_mut() {
-            peer.borrow_mut().step();
-        }
+        self.flush();
 
         self.peer_list.retain(|_, peer| !peer.borrow().is_zombie());
         self.new_clients.retain(|client| !client.is_zombie());
-
-        // TODO: Should this only flush meta?
-        // Is calling flush here less efficient than a single call?
-        self.flush();
     }
 
     pub fn incoming(&mut self) -> impl Iterator<Item = Client> {
@@ -212,7 +208,8 @@ impl Host {
 
     pub fn flush(&mut self) {
         for (address, peer) in self.peer_list.iter_mut() {
-            peer.borrow_mut().flush(&PeerDataSink::new(&self.socket, *address));
+            let data_sink = PeerDataSink::new(&self.socket, *address);
+            peer.borrow_mut().flush(&data_sink);
         }
     }
 

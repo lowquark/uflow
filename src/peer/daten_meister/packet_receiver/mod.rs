@@ -7,6 +7,8 @@ use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_TRANSFER_WINDOW_SIZE;
 
+use super::PacketSink;
+
 pub use crate::frame::Datagram;
 
 struct ReceiveEntry {
@@ -30,10 +32,6 @@ impl Channel {
             base_id: None,
         }
     }
-}
-
-pub trait PacketSink {
-    fn send(&mut self, packet_data: Box<[u8]>);
 }
 
 pub struct PacketReceiver {

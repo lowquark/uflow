@@ -3,6 +3,7 @@ use crate::frame::Datagram;
 use crate::MAX_TRANSFER_UNIT;
 use crate::SendMode;
 use crate::frame;
+use crate::DataSink;
 
 mod packet_sender;
 mod packet_receiver;
@@ -25,8 +26,8 @@ impl packet_sender::DatagramSink for FrameQueue {
     }
 }
 
-pub trait FrameSink {
-    fn send(&mut self, frame_bytes: Box<[u8]>);
+pub trait PacketSink {
+    fn send(&mut self, packet_data: Box<[u8]>);
 }
 
 pub struct DatenMeister {
@@ -68,7 +69,7 @@ impl DatenMeister {
         self.packet_sender.enqueue_packet(data, channel_id, mode);
     }
 
-    pub fn receive(&mut self, sink: &mut impl packet_receiver::PacketSink) {
+    pub fn receive(&mut self, sink: &mut impl PacketSink) {
         self.packet_receiver.receive(sink);
     }
 
@@ -102,7 +103,7 @@ impl DatenMeister {
         }
     }
 
-    pub fn flush(&mut self, sink: &mut impl FrameSink) {
+    pub fn flush(&mut self, sink: &impl DataSink) {
         let now = time::Instant::now();
         let now_ms = (now - self.time_base).as_millis() as u64;
 
@@ -151,7 +152,7 @@ impl DatenMeister {
                 Ok((frame_data, frame_id, nonce)) => {
                     let frame_size = frame_data.len();
 
-                    sink.send(frame_data);
+                    sink.send(&frame_data);
 
                     self.flush_alloc -= frame_size;
                     self.send_rate_comp.log_frame(frame_id, nonce, frame_size, now_ms);
@@ -178,8 +179,8 @@ mod tests {
         label: Box<str>,
     }
 
-    impl super::FrameSink for TestFrameSink {
-        fn send(&mut self, frame_bytes: Box<[u8]>) {
+    impl super::DataSink for TestFrameSink {
+        fn send(&self, frame_bytes: Box<[u8]>) {
             println!("{} -> {:?}", self.label, frame_bytes);
         }
     }
