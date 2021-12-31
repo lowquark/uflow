@@ -155,7 +155,7 @@ fn client_thread() -> Vec<md5::Digest> {
     // Send data at 654.2kB/s
     let num_steps = 500;
     let packets_per_step = 20;
-    let packet_size = udpl::MTU/3;
+    let packet_size = udpl::MAX_TRANSFER_UNIT/3;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 

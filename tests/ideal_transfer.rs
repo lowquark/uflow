@@ -53,7 +53,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
     let num_steps = 100;
     let packets_per_step = 20;
-    let packet_size = udpl::MTU/3;
+    let packet_size = udpl::MAX_TRANSFER_UNIT/3;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
@@ -71,8 +71,8 @@ fn client_thread() -> Vec<md5::Digest> {
             // Our local loopback connection is assumed to be both ordered and lossless!
             let mode = match rand::random::<u32>() % 3 {
                 0 => udpl::SendMode::Unreliable,
-                1 => udpl::SendMode::Reliable,
-                2 => udpl::SendMode::Passive,
+                1 => udpl::SendMode::Resend,
+                2 => udpl::SendMode::Reliable,
                 _ => panic!("NANI!?"),
             };
 

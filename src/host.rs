@@ -1,12 +1,13 @@
 
-use super::channel;
-use super::frame;
-use super::peer;
+use crate::MAX_PACKET_SIZE;
+use crate::MAX_TRANSFER_UNIT;
+use crate::frame;
+use crate::peer;
+use crate::ChannelId;
+use crate::DataSink;
+use crate::SendMode;
 
-use super::ChannelId;
-use super::DataSink;
-use super::MTU;
-use super::SendMode;
+use frame::Serialize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -54,7 +55,7 @@ impl Params {
             max_peer_tx_bandwidth: 1_000_000,
             max_peer_rx_bandwidth: 1_000_000,
             max_connected_peers: 10,
-            max_packet_size: channel::MAX_PACKET_SIZE as u32,
+            max_packet_size: MAX_PACKET_SIZE as u32,
         }
     }
 
@@ -158,7 +159,6 @@ impl Host {
         })
     }
 
-    // TODO: Will this work with IPv6?
     pub fn bind_any(params: Params) -> Result<Host, std::io::Error> {
         Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), params)
     }
@@ -172,10 +172,10 @@ impl Host {
     }
 
     pub fn step(&mut self) {
-        let mut recv_buf = [0; MTU];
+        let mut recv_buf = [0; MAX_TRANSFER_UNIT];
 
         while let Ok((recv_size, src_addr)) = self.socket.recv_from(&mut recv_buf) {
-            if let Some(frame) = frame::Frame::from_bytes(&recv_buf[..recv_size]) {
+            if let Some(frame) = frame::Frame::read(&recv_buf[..recv_size]) {
                 match self.peer_list.get_mut(&src_addr) {
                     Some(peer) => {
                         peer.borrow_mut().handle_frame(frame);

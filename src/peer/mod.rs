@@ -1,18 +1,18 @@
 
-mod rtt;
+mod daten_meister;
 
 use std::collections::VecDeque;
 use std::time;
 use std::ops::Range;
 
-use super::frame;
-use super::channel;
-use super::ChannelId;
-use super::DataSink;
-use super::MAX_CHANNELS;
-use super::PROTOCOL_VERSION;
-use super::SendMode;
-use super::transfer;
+use crate::frame;
+use crate::ChannelId;
+use crate::DataSink;
+use crate::MAX_CHANNELS;
+use crate::PROTOCOL_VERSION;
+use crate::SendMode;
+
+use frame::Serialize;
 
 #[derive(Clone,Debug)]
 pub struct Params {
@@ -40,18 +40,13 @@ pub enum Event {
     Timeout,
 }
 
-const PING_INTERVAL_MS: u64 = 1000;
 const CONNECT_INTERVAL_MS: u64 = 500;
 const DISCONNECT_INTERVAL_MS: u64 = 500;
 const WATCHDOG_TIMEOUT_MS: u64 = 20000;
 
-static PING_INTERVAL: time::Duration = time::Duration::from_millis(PING_INTERVAL_MS);
 static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(CONNECT_INTERVAL_MS);
 static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(DISCONNECT_INTERVAL_MS);
 static WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(WATCHDOG_TIMEOUT_MS);
-
-const STEP_TIME_SMOOTH: f64 = 0.125;
-const DEFAULT_STEP_TIME_MS: f64 = 0.015;
 
 pub struct Peer {
     state: State,
@@ -60,44 +55,31 @@ pub struct Peer {
     watchdog_time: time::Instant,
     meta_send_time: Option<time::Instant>,
 
-    last_step_time: Option<time::Instant>,
-    avg_step_ms: f64,
-
-    // Connect, Disconnect, Ping
+    // Connect, Disconnect
     meta_queue: VecDeque<Box<[u8]>>,
     event_queue: VecDeque<Event>,
 
     // Connecting stuff
-    connect_frame: frame::Connect,
+    connect_frame: frame::ConnectFrame,
     connect_ack_received: bool,
-    connect_frame_remote: Option<frame::Connect>,
+    connect_frame_remote: Option<frame::ConnectFrame>,
 
     // Connected stuff
-    ping: rtt::PingRtt,
     was_connected: bool,
     disconnect_flush: bool,
-
-    channels: Vec<channel::Channel>,
-    frame_io: transfer::FrameIO,
 }
 
 impl Peer {
     pub fn new(params: Params) -> Self {
         assert!(params.num_channels > 0, "Must have at least one channel");
-        assert!(params.num_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
+        assert!(params.num_channels <= MAX_CHANNELS as u32, "Number of channels exceeds maximum");
 
-        let connect_frame = frame::Connect {
+        let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
             num_channels: (params.num_channels - 1) as u8,
             max_rx_bandwidth: params.max_rx_bandwidth,
-            sequence_id: rand::random::<u32>(),
+            nonce: rand::random::<u32>(),
         };
-
-        // Preallocate channels so that data may be enqueued before a connection is established
-        let mut channels = Vec::new();
-        for _ in 0..params.num_channels {
-            channels.push(channel::Channel::new(params.max_packet_size as usize));
-        }
 
         Self {
             state: State::Connecting,
@@ -106,9 +88,6 @@ impl Peer {
             watchdog_time: time::Instant::now(),
             meta_send_time: None,
 
-            last_step_time: None,
-            avg_step_ms: DEFAULT_STEP_TIME_MS,
-
             meta_queue: VecDeque::new(),
             event_queue: VecDeque::new(),
 
@@ -116,29 +95,25 @@ impl Peer {
             connect_ack_received: false,
             connect_frame_remote: None,
 
-            ping: rtt::PingRtt::new(),
             was_connected: false,
             disconnect_flush: false,
-
-            channels: channels,
-            frame_io: transfer::FrameIO::new(0, 0, 0),
         }
     }
 
     fn enqueue_meta(&mut self, frame: frame::Frame) {
-        self.meta_queue.push_back(frame.to_bytes());
+        self.meta_queue.push_back(frame.write());
     }
 
     // State::Connecting
-    fn verify_connect_info(&self, remote_info: &frame::Connect, local_info: &frame::Connect) -> bool {
+    fn verify_connect_info(&self, remote_info: &frame::ConnectFrame, local_info: &frame::ConnectFrame) -> bool {
         remote_info.num_channels == local_info.num_channels && remote_info.version == local_info.version
     }
 
     fn try_enter_connected(&mut self) {
         if self.connect_ack_received {
             if let Some(connect_frame) = &self.connect_frame_remote {
-                let tx_sequence_id = connect_frame.sequence_id;
-                let rx_sequence_id = self.connect_frame.sequence_id;
+                let tx_sequence_id = connect_frame.nonce;
+                let rx_sequence_id = self.connect_frame.nonce;
                 let max_tx_bandwidth = self.params.max_tx_bandwidth.min(connect_frame.max_rx_bandwidth);
                 self.connected_enter(tx_sequence_id, rx_sequence_id, max_tx_bandwidth as usize);
             }
@@ -147,8 +122,8 @@ impl Peer {
 
     fn connecting_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::ConnectAck(connect_ack_frame) => {
-                if connect_ack_frame.sequence_id == self.connect_frame.sequence_id {
+            frame::Frame::ConnectAckFrame(connect_ack_frame) => {
+                if connect_ack_frame.nonce == self.connect_frame.nonce {
                     // The remote peer acknowledged our connection request, stop sending more
                     self.connect_ack_received = true;
                     // Try to enter connected state
@@ -158,10 +133,10 @@ impl Peer {
                     self.disconnected_enter();
                 }
             }
-            frame::Frame::Connect(connect_frame) => {
+            frame::Frame::ConnectFrame(connect_frame) => {
                 if self.verify_connect_info(&connect_frame, &self.connect_frame) {
                     // Connection is possible, acknowledge request
-                    self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { sequence_id: connect_frame.sequence_id }));
+                    self.enqueue_meta(frame::Frame::ConnectAckFrame(frame::ConnectAckFrame { nonce: connect_frame.nonce }));
                     // Save remote connection request
                     self.connect_frame_remote = Some(connect_frame);
                     // Try to enter connected state
@@ -171,9 +146,9 @@ impl Peer {
                     self.disconnected_enter();
                 }
             }
-            frame::Frame::Disconnect(_) => {
+            frame::Frame::DisconnectFrame(_) => {
                 // Peer must not have liked our connect info
-                self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
+                self.enqueue_meta(frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame { }));
                 self.disconnected_enter();
             }
             _ => ()
@@ -185,7 +160,7 @@ impl Peer {
         if !self.connect_ack_received {
             if self.meta_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
                 self.meta_send_time = Some(now);
-                self.enqueue_meta(frame::Frame::Connect(self.connect_frame.clone()));
+                self.enqueue_meta(frame::Frame::ConnectFrame(self.connect_frame.clone()));
             }
         }
     }
@@ -200,78 +175,34 @@ impl Peer {
         self.disconnect_flush = false;
         self.event_queue.push_back(Event::Connect);
 
-        // TODO: This is icky, should an entire connected state object be created here?
-        self.frame_io = transfer::FrameIO::new(tx_sequence_id, rx_sequence_id, max_tx_bandwidth);
+        // TODO: Create DatenMeister
     }
 
     fn connected_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Connect(connect_frame) => {
+            frame::Frame::ConnectFrame(connect_frame) => {
                 // In this state, we've already verified any connection parameters, just ack
-                self.enqueue_meta(frame::Frame::ConnectAck(frame::ConnectAck { sequence_id: connect_frame.sequence_id }));
+                self.enqueue_meta(frame::Frame::ConnectAckFrame(frame::ConnectAckFrame { nonce: connect_frame.nonce }));
             }
-            frame::Frame::Disconnect(_) => {
+            frame::Frame::DisconnectFrame(_) => {
                 // Welp
-                self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
+                self.enqueue_meta(frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame { }));
                 self.disconnected_enter();
             }
-            frame::Frame::Ping(ping_frame) => {
-                // A ping has been received, acknowledge
-                self.enqueue_meta(frame::Frame::PingAck(frame::PingAck { sequence_id: ping_frame.sequence_id }));
-            }
-            frame::Frame::PingAck(ping_ack_frame) => {
-                // Our ping has been acknowledged, update RTT and pet watchdog
-                let now = time::Instant::now();
-                self.ping.handle_ack(now, ping_ack_frame.sequence_id);
-                self.watchdog_time = now;
-            }
-            frame::Frame::Data(data_frame) => {
-                if let Some(entries) = self.frame_io.handle_data_frame(data_frame) {
-                    for entry in entries.into_iter() {
-                        if let Some(channel) = self.channels.get_mut(entry.channel_id as usize) {
-                            match entry.message {
-                                frame::Message::Datagram(dg) => {
-                                    channel.rx.handle_datagram(dg);
-                                }
-                                frame::Message::WindowAck(wa) => {
-                                    channel.tx.handle_window_ack(wa);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            frame::Frame::DataAck(data_ack_frame) => {
-                self.frame_io.handle_data_ack_frame(data_ack_frame);
+            frame::Frame::MessageFrame(message_frame) => {
             }
             _ => ()
         }
     }
 
     fn connected_step(&mut self, now: time::Instant) {
-        // Try to send a ping
-        if self.meta_send_time.map_or(true, |time| now - time > PING_INTERVAL) {
-            self.meta_send_time = Some(now);
-            let sequence_id = self.ping.new_ping(now);
-            self.enqueue_meta(frame::Frame::Ping(frame::Ping {
-                sequence_id: sequence_id,
-            }));
-        }
-
-        // Deliver packets from rx channels to application
-        for (id, channel) in self.channels.iter_mut().enumerate() {
-            while let Some(packet) = channel.rx.receive() {
-                self.event_queue.push_back(Event::Receive(packet, id as ChannelId));
-            }
-        }
-
-        //self.frame_io.step(now);
-
         if self.disconnect_flush {
             // Disconnect if there's no pending data --the application is expected to stop calling send()!
+            /*
             if self.frame_io.is_idle() && !self.channels.iter().any(|channel| !channel.tx.is_empty()) {
                 self.disconnecting_enter();
             }
+            */
         }
     }
 
@@ -285,12 +216,12 @@ impl Peer {
 
     fn disconnecting_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Disconnect(_) => {
+            frame::Frame::DisconnectFrame(_) => {
                 // The remote is also disconnecting
-                self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
+                self.enqueue_meta(frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame { }));
                 self.disconnected_enter();
             }
-            frame::Frame::DisconnectAck(_) => {
+            frame::Frame::DisconnectAckFrame(_) => {
                 // Our disconnect has been received
                 self.disconnected_enter();
             }
@@ -301,7 +232,7 @@ impl Peer {
     fn disconnecting_step(&mut self, now: time::Instant) {
         if self.meta_send_time.map_or(true, |time| now - time > DISCONNECT_INTERVAL) {
             self.meta_send_time = Some(now);
-            self.enqueue_meta(frame::Frame::Disconnect(frame::Disconnect { }));
+            self.enqueue_meta(frame::Frame::DisconnectFrame(frame::DisconnectFrame { }));
         }
     }
 
@@ -318,8 +249,8 @@ impl Peer {
 
     fn disconnected_handle_frame(&mut self, frame: frame::Frame) {
         match frame {
-            frame::Frame::Disconnect(_) => {
-                self.enqueue_meta(frame::Frame::DisconnectAck(frame::DisconnectAck { }));
+            frame::Frame::DisconnectFrame(_) => {
+                self.enqueue_meta(frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame { }));
             }
             _ => ()
         }
@@ -345,12 +276,6 @@ impl Peer {
     pub fn step(&mut self) {
         let now = time::Instant::now();
 
-        // TODO: Make this quantity resettable, and its default configurable
-        if let Some(last_step_time) = self.last_step_time {
-            let step_ms = (now - last_step_time).as_secs_f64()*1_000.0;
-            self.avg_step_ms = (1.0 - STEP_TIME_SMOOTH)*self.avg_step_ms + STEP_TIME_SMOOTH * step_ms;
-        }
-
         if self.state != State::Zombie {
             if now - self.watchdog_time > WATCHDOG_TIMEOUT {
                 self.zombie_enter();
@@ -371,48 +296,9 @@ impl Peer {
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
-        let channel = self.channels.get_mut(channel_id as usize).expect("No such channel");
-        match self.state {
-            State::Connecting | State::Connected => channel.tx.enqueue(data, mode),
-            _ => (),
-        }
-    }
-
-    fn flush_data(&mut self, now: time::Instant, sink: & dyn DataSink) {
-        // Take pending messages from tx channels and enqueue them for delivery
-        // TODO: Should this be round-robin? (Maybe on a per-packet basis?)
-        for (channel_id, channel) in self.channels.iter_mut().enumerate() {
-            while let Some((datagram, is_reliable)) = channel.tx.try_send() {
-                let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::Datagram(datagram));
-                self.frame_io.enqueue_datagram(data_entry, is_reliable, self.params.priority_channels.contains(&(channel_id as u32)));
-            }
-            if let Some(window_ack) = channel.rx.take_window_ack() {
-                let data_entry = frame::DataEntry::new(channel_id as ChannelId, frame::Message::WindowAck(window_ack));
-                self.frame_io.enqueue_datagram(data_entry, true, self.params.priority_channels.contains(&(channel_id as u32)));
-            }
-        }
-
-        // Flush any pending frames
-        let rtt = time::Duration::from_millis(self.ping.rtt_ms().round() as u64);
-        let rto = time::Duration::from_millis(self.ping.rto_ms(self.avg_step_ms).round() as u64);
-
-        self.frame_io.flush(now, rtt, rto, sink);
-    }
-
-    fn flush_meta(&mut self, sink: & dyn DataSink) {
-        for data in self.meta_queue.iter() {
-            sink.send(&data);
-        }
-        self.meta_queue.clear();
     }
 
     pub fn flush(&mut self, sink: & dyn DataSink) {
-        let now = time::Instant::now();
-        self.flush_meta(sink);
-
-        if self.state == State::Connected {
-            self.flush_data(now, sink);
-        }
     }
 
     pub fn disconnect(&mut self) {
@@ -426,7 +312,7 @@ impl Peer {
     }
 
     pub fn rtt_ms(&self) -> f64 {
-        self.ping.rtt_ms()
+        todo!()
     }
 }
 
