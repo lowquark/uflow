@@ -3,7 +3,7 @@ use crate::frame::Datagram;
 use crate::MAX_TRANSFER_UNIT;
 use crate::SendMode;
 use crate::frame;
-use crate::DataSink;
+use crate::FrameSink;
 
 mod packet_sender;
 mod packet_receiver;
@@ -103,7 +103,7 @@ impl DatenMeister {
         }
     }
 
-    pub fn flush(&mut self, sink: &impl DataSink) {
+    pub fn flush(&mut self, sink: &mut impl FrameSink) {
         let now = time::Instant::now();
         let now_ms = (now - self.time_base).as_millis() as u64;
 
@@ -179,8 +179,8 @@ mod tests {
         label: Box<str>,
     }
 
-    impl super::DataSink for TestFrameSink {
-        fn send(&self, frame_bytes: Box<[u8]>) {
+    impl super::FrameSink for TestFrameSink {
+        fn send(&mut self, frame_bytes: &[u8]) {
             println!("{} -> {:?}", self.label, frame_bytes);
         }
     }

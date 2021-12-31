@@ -4,7 +4,7 @@ use crate::MAX_TRANSFER_UNIT;
 use crate::frame;
 use crate::peer;
 use crate::ChannelId;
-use crate::DataSink;
+use crate::FrameSink;
 use crate::SendMode;
 
 use frame::Serialize;
@@ -15,12 +15,12 @@ use std::net;
 use std::ops::Range;
 use std::rc::Rc;
 
-struct PeerDataSink<'a> {
+struct PeerFrameSink<'a> {
     socket: &'a net::UdpSocket,
     address: net::SocketAddr,
 }
 
-impl<'a> PeerDataSink<'a> {
+impl<'a> PeerFrameSink<'a> {
     fn new(socket: &'a net::UdpSocket, address: net::SocketAddr) -> Self {
         Self {
             socket: socket,
@@ -29,12 +29,11 @@ impl<'a> PeerDataSink<'a> {
     }
 }
 
-impl<'a> DataSink for PeerDataSink<'a> {
-    fn send(&self, data: &[u8]) {
-        let _ = self.socket.send_to(data, self.address);
+impl<'a> FrameSink for PeerFrameSink<'a> {
+    fn send(&mut self, frame_data: &[u8]) {
+        let _ = self.socket.send_to(frame_data, self.address);
     }
 }
-
 
 #[derive(Clone)]
 pub struct Params {
@@ -176,16 +175,16 @@ impl Host {
 
         while let Ok((recv_size, src_addr)) = self.socket.recv_from(&mut recv_buf) {
             if let Some(frame) = frame::Frame::read(&recv_buf[..recv_size]) {
-                let data_sink = PeerDataSink::new(&self.socket, src_addr);
+                let mut data_sink = PeerFrameSink::new(&self.socket, src_addr);
 
                 match self.peer_list.get_mut(&src_addr) {
                     Some(peer) => {
-                        peer.borrow_mut().handle_frame(frame, &data_sink);
+                        peer.borrow_mut().handle_frame(frame, &mut data_sink);
                     }
                     None => {
                         if self.peer_list.len() < self.max_connected_peers as usize {
                             let mut peer = peer::Peer::new(self.peer_params.clone());
-                            peer.handle_frame(frame, &data_sink);
+                            peer.handle_frame(frame, &mut data_sink);
 
                             let peer_ref = Rc::new(RefCell::new(peer));
                             self.peer_list.insert(src_addr, peer_ref.clone());
@@ -208,8 +207,8 @@ impl Host {
 
     pub fn flush(&mut self) {
         for (address, peer) in self.peer_list.iter_mut() {
-            let data_sink = PeerDataSink::new(&self.socket, *address);
-            peer.borrow_mut().flush(&data_sink);
+            let mut data_sink = PeerFrameSink::new(&self.socket, *address);
+            peer.borrow_mut().flush(&mut data_sink);
         }
     }
 

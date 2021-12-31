@@ -3,7 +3,7 @@ mod daten_meister;
 
 use crate::frame;
 use crate::ChannelId;
-use crate::DataSink;
+use crate::FrameSink;
 use crate::MAX_CHANNELS;
 use crate::PROTOCOL_VERSION;
 use crate::SendMode;
@@ -182,7 +182,7 @@ impl Peer {
         }
     }
 
-    pub fn handle_frame(&mut self, frame: frame::Frame, sink: & impl DataSink) {
+    pub fn handle_frame(&mut self, frame: frame::Frame, sink: &mut impl FrameSink) {
         match self.state {
             State::Connecting(ref mut state) => {
                 match frame {
@@ -267,7 +267,7 @@ impl Peer {
         }
     }
 
-    pub fn flush(&mut self, sink: & impl DataSink) {
+    pub fn flush(&mut self, sink: &mut impl FrameSink) {
         let now = time::Instant::now();
 
         match self.state {

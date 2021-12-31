@@ -29,7 +29,7 @@ pub enum SendMode {
     Reliable,
 }
 
-pub trait DataSink {
-    fn send(&self, data: &[u8]);
+pub trait FrameSink {
+    fn send(&mut self, frame_data: &[u8]);
 }
 
