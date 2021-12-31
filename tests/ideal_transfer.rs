@@ -1,11 +1,11 @@
 
 extern crate md5;
 
-static NUM_CHANNELS: u32 = 4;
+static NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
     let params = udpl::host::Params::new()
-        .num_channels(NUM_CHANNELS);
+        .tx_channels(NUM_CHANNELS);
 
     let mut host = udpl::host::Host::bind("127.0.0.1:8888", params).unwrap();
     let mut clients = Vec::new();
@@ -46,7 +46,7 @@ fn server_thread() -> Vec<md5::Digest> {
 
 fn client_thread() -> Vec<md5::Digest> {
     let params = udpl::host::Params::new()
-        .num_channels(NUM_CHANNELS);
+        .tx_channels(NUM_CHANNELS);
 
     let mut host = udpl::host::Host::bind_any(params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());

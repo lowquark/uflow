@@ -3,7 +3,7 @@ fn server_thread() {
     let params = udpl::host::Params::new()
         .max_peer_tx_bandwidth(1_000_000)
         .max_peer_rx_bandwidth(500_000)
-        .num_channels(2);
+        .tx_channels(2);
 
     let mut host = udpl::host::Host::bind("127.0.0.1:8888", params).unwrap();
     let mut clients = Vec::new();
@@ -32,7 +32,7 @@ fn client_thread() {
     let params = udpl::host::Params::new()
         .max_peer_tx_bandwidth(1_000_000)
         .max_peer_rx_bandwidth(750_000)
-        .num_channels(2)
+        .tx_channels(2)
         .priority_channels(0..1);
 
     let mut host = udpl::host::Host::bind_any(params).unwrap();
