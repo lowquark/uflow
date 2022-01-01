@@ -32,7 +32,7 @@ fn server_thread() -> Vec<md5::Digest> {
                         println!("Server disconnect");
                         break 'outer;
                     }
-                    _ => panic!()
+                    other => println!("Unexpected server event: {:?}", other),
                 }
             }
         }
@@ -66,7 +66,7 @@ fn client_thread() -> Vec<md5::Digest> {
                 udpl::host::Event::Connect => {
                     println!("Client connect");
                 }
-                _ => panic!()
+                other => println!("Unexpected client event: {:?}", other),
             }
         }
 
@@ -105,7 +105,7 @@ fn client_thread() -> Vec<md5::Digest> {
                     println!("Client disconnect");
                     break 'outer;
                 }
-                _ => panic!()
+                other => println!("Unexpected client event: {:?}", other),
             }
         }
 

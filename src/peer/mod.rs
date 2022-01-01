@@ -194,6 +194,8 @@ impl Peer {
     pub fn handle_frame(&mut self, frame: frame::Frame, sink: &mut impl FrameSink) {
         match self.state {
             State::Connecting(ref mut state) => {
+                self.watchdog_time = time::Instant::now();
+
                 match frame {
                     frame::Frame::ConnectAckFrame(frame) => {
                         if frame.nonce == state.connect_frame.nonce {
@@ -237,6 +239,8 @@ impl Peer {
                 }
             }
             State::Connected(ref mut state) => {
+                self.watchdog_time = time::Instant::now();
+
                 match frame {
                     frame::Frame::ConnectFrame(connect_frame) => {
                         // In this state, we've already verified any connection parameters, just ack
