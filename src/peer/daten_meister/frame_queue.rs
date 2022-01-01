@@ -93,6 +93,7 @@ struct SentFrame {
 }
 
 
+#[derive(Debug,PartialEq)]
 pub enum Error {
     WindowLimited,
     DataLimited,
@@ -139,10 +140,6 @@ impl FrameQueue {
 
         let mut fbuilder = MessageFrameBuilder::new(frame_id, nonce);
         let mut persistent_messages = Vec::new();
-
-        if fbuilder.size() >= size_limit {
-            return Err(Error::SizeLimited);
-        }
 
         while let Some(entry) = self.resend_queue.peek() {
             if entry.resend_time > now_ms {
@@ -223,9 +220,9 @@ impl FrameQueue {
         let ack_size = ack.size.min(32) as u32;
 
         for i in 0 .. ack_size {
-            let frame_id = ack.base_id.wrapping_add(i);
-
             if ack.bitfield & (1 << i) != 0 {
+                let frame_id = ack.base_id.wrapping_add(i);
+
                 if let Some(sent_frame) = self.sent_frames.get_mut(frame_id.wrapping_sub(self.base_id) as usize) {
                     let persistent_messages = std::mem::take(&mut sent_frame.persistent_messages);
 
@@ -234,8 +231,6 @@ impl FrameQueue {
                             pmsg.borrow_mut().acknowledged = true;
                         }
                     }
-                } else {
-                    return;
                 }
             }
         }
@@ -253,191 +248,137 @@ impl FrameQueue {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use crate::frame;
-    use crate::frame::FragmentId;
-    use crate::frame::Datagram;
-    use crate::frame::Message;
-    use crate::frame::Frame;
-    use crate::frame::Serialize;
+    use crate::frame::serial::Serialize;
 
-    use super::FrameSender;
-    use super::super::MAX_FRAGMENT_SIZE;
-    use super::super::MAX_TRANSFER_UNIT;
+    use crate::MAX_FRAGMENT_SIZE;
+    use crate::MAX_TRANSFER_UNIT;
 
-    use std::collections::VecDeque;
+    use super::FrameQueue;
+    use super::Error;
 
-    fn new_dummy_message(sequence_id: u32, data_size: usize) -> Message {
-        Message::Datagram(Datagram {
+    fn new_dummy_message(sequence_id: u32, data_size: usize) -> frame::Message {
+        frame::Message::Datagram(frame::Datagram {
             sequence_id,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: frame::FragmentId { id: 0, last: 0 },
             data: (0 .. data_size).map(|i| i as u8).collect::<Vec<_>>().into(),
         })
     }
 
-    fn new_max_message(sequence_id: u32) -> Message {
-        Message::Datagram(Datagram {
+    fn new_max_message(sequence_id: u32) -> frame::Message {
+        frame::Message::Datagram(frame::Datagram {
             sequence_id,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: frame::FragmentId { id: 0, last: 1 },
             data: (0 .. MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<_>>().into(),
         })
     }
 
-    struct TestFrameSink {
-        frames: VecDeque<Box<[u8]>>,
-    }
-
-    impl TestFrameSink {
-        fn new() -> Self {
-            Self {
-                frames: VecDeque::new(),
-            }
-        }
-
-        fn pop(&mut self) -> Box<[u8]> {
-            self.frames.pop_front().unwrap()
-        }
-
-        fn is_empty(&mut self) -> bool {
-            self.frames.is_empty()
-        }
-    }
-
-    impl super::FrameSink for TestFrameSink {
-        fn send(&mut self, frame_bytes: Box<[u8]>) {
-            self.frames.push_back(frame_bytes);
-        }
-    }
-
-    fn verify_frame(frame_data: Box<[u8]>, sequence_id: u32, messages: Vec<Message>) {
-        let frame = frame::Frame::read(&frame_data).unwrap();
-
-        if let Frame::MessageFrame(frame) = frame {
-            assert_eq!(frame.sequence_id, sequence_id);
-            assert_eq!(frame.messages, messages);
-        } else {
-            panic!("Expected Frame::MessageFrame");
-        }
-    }
-
-    fn compute_nonce(frame_list: Vec<Box<[u8]>>) -> bool {
-        let mut nonce = false;
-
-        for frame_data in frame_list.iter() {
+    fn verify_frame(result: Result<(Box<[u8]>, u32, bool), Error>, sequence_id: u32, messages: Vec<frame::Message>) -> Box<[u8]> {
+        if let Ok((frame_data, result_sequence_id, _)) = result {
             let frame = frame::Frame::read(&frame_data).unwrap();
 
-            if let Frame::MessageFrame(frame) = frame {
-                nonce ^= frame.nonce;
-            } else {
-                panic!("Expected Frame::MessageFrame");
-            }
-        }
+            if let frame::Frame::MessageFrame(frame) = frame {
+                assert_eq!(result_sequence_id, sequence_id);
+                assert_eq!(frame.sequence_id, sequence_id);
+                assert_eq!(frame.messages, messages);
 
-        return nonce;
+                return frame_data;
+            } else {
+                panic!("Expected MessageFrame");
+            }
+        } else {
+            panic!("Unexpected frame generation error");
+        }
     }
+
+    const MAX_SIZE_LIMIT: usize = MAX_TRANSFER_UNIT;
 
     #[test]
     fn basic() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fq = FrameQueue::new(0);
 
+        let now_ms = 0;
         let rto_ms = 100;
 
         let msg0 = new_dummy_message(0, 15);
         let msg1 = new_dummy_message(1, 15);
         let msg2 = new_dummy_message(2, 15);
 
-        fs.enqueue_message(msg0.clone(), false);
-        fs.enqueue_message(msg1.clone(), false);
-        fs.enqueue_message(msg2.clone(), false);
+        fq.enqueue_message(msg0.clone(), false);
+        fq.enqueue_message(msg1.clone(), false);
+        fq.enqueue_message(msg2.clone(), false);
 
-        assert_eq!(fs.pending_count(), 3);
+        assert_eq!(fq.pending_count(), 3);
 
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
+        verify_frame(fq.emit_frame(now_ms, rto_ms, MAX_SIZE_LIMIT), 0, vec![ msg0, msg1, msg2 ]);
 
-        assert_eq!(fs.pending_count(), 0);
-
-        verify_frame(sink.pop(), 0, vec![ msg0, msg1, msg2 ]);
-        assert!(sink.is_empty());
+        assert_eq!(fq.pending_count(), 0);
     }
 
     #[test]
     fn max_message() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fq = FrameQueue::new(0);
 
-        let rto_ms = 100;
-
-        let message = new_max_message(0);
-
-        fs.enqueue_message(message.clone(), false);
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
-
-        let frame_data = sink.pop();
-        assert!(sink.is_empty());
-
-        assert!(frame_data.len() == MAX_TRANSFER_UNIT);
-
-        verify_frame(frame_data, 0, vec![ message ]);
-    }
-
-    #[test]
-    fn total_size_limit() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
-
+        let now_ms = 0;
         let rto_ms = 100;
 
         let msg0 = new_max_message(0);
-        let msg1 = new_max_message(1);
-        let msg2 = new_max_message(2);
-        let msg3 = new_max_message(3);
-        let msg4 = new_dummy_message(4, 400);
-        let msg5 = new_max_message(5);
-        let msg6 = new_dummy_message(6, 400);
-        let msg7 = new_dummy_message(7, 400);
+        fq.enqueue_message(msg0.clone(), false);
 
+        let frame_data = verify_frame(fq.emit_frame(now_ms, rto_ms, MAX_SIZE_LIMIT), 0, vec![ msg0 ]);
+
+        assert!(frame_data.len() == MAX_TRANSFER_UNIT);
+    }
+
+    #[test]
+    fn size_limit() {
+        let mut fs = FrameQueue::new(0);
+
+        let now_ms = 0;
+        let rto_ms = 100;
+
+        assert_eq!(fs.emit_frame(now_ms, rto_ms, 0), Err(Error::DataLimited));
+        assert_eq!(fs.emit_frame(now_ms, rto_ms, MAX_TRANSFER_UNIT), Err(Error::DataLimited));
+
+        let msg0 = new_max_message(0);
         fs.enqueue_message(msg0.clone(), false);
+
+        assert_eq!(fs.emit_frame(now_ms, rto_ms, MAX_TRANSFER_UNIT-1), Err(Error::SizeLimited));
+        verify_frame(fs.emit_frame(now_ms, rto_ms, MAX_TRANSFER_UNIT), 0, vec![ msg0 ]);
+
+        let msg1 = new_dummy_message(1, 400);
+        let msg2 = new_dummy_message(2, 400);
+        let msg3 = new_dummy_message(3, 400);
+        let msg4 = new_dummy_message(4, 400);
+        let msg5 = new_dummy_message(4, 400);
         fs.enqueue_message(msg1.clone(), false);
         fs.enqueue_message(msg2.clone(), false);
         fs.enqueue_message(msg3.clone(), false);
         fs.enqueue_message(msg4.clone(), false);
         fs.enqueue_message(msg5.clone(), false);
-        fs.enqueue_message(msg6.clone(), false);
-        fs.enqueue_message(msg7.clone(), false);
 
-        fs.emit_frames(0, rto_ms, MAX_TRANSFER_UNIT*3, &mut sink);
+        let frame_overhead = 8;
+        let message_overhead = 11;
+        let min_send_size_1 = frame_overhead + message_overhead + 400;
+        let min_send_size_2 = frame_overhead + 2*(message_overhead + 400);
 
-        verify_frame(sink.pop(), 0, vec![ msg0 ]);
-        verify_frame(sink.pop(), 1, vec![ msg1 ]);
-        verify_frame(sink.pop(), 2, vec![ msg2 ]);
-        assert!(sink.is_empty());
-
-        fs.emit_frames(0, rto_ms, MAX_TRANSFER_UNIT*1, &mut sink);
-
-        verify_frame(sink.pop(), 3, vec![ msg3 ]);
-        assert!(sink.is_empty());
-
-        fs.emit_frames(0, rto_ms, MAX_TRANSFER_UNIT*2, &mut sink);
-
-        verify_frame(sink.pop(), 4, vec![ msg4 ]);
-        verify_frame(sink.pop(), 5, vec![ msg5 ]);
-        verify_frame(sink.pop(), 6, vec![ msg6, msg7 ]);
-        assert!(sink.is_empty());
+        assert_eq!(fs.emit_frame(now_ms, rto_ms, min_send_size_1 - 1), Err(Error::SizeLimited));
+        verify_frame(fs.emit_frame(now_ms, rto_ms, min_send_size_1), 1, vec![ msg1 ]);
+        verify_frame(fs.emit_frame(now_ms, rto_ms, min_send_size_2 - 1), 2, vec![ msg2 ]);
+        verify_frame(fs.emit_frame(now_ms, rto_ms, min_send_size_2), 3, vec![ msg3, msg4 ]);
     }
 
     #[test]
     fn resends() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fs = FrameQueue::new(0);
 
         let rto_ms = 100;
 
@@ -446,12 +387,9 @@ mod tests {
 
         assert_eq!(fs.pending_count(), 1);
 
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
-        verify_frame(sink.pop(), 0, vec![ msg.clone() ]);
-        assert!(sink.is_empty());
+        verify_frame(fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT), 0, vec![ msg.clone() ]);
 
-        fs.emit_frames(1, rto_ms, 10000, &mut sink);
-        assert!(sink.is_empty());
+        assert_eq!(fs.emit_frame(1, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
 
         let resend_times = [ rto_ms, 3*rto_ms, 7*rto_ms, 15*rto_ms, 31*rto_ms, 47*rto_ms, 63*rto_ms ];
 
@@ -460,15 +398,11 @@ mod tests {
         for time_ms in resend_times.iter() {
             assert_eq!(fs.pending_count(), 1);
 
-            fs.emit_frames(*time_ms - 1, rto_ms, 10000, &mut sink);
-            assert!(sink.is_empty());
+            assert_eq!(fs.emit_frame(*time_ms - 1, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
 
-            fs.emit_frames(*time_ms, rto_ms, 10000, &mut sink);
-            verify_frame(sink.pop(), frame_id, vec![ msg.clone() ]);
-            assert!(sink.is_empty());
+            verify_frame(fs.emit_frame(*time_ms, rto_ms, MAX_SIZE_LIMIT), frame_id, vec![ msg.clone() ]);
 
-            fs.emit_frames(*time_ms + 1, rto_ms, 10000, &mut sink);
-            assert!(sink.is_empty());
+            assert_eq!(fs.emit_frame(*time_ms + 1, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
 
             frame_id += 1;
         }
@@ -478,8 +412,7 @@ mod tests {
 
     #[test]
     fn basic_acknowledgement() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fs = FrameQueue::new(0);
 
         let rto_ms = 100;
 
@@ -494,119 +427,55 @@ mod tests {
         fs.enqueue_message(msg2.clone(), true);
         fs.enqueue_message(msg3.clone(), true);
         fs.enqueue_message(msg4.clone(), true);
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
 
-        let f0 = sink.pop();
-        let _f1 = sink.pop();
-        let f2 = sink.pop();
-        let f3 = sink.pop();
-        let f4 = sink.pop();
-        assert!(sink.is_empty());
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 5, bitfield: 0b11101, nonce: false });
 
-        assert_eq!(fs.acknowledge_frames(0, 0b11101, compute_nonce(vec![ f0, f2, f3, f4 ])), true);
-
-        // All but frame 1 acknowledged, resend will contain msg1
-        fs.emit_frames(rto_ms, rto_ms, 10000, &mut sink);
-        verify_frame(sink.pop(), 5, vec![ msg1.clone() ]);
-        assert!(sink.is_empty());
-    }
-
-    #[test]
-    fn bad_acknowledgement() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
-
-        let rto_ms = 100;
-
-        let msg0 = new_max_message(0);
-        let msg1 = new_max_message(1);
-        let msg2 = new_max_message(2);
-        let msg3 = new_max_message(3);
-        let msg4 = new_max_message(4);
-
-        fs.enqueue_message(msg0.clone(), true);
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
-        fs.enqueue_message(msg1.clone(), true);
-        fs.emit_frames(1, rto_ms, 10000, &mut sink);
-        fs.enqueue_message(msg2.clone(), true);
-        fs.emit_frames(2, rto_ms, 10000, &mut sink);
-        fs.enqueue_message(msg3.clone(), true);
-        fs.emit_frames(3, rto_ms, 10000, &mut sink);
-        fs.enqueue_message(msg4.clone(), true);
-        fs.emit_frames(4, rto_ms, 10000, &mut sink);
-
-        let f0 = sink.pop();
-        let f1 = sink.pop();
-        let f2 = sink.pop();
-        let f3 = sink.pop();
-        let f4 = sink.pop();
-        assert!(sink.is_empty());
-
-        // Compute bad nonce
-        assert_eq!(fs.acknowledge_frames(0, 0b11111, !compute_nonce(vec![ f0, f1, f2, f3, f4 ])), false);
-
-        // Nothing acknowledged - everything resent
-        fs.emit_frames(rto_ms + 5, rto_ms, 10000, &mut sink);
-        verify_frame(sink.pop(), 5, vec![ msg0.clone() ]);
-        verify_frame(sink.pop(), 6, vec![ msg1.clone() ]);
-        verify_frame(sink.pop(), 7, vec![ msg2.clone() ]);
-        verify_frame(sink.pop(), 8, vec![ msg3.clone() ]);
-        verify_frame(sink.pop(), 9, vec![ msg4.clone() ]);
-        assert!(sink.is_empty());
-    }
-
-    #[test]
-    fn bad_acknowledgement_base() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
-
-        let rto_ms = 100;
-
-        let msg0 = new_max_message(0);
-        let msg1 = new_max_message(1);
-
-        fs.enqueue_message(msg0.clone(), true);
-        fs.enqueue_message(msg1.clone(), true);
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
-
-        let f0 = sink.pop();
-        let f1 = sink.pop();
-        assert!(sink.is_empty());
-
-        assert_eq!(fs.acknowledge_frames(2, 0b00011, compute_nonce(vec![ f0, f1 ])), false);
+        verify_frame(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), 5, vec![ msg1.clone() ]);
     }
 
     #[test]
     fn max_acknowledgement() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fs = FrameQueue::new(0);
 
         let rto_ms = 100;
 
         for msg_id in 0..32 {
             let msg = new_max_message(msg_id);
-            fs.enqueue_message(msg, true);
-            fs.emit_frames(0, rto_ms, 10000, &mut sink);
+            fs.enqueue_message(msg.clone(), true);
+            fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         }
 
-        let mut frames = Vec::new();
-        for _ in 0..32 {
-            frames.push(sink.pop());
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 32, bitfield: 0xFFFFFFFF, nonce: false });
+
+        assert_eq!(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
+    }
+
+    #[test]
+    fn flexible_acknowledgement_base() {
+        let mut fs = FrameQueue::new(0);
+
+        let rto_ms = 100;
+
+        for msg_id in 0..32 {
+            let msg = new_max_message(msg_id);
+            fs.enqueue_message(msg.clone(), true);
+            fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         }
-        assert!(sink.is_empty());
 
-        // Compute bad nonce
-        assert_eq!(fs.acknowledge_frames(0, 0xFFFFFFFF, compute_nonce(frames)), true);
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_sub(16), size: 32, bitfield: 0xFFFF0000, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_add(16), size: 16, bitfield: 0x0000FFFF, nonce: false });
 
-        // Nothing acknowledged - everything resent
-        fs.emit_frames(rto_ms, rto_ms, 10000, &mut sink);
-        assert!(sink.is_empty());
+        assert_eq!(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
     }
 
     #[test]
     fn forget_frames() {
-        let mut fs = FrameSender::new(0);
-        let mut sink = TestFrameSink::new();
+        let mut fs = FrameQueue::new(0);
 
         let rto_ms = 100;
 
@@ -617,31 +486,22 @@ mod tests {
         let msg4 = new_max_message(4);
 
         fs.enqueue_message(msg0.clone(), true);
-        fs.emit_frames(0, rto_ms, 10000, &mut sink);
+        fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         fs.enqueue_message(msg1.clone(), true);
-        fs.emit_frames(1, rto_ms, 10000, &mut sink);
+        fs.emit_frame(9, rto_ms, MAX_SIZE_LIMIT).unwrap();
         fs.enqueue_message(msg2.clone(), true);
+        fs.emit_frame(10, rto_ms, MAX_SIZE_LIMIT).unwrap();
         fs.enqueue_message(msg3.clone(), true);
+        fs.emit_frame(11, rto_ms, MAX_SIZE_LIMIT).unwrap();
         fs.enqueue_message(msg4.clone(), true);
-        fs.emit_frames(10, rto_ms, 10000, &mut sink);
-
-        let f0 = sink.pop();
-        let f1 = sink.pop();
-        let f2 = sink.pop();
-        let f3 = sink.pop();
-        let f4 = sink.pop();
-        assert!(sink.is_empty());
+        fs.emit_frame(12, rto_ms, MAX_SIZE_LIMIT).unwrap();
 
         fs.forget_frames(10);
 
-        assert_eq!(fs.acknowledge_frames(0,  0b11, compute_nonce(vec![ f0, f1 ])), false);
-        assert_eq!(fs.acknowledge_frames(2, 0b111, compute_nonce(vec![ f2, f3, f4 ])), true);
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 5, bitfield: 0b11111, nonce: false });
 
-        fs.emit_frames(rto_ms + 2, rto_ms, 10000, &mut sink);
-        verify_frame(sink.pop(), 5, vec![ msg0.clone() ]);
-        verify_frame(sink.pop(), 6, vec![ msg1.clone() ]);
-        assert!(sink.is_empty());
+        verify_frame(fs.emit_frame(rto_ms + 9, rto_ms, MAX_SIZE_LIMIT), 5, vec![ msg0.clone() ]);
+        verify_frame(fs.emit_frame(rto_ms + 9, rto_ms, MAX_SIZE_LIMIT), 6, vec![ msg1.clone() ]);
     }
 }
-*/
 

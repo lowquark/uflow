@@ -22,11 +22,11 @@ const DATAGRAM_MESSAGE_HEADER_SIZE_FULL: usize = 11;
 const ACK_MESSAGE_SIZE: usize = 14;
 const RESYNC_MESSAGE_SIZE: usize = 5;
 
-const MESSAGE_FRAME_HEADER_SIZE: usize = 7;
+const MESSAGE_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
 
 pub use build::MAX_CHANNELS;
 pub const MAX_MESSAGE_OVERHEAD: usize = DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT;
-pub const MESSAGE_FRAME_OVERHEAD: usize = MESSAGE_FRAME_HEADER_SIZE;
+pub const MESSAGE_FRAME_OVERHEAD: usize = 1 + MESSAGE_FRAME_PAYLOAD_HEADER_SIZE;
 pub const MAX_FRAGMENTS: usize = 1 << 16;
 
 fn read_connect(data: &[u8]) -> Option<Frame> {
@@ -241,7 +241,7 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
 fn read_message(data: &[u8]) -> Option<Frame> {
     // TODO: Rely on reader object
 
-    if data.len() < MESSAGE_FRAME_HEADER_SIZE {
+    if data.len() < MESSAGE_FRAME_PAYLOAD_HEADER_SIZE {
         return None;
     }
 
@@ -255,7 +255,7 @@ fn read_message(data: &[u8]) -> Option<Frame> {
     let message_num = ((data[5] as u16) << 8) |
                       ((data[6] as u16)     );
 
-    let mut data_slice = &data[MESSAGE_FRAME_HEADER_SIZE..];
+    let mut data_slice = &data[MESSAGE_FRAME_PAYLOAD_HEADER_SIZE..];
     let mut messages = Vec::new();
 
     for _ in 0 .. message_num {

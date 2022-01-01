@@ -147,8 +147,6 @@ impl DatenMeister {
                 Ok((frame_data, frame_id, nonce)) => {
                     let frame_size = frame_data.len();
 
-                    use frame::serial::Serialize;
-
                     sink.send(&frame_data);
 
                     self.flush_alloc -= frame_size;
