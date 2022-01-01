@@ -32,15 +32,22 @@ impl FrameLog {
         self.next_id = self.next_id.wrapping_add(1);
     }
 
-    pub fn pop(&mut self, thresh_ms: u64) {
-        while let Some(frame) = self.frames.front() {
+    pub fn count_expired(&mut self, thresh_ms: u64) -> u32 {
+        // TODO: Consider using VecDeque::partition_point()
+        let mut count = 0;
+        for frame in self.frames.iter() {
             if frame.send_time_ms < thresh_ms {
-                self.frames.pop_front();
-                self.base_id = self.base_id.wrapping_add(1);
+                count += 1;
             } else {
-                return;
+                break;
             }
         }
+        return count;
+    }
+
+    pub fn drain_front(&mut self, count: u32) {
+        self.frames.drain(0 .. count as usize);
+        self.base_id = self.base_id.wrapping_add(count);
     }
 
     pub fn get(&self, frame_id: u32) -> Option<&SentFrame> {
@@ -51,8 +58,8 @@ impl FrameLog {
         self.base_id
     }
 
-    pub fn len(&self) -> u32 {
-        self.frames.len() as u32
+    pub fn next_id(&self) -> u32 {
+        self.base_id
     }
 }
 

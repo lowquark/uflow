@@ -1,11 +1,8 @@
 
 mod frame_log;
-mod loss;
+mod feedback;
 mod recv_rate_set;
 
-use frame_log::FrameLog;
-use frame_log::SentFrame;
-use loss::LossRateComp;
 use recv_rate_set::RecvRateSet;
 
 use crate::frame::FrameAck;
@@ -58,12 +55,6 @@ fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
     }
 }
 
-struct Feedback {
-    size_total: usize,
-    rtt_ms: u64,
-    rate_limited: bool,
-}
-
 struct SlowStartState {
     time_last_doubled: time::Instant,
 }
@@ -80,18 +71,10 @@ enum SendRateMode {
 }
 
 pub struct SendRateComp {
-    // Queue of previously sent frames
-    frame_log: FrameLog,
-    // Flag indicating that the next logged frame will be marked rate limited
-    next_frame_rate_limited: bool,
+    feedback_comp: feedback::FeedbackComp,
 
-    // Reorder buffer and loss intervals
-    loss_rate_comp: LossRateComp,
     // Previous loss rate computation
     prev_loss_rate: f64,
-
-    // Feedback data aggregated from ack groups
-    pending_feedback: Option<Feedback>,
     // Last time feedback was handled
     last_feedback_time: Option<time::Instant>,
 
@@ -122,13 +105,9 @@ impl SendRateComp {
 
     pub fn new(base_id: u32) -> Self {
         Self {
-            frame_log: FrameLog::new(base_id),
-            next_frame_rate_limited: false,
+            feedback_comp: feedback::FeedbackComp::new(base_id),
 
-            loss_rate_comp: LossRateComp::new(base_id),
             prev_loss_rate: 0.0,
-
-            pending_feedback: None,
             last_feedback_time: None,
 
             nofeedback_exp: None,
@@ -145,8 +124,7 @@ impl SendRateComp {
     }
 
     pub fn log_frame(&mut self, frame_id: u32, nonce: bool, size: usize, send_time_ms: u64) {
-        self.frame_log.push(frame_id, SentFrame { size, send_time_ms, nonce, rate_limited: self.next_frame_rate_limited });
-        self.next_frame_rate_limited = false;
+        self.feedback_comp.log_frame(frame_id, nonce, size, send_time_ms);
 
         let now = time::Instant::now();
 
@@ -163,77 +141,18 @@ impl SendRateComp {
     }
 
     pub fn log_rate_limited(&mut self) {
-        self.next_frame_rate_limited = true;
+        self.feedback_comp.log_rate_limited();
     }
 
     pub fn acknowledge_frames(&mut self, ack: FrameAck, now_ms: u64) {
-        let mut true_nonce = false;
-        let mut recv_size = 0;
-        let mut last_id = None;
-        let mut rate_limited = false;
-
-        let ack_size = ack.size.min(32) as u32;
-
-        for i in 0 .. ack_size {
-            let frame_id = ack.base_id.wrapping_add(i);
-
-            if let Some(ref sent_frame) = self.frame_log.get(frame_id) {
-                if ack.bitfield & (1 << i) != 0 {
-                    // Receiver claims to have received this packet
-                    true_nonce ^= sent_frame.nonce;
-                    recv_size += sent_frame.size;
-                    last_id = Some(frame_id);
-                }
-
-                rate_limited |= sent_frame.rate_limited;
-            } else {
-                // Packet forgotten or ack group invalid
-                return;
-            }
-        }
-
-        // Penalize bad nonce
-        if ack.nonce != true_nonce {
-            return;
-        }
-
-        for i in 0 .. ack_size {
-            if ack.bitfield & (1 << i) != 0 {
-                // Receiver has received this packet
-                let frame_id = ack.base_id.wrapping_add(i);
-
-                self.loss_rate_comp.acknowledge_frame(frame_id, &self.frame_log, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
-            }
-        }
-
-        if let Some(last_id) = last_id {
-            let ref last_frame = self.frame_log.get(last_id).unwrap();
-
-            let rtt_ms = now_ms - last_frame.send_time_ms;
-
-            if let Some(ref mut pending_feedback) = self.pending_feedback {
-                pending_feedback.size_total += recv_size;
-                pending_feedback.rtt_ms = pending_feedback.rtt_ms.min(rtt_ms);
-                pending_feedback.rate_limited |= rate_limited;
-            } else {
-                self.pending_feedback = Some(Feedback {
-                    size_total: recv_size,
-                    rtt_ms,
-                    rate_limited,
-                });
-            }
-        }
+        self.feedback_comp.acknowledge_frames(ack, now_ms, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
     }
 
     pub fn forget_frames(&mut self, thresh_ms: u64) {
-        self.frame_log.pop(thresh_ms);
-
-        self.loss_rate_comp.post_pop_sync(&self.frame_log, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
+        self.feedback_comp.forget_frames(thresh_ms, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
     }
 
     pub fn step(&mut self) {
-        let now = time::Instant::now();
-
         match self.send_rate_mode {
             SendRateMode::AwaitSend => {
                 return;
@@ -241,22 +160,28 @@ impl SendRateComp {
             _ => ()
         }
 
-        if let Some(pending_feedback) = self.pending_feedback.take() {
+        let now = time::Instant::now();
+
+        if let Some(pending_feedback) = self.feedback_comp.pending_feedback() {
+            println!("pending_feedback: {:?}", pending_feedback);
+
             let rtt_ms = pending_feedback.rtt_ms as f64 / 1000.0;
 
             let receive_rate = if let Some(last_feedback_time) = self.last_feedback_time {
-                (pending_feedback.size_total as f64 / (now - last_feedback_time).as_secs_f64()).clamp(0.0, u32::MAX as f64) as u32
+                (pending_feedback.total_ack_size as f64 / (now - last_feedback_time).as_secs_f64()).clamp(0.0, u32::MAX as f64) as u32
             } else {
                 0
             };
 
-            let loss_rate = self.loss_rate_comp.loss_rate();
+            let loss_rate = pending_feedback.loss_rate;
 
             let rate_limited = pending_feedback.rate_limited;
 
             self.handle_feedback(now, rtt_ms, receive_rate, loss_rate, rate_limited);
 
             self.last_feedback_time = Some(now);
+
+            println!("New send rate: {}", self.send_rate);
         } else if let Some(nofeedback_exp) = self.nofeedback_exp {
             if now >= nofeedback_exp {
                 self.nofeedback_expired(now);
@@ -324,7 +249,7 @@ impl SendRateComp {
                     // Enter throughput equation phase
                     let send_rate_target = ((MSS/2) as f64 / rtt_s) as u32;
                     let initial_p = eval_tcp_throughput_inv(rtt_s, send_rate_target);
-                    self.loss_rate_comp.seed(initial_p);
+                    self.feedback_comp.seed_loss_rate(initial_p);
 
                     self.send_rate = send_rate_target.min(send_rate_limit).max(Self::MINIMUM_RATE);
 
@@ -348,7 +273,7 @@ impl SendRateComp {
                     // Enter throughput equation phase
                     let send_rate_target = self.send_rate/2;
                     let initial_p = eval_tcp_throughput_inv(rtt_s, send_rate_target);
-                    self.loss_rate_comp.seed(initial_p);
+                    self.feedback_comp.seed_loss_rate(initial_p);
 
                     self.send_rate = send_rate_target.min(send_rate_limit).max(Self::MINIMUM_RATE);
 

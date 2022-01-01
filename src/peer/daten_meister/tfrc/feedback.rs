@@ -1,5 +1,6 @@
 
 use super::frame_log;
+use crate::frame;
 
 use std::collections::VecDeque;
 
@@ -109,22 +110,6 @@ impl ReorderBuffer {
 }
 
 #[derive(Debug)]
-struct SentFrame {
-    send_time_ms: u64,
-    // TODO: Store in high bit of timestamp
-    nonce: bool,
-}
-
-impl Default for SentFrame {
-    fn default() -> Self {
-        Self {
-            nonce: false,
-            send_time_ms: 0,
-        }
-    }
-}
-
-#[derive(Debug)]
 struct LossInterval {
     end_time_ms: u64,
     length: u32,
@@ -213,43 +198,156 @@ impl LossIntervalQueue {
     }
 }
 
-pub struct LossRateComp {
+#[derive(Debug)]
+pub struct Feedback {
+    pub rtt_ms: u64,
+    pub total_ack_size: usize,
+    pub loss_rate: f64,
+    pub rate_limited: bool,
+}
+
+pub struct FeedbackComp {
+    frame_log: frame_log::FrameLog,
+    next_frame_rate_limited: bool,
+
     next_ack_id: u32,
     reorder_buffer: ReorderBuffer,
     loss_intervals: LossIntervalQueue,
+
+    pending_feedback: Option<Feedback>,
 }
 
-impl LossRateComp {
+impl FeedbackComp {
     pub fn new(base_id: u32) -> Self {
         Self {
+            frame_log: frame_log::FrameLog::new(base_id),
+            next_frame_rate_limited: false,
+
             next_ack_id: base_id,
             reorder_buffer: ReorderBuffer::new(),
             loss_intervals: LossIntervalQueue::new(),
+
+            pending_feedback: None,
         }
     }
 
-    pub fn seed(&mut self, loss_rate_initial: f64) {
+    pub fn log_frame(&mut self, frame_id: u32, nonce: bool, size: usize, send_time_ms: u64) {
+        self.frame_log.push(frame_id, frame_log::SentFrame { size, send_time_ms, nonce, rate_limited: self.next_frame_rate_limited });
+        self.next_frame_rate_limited = false;
+    }
+
+    pub fn log_rate_limited(&mut self) {
+        self.next_frame_rate_limited = true;
+    }
+
+    pub fn acknowledge_frames(&mut self, ack: frame::FrameAck, now_ms: u64, rtt_ms: u64) {
+        let mut true_nonce = false;
+        let mut recv_size = 0;
+        let mut last_id = None;
+        let mut rate_limited = false;
+
+        let ack_size = ack.size.min(32) as u32;
+
+        for i in 0 .. ack_size {
+            let frame_id = ack.base_id.wrapping_add(i);
+
+            if let Some(ref sent_frame) = self.frame_log.get(frame_id) {
+                if ack.bitfield & (1 << i) != 0 {
+                    // Receiver claims to have received this packet
+                    true_nonce ^= sent_frame.nonce;
+                    recv_size += sent_frame.size;
+                    last_id = Some(frame_id);
+                }
+
+                rate_limited |= sent_frame.rate_limited;
+            } else {
+                // Packet forgotten or ack group invalid
+                return;
+            }
+        }
+
+        // Penalize bad nonce
+        if ack.nonce != true_nonce {
+            return;
+        }
+
+        for i in 0 .. ack_size {
+            if ack.bitfield & (1 << i) != 0 {
+                // Receiver has received this packet
+                let frame_id = ack.base_id.wrapping_add(i);
+
+                self.acknowledge_frame(frame_id, rtt_ms);
+            }
+        }
+
+        if let Some(last_id) = last_id {
+            let ref last_frame = self.frame_log.get(last_id).unwrap();
+
+            // TODO: Don't compute RTT here, no need to know now_ms
+            let rtt_sample_ms = now_ms - last_frame.send_time_ms;
+
+            if let Some(ref mut pending_feedback) = self.pending_feedback {
+                pending_feedback.total_ack_size += recv_size;
+                pending_feedback.rtt_ms = pending_feedback.rtt_ms.min(rtt_sample_ms);
+                pending_feedback.rate_limited |= rate_limited;
+            } else {
+                self.pending_feedback = Some(Feedback {
+                    total_ack_size: recv_size,
+                    rtt_ms: rtt_sample_ms,
+                    rate_limited,
+                    loss_rate: 0.0,
+                });
+            }
+        }
+    }
+
+    pub fn forget_frames(&mut self, thresh_ms: u64, rtt_ms: u64) {
+        let expired_count = self.frame_log.count_expired(thresh_ms);
+
+        if expired_count > 0 {
+            let base_id = self.frame_log.base_id();
+            let new_base_id = base_id.wrapping_add(expired_count);
+
+            let new_end_delta = self.frame_log.next_id().wrapping_sub(new_base_id);
+
+            while let Some(min_frame_id) = self.reorder_buffer.min(self.next_ack_id) {
+                let min_delta = min_frame_id.wrapping_sub(new_base_id);
+
+                if min_delta >= new_end_delta {
+                    self.reorder_buffer.pop(self.next_ack_id);
+
+                    self.put_nack_range(self.next_ack_id, min_frame_id.wrapping_sub(self.next_ack_id), rtt_ms);
+                    self.put_ack();
+                    self.next_ack_id = min_frame_id.wrapping_add(1);
+                } else {
+                    break;
+                }
+            }
+
+            let next_ack_delta = self.next_ack_id.wrapping_sub(new_base_id);
+
+            if next_ack_delta >= new_end_delta {
+                self.put_nack_range(self.next_ack_id, new_base_id.wrapping_sub(self.next_ack_id), rtt_ms);
+                self.next_ack_id = new_base_id;
+            }
+
+            self.frame_log.drain_front(expired_count);
+        }
+    }
+
+    pub fn seed_loss_rate(&mut self, loss_rate_initial: f64) {
         self.loss_intervals.seed(loss_rate_initial);
     }
 
-    pub fn loss_rate(&self) -> f64 {
-        self.loss_intervals.loss_rate()
-    }
-
-    fn put_nack_range(&mut self, base_id: u32, num: u32, frame_log: &frame_log::FrameLog, rtt_ms: u64) {
-        for i in 0 .. num {
-            let nacked_frame_id = base_id.wrapping_add(i);
-            let ref sent_frame = frame_log.get(nacked_frame_id).unwrap();
-            self.loss_intervals.nack(sent_frame.send_time_ms, rtt_ms);
+    pub fn pending_feedback(&mut self) -> Option<Feedback> {
+        if let Some(ref mut pending_feedback) = self.pending_feedback {
+            pending_feedback.loss_rate = self.loss_intervals.loss_rate();
         }
+        self.pending_feedback.take()
     }
 
-    fn put_ack(&mut self) {
-        self.loss_intervals.ack();
-    }
-
-    pub fn acknowledge_frame(&mut self, frame_id: u32, frame_log: &frame_log::FrameLog, rtt_ms: u64) {
-        let base_id = frame_log.base_id();
+    fn acknowledge_frame(&mut self, frame_id: u32, rtt_ms: u64) {
+        let base_id = self.frame_log.base_id();
 
         if frame_id.wrapping_sub(base_id) < self.next_ack_id.wrapping_sub(base_id) {
             // This id has already been passed
@@ -261,42 +359,22 @@ impl LossRateComp {
         }
 
         if let Some(frame_id) = self.reorder_buffer.push(self.next_ack_id, frame_id) {
-            self.put_nack_range(self.next_ack_id, frame_id.wrapping_sub(self.next_ack_id), frame_log, rtt_ms);
+            self.put_nack_range(self.next_ack_id, frame_id.wrapping_sub(self.next_ack_id), rtt_ms);
             self.put_ack();
             self.next_ack_id = frame_id.wrapping_add(1);
         }
     }
 
-    pub fn post_pop_sync(&mut self, frame_log: &frame_log::FrameLog, rtt_ms: u64) {
-        /*
-        let base_id = frame_log.base_id();
-        let end_delta = frame_log.len();
-
-        println!("base_id: {}", base_id);
-        println!("end_delta: {}", end_delta);
-        println!("next_ack_id: {}", self.next_ack_id);
-
-        while let Some(min_frame_id) = self.reorder_buffer.min(self.next_ack_id) {
-            let min_delta = min_frame_id.wrapping_sub(base_id);
-
-            if min_delta >= end_delta {
-                self.reorder_buffer.pop(self.next_ack_id);
-
-                self.put_nack_range(self.next_ack_id, min_frame_id.wrapping_sub(self.next_ack_id), &frame_log, rtt_ms);
-                self.put_ack();
-                self.next_ack_id = min_frame_id.wrapping_add(1);
-            } else {
-                break;
-            }
+    fn put_nack_range(&mut self, base_id: u32, num: u32, rtt_ms: u64) {
+        for i in 0 .. num {
+            let nacked_frame_id = base_id.wrapping_add(i);
+            let ref sent_frame = self.frame_log.get(nacked_frame_id).unwrap();
+            self.loss_intervals.nack(sent_frame.send_time_ms, rtt_ms);
         }
+    }
 
-        let next_ack_delta = self.next_ack_id.wrapping_sub(base_id);
-
-        if next_ack_delta >= end_delta {
-            self.put_nack_range(self.next_ack_id, base_id.wrapping_sub(self.next_ack_id), &frame_log, rtt_ms);
-            self.next_ack_id = base_id;
-        }
-        */
+    fn put_ack(&mut self) {
+        self.loss_intervals.ack();
     }
 }
 
