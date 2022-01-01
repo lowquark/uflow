@@ -5,7 +5,7 @@ mod peer;
 
 pub const PROTOCOL_VERSION: u8 = 0;
 
-pub const MAX_CHANNELS: usize = 64;
+pub const MAX_CHANNELS: usize = frame::MAX_CHANNELS;
 
 const MAX_DATAGRAM_OVERHEAD: usize = 15;
 const MESSAGE_FRAME_OVERHEAD: usize = 8;

@@ -15,6 +15,8 @@ use super::DisconnectAckFrame;
 use super::MessageFrame;
 use super::Frame;
 
+pub use build::MAX_CHANNELS;
+
 const CONNECT_FRAME_ID: u8 = 0;
 const CONNECT_ACK_FRAME_ID: u8 = 1;
 const DISCONNECT_FRAME_ID: u8 = 2;
@@ -31,6 +33,8 @@ const DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT: usize = 15;
 const DATAGRAM_MESSAGE_HEADER_SIZE_FULL: usize = 11;
 const ACK_MESSAGE_SIZE: usize = 14;
 const RESYNC_MESSAGE_SIZE: usize = 5;
+
+const MESSAGE_FRAME_HEADER_SIZE: usize = 7;
 
 fn read_connect(data: &[u8]) -> Option<Frame> {
     if data.len() != CONNECT_FRAME_PAYLOAD_SIZE {
@@ -188,7 +192,7 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                 data,
             }), header_size + data_len));
         }
-    } else if header_byte & 0xC == 0x00 {
+    } else if header_byte & 0xC0 == 0x00 {
         // Ack
         if data.len() < ACK_MESSAGE_SIZE {
             return None;
@@ -222,7 +226,7 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
             },
             receiver_base_id,
         }), ACK_MESSAGE_SIZE));
-    } else if header_byte & 0xC == 0x40 {
+    } else if header_byte & 0xC0 == 0x40 {
         // Resync
         if data.len() < RESYNC_MESSAGE_SIZE {
             return None;
@@ -244,7 +248,7 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
 fn read_message(data: &[u8]) -> Option<Frame> {
     // TODO: Rely on reader object
 
-    if data.len() < 7 {
+    if data.len() < MESSAGE_FRAME_HEADER_SIZE {
         return None;
     }
 
@@ -258,7 +262,7 @@ fn read_message(data: &[u8]) -> Option<Frame> {
     let message_num = ((data[5] as u16) << 8) |
                       ((data[6] as u16)     );
 
-    let mut data_slice = &data[7..];
+    let mut data_slice = &data[MESSAGE_FRAME_HEADER_SIZE..];
     let mut messages = Vec::new();
 
     for _ in 0 .. message_num {
@@ -358,6 +362,242 @@ impl Serialize for Frame {
             Frame::DisconnectFrame(frame) => write_disconnect(frame),
             Frame::DisconnectAckFrame(frame) => write_disconnect_ack(frame),
             Frame::MessageFrame(frame) => write_message(frame),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verify_consistent(f: &Frame) {
+        //println!("frame: {:#?}", f);
+
+        let bytes = f.write();
+        //println!("frame bytes: {:?}", bytes);
+
+        let f2 = Frame::read(&bytes).unwrap();
+
+        assert_eq!(*f, f2);
+    }
+
+    fn verify_extra_bytes_fail(f: &Frame) {
+        //println!("frame: {:#?}", f);
+
+        let bytes = f.write();
+        //println!("frame bytes: {:?}", bytes);
+
+        let mut bad_bytes_vec = bytes.to_vec();
+        bad_bytes_vec.push(0x00);
+        let bad_bytes = bad_bytes_vec.into_boxed_slice();
+
+        assert_eq!(Frame::read(&bad_bytes), None);
+    }
+
+    fn verify_truncation_fails(f: &Frame) {
+        let bytes = f.write();
+
+        for i in 1..bytes.len() {
+            let bytes_trunc = &bytes[0..i];
+            assert_eq!(Frame::read(&bytes_trunc), None);
+        }
+    }
+
+    #[test]
+    fn connect_basic() {
+        let f = Frame::ConnectFrame(ConnectFrame {
+            version: 0x7F,
+            nonce: 0x13371337,
+            tx_channels_sup: 3,
+            max_rx_alloc: 0xBEEFBEEF,
+            max_rx_bandwidth: 0xBEEFBEEF,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn connect_ack_basic() {
+        let f = Frame::ConnectAckFrame(ConnectAckFrame {
+            nonce: 0x13371337,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn disconnect_basic() {
+        let f = Frame::DisconnectFrame(DisconnectFrame {});
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn disconnect_ack_basic() {
+        let f = Frame::DisconnectAckFrame(DisconnectAckFrame {});
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn message_basic() {
+        let f = Frame::MessageFrame(MessageFrame {
+            sequence_id: 0x010203,
+            nonce: true,
+            messages: vec![
+                Message::Datagram(Datagram {
+                    sequence_id: 0x12345678,
+                    channel_id: 63,
+                    window_parent_lead: 0x34A8,
+                    channel_parent_lead: 0x8A43,
+                    fragment_id: FragmentId {
+                        id: 0x4789,
+                        last: 0x478A,
+                    },
+                    data: vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(),
+                }),
+                Message::Datagram(Datagram {
+                    sequence_id: 0x12345678,
+                    channel_id: 63,
+                    window_parent_lead: 0x34A8,
+                    channel_parent_lead: 0x8A43,
+                    fragment_id: FragmentId {
+                        id: 0,
+                        last: 0,
+                    },
+                    data: vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(),
+                }),
+                Message::Ack(Ack {
+                    frames: FrameAck {
+                        base_id: 0x28475809,
+                        size: 32,
+                        bitfield: 0b01000100111101110110100110101u32,
+                        nonce: true,
+                    },
+                    receiver_base_id: 0x12345678,
+                }),
+                Message::Resync(Resync {
+                    sender_next_id: 0x12345678,
+                }),
+            ],
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn message_empty() {
+        let f = Frame::MessageFrame(MessageFrame {
+            sequence_id: 0x010203,
+            nonce: true,
+            messages: Vec::new(),
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn connect_random() {
+        const NUM_ROUNDS: usize = 100;
+
+        for _ in 0..NUM_ROUNDS {
+            let f = Frame::ConnectFrame(ConnectFrame {
+                version: rand::random::<u8>(),
+                nonce: 0x13371337,
+                tx_channels_sup: rand::random::<u8>(),
+                max_rx_alloc: rand::random::<u32>(),
+                max_rx_bandwidth: rand::random::<u32>(),
+            });
+            verify_consistent(&f);
+            verify_extra_bytes_fail(&f);
+            verify_truncation_fails(&f);
+        }
+    }
+
+    #[test]
+    fn connect_ack_random() {
+        const NUM_ROUNDS: usize = 100;
+
+        for _ in 0..NUM_ROUNDS {
+            let f = Frame::ConnectAckFrame(ConnectAckFrame {
+                nonce: rand::random::<u32>(),
+            });
+            verify_consistent(&f);
+            verify_extra_bytes_fail(&f);
+            verify_truncation_fails(&f);
+        }
+    }
+
+    fn random_data(size: usize) -> Box<[u8]> {
+        (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
+    }
+
+    #[test]
+    fn message_random() {
+        const NUM_ROUNDS: usize = 100;
+        const MAX_MESSAGES: usize = 100;
+        const MAX_DATA_SIZE: usize = 100;
+
+        for _ in 0..NUM_ROUNDS {
+            let mut messages = Vec::new();
+
+            for _ in 0 .. rand::random::<usize>() % MAX_MESSAGES {
+                let message = match rand::random::<u32>() % 4 {
+                    0 => Message::Datagram(Datagram {
+                        sequence_id: rand::random::<u32>(),
+                        channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
+                        window_parent_lead: rand::random::<u16>(),
+                        channel_parent_lead: rand::random::<u16>(),
+                        fragment_id: FragmentId {
+                            id: rand::random::<u16>(),
+                            last: rand::random::<u16>(),
+                        },
+                        data: random_data(MAX_DATA_SIZE),
+                    }),
+                    1 => Message::Datagram(Datagram {
+                        sequence_id: rand::random::<u32>(),
+                        channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
+                        window_parent_lead: rand::random::<u16>(),
+                        channel_parent_lead: rand::random::<u16>(),
+                        fragment_id: FragmentId {
+                            id: 0,
+                            last: 0,
+                        },
+                        data: random_data(MAX_DATA_SIZE),
+                    }),
+                    2 => Message::Ack(Ack {
+                        frames: FrameAck {
+                            base_id: rand::random::<u32>(),
+                            size: rand::random::<u8>(),
+                            bitfield: rand::random::<u32>(),
+                            nonce: rand::random::<bool>(),
+                        },
+                        receiver_base_id: rand::random::<u32>(),
+                    }),
+                    3 => Message::Resync(Resync {
+                        sender_next_id: rand::random::<u32>(),
+                    }),
+                    _ => panic!()
+                };
+
+                messages.push(message);
+            }
+
+            let f = Frame::MessageFrame(MessageFrame {
+                sequence_id: rand::random::<u32>(),
+                nonce: rand::random::<bool>(),
+                messages: messages,
+            });
+
+            verify_consistent(&f);
+            verify_extra_bytes_fail(&f);
+            verify_truncation_fails(&f);
         }
     }
 }

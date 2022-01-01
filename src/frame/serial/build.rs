@@ -11,6 +11,8 @@ use super::DATAGRAM_MESSAGE_HEADER_SIZE_FULL;
 use super::ACK_MESSAGE_SIZE;
 use super::RESYNC_MESSAGE_SIZE;
 
+pub const MAX_CHANNELS: usize = 64;
+
 pub struct MessageFrameBuilder {
     buffer: Vec<u8>,
     count: u16,
@@ -40,7 +42,7 @@ impl MessageFrameBuilder {
         let data_len_u16 = data_len as u32;
 
         debug_assert!(data_len <= u32::MAX as usize);
-        debug_assert!(datagram.channel_id <= 64);
+        debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
 
         if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
             let header = [
