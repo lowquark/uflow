@@ -6,7 +6,7 @@ use crate::ChannelId;
 use crate::FrameSink;
 use crate::SendMode;
 
-use frame::Serialize;
+use frame::serial::Serialize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

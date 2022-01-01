@@ -3,7 +3,7 @@ use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 
 use crate::frame::FrameAck;
 use crate::frame::Message;
-use crate::frame::MessageFrameBuilder;
+use crate::frame::serial::MessageFrameBuilder;
 
 use std::collections::BinaryHeap;
 use std::collections::VecDeque;

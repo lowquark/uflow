@@ -8,7 +8,7 @@ use crate::MAX_CHANNELS;
 use crate::PROTOCOL_VERSION;
 use crate::SendMode;
 
-use frame::Serialize;
+use frame::serial::Serialize;
 use daten_meister::DatenMeister;
 
 use rand;

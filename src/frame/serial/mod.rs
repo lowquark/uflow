@@ -1,21 +1,9 @@
 
-pub mod build;
+mod build;
 
-use super::FragmentId;
-use super::Datagram;
-use super::FrameAck;
-use super::Ack;
-use super::Resync;
-use super::Message;
+pub use build::MessageFrameBuilder;
 
-use super::ConnectFrame;
-use super::ConnectAckFrame;
-use super::DisconnectFrame;
-use super::DisconnectAckFrame;
-use super::MessageFrame;
-use super::Frame;
-
-pub use build::MAX_CHANNELS;
+use super::*;
 
 const CONNECT_FRAME_ID: u8 = 0;
 const CONNECT_ACK_FRAME_ID: u8 = 1;
@@ -35,6 +23,11 @@ const ACK_MESSAGE_SIZE: usize = 14;
 const RESYNC_MESSAGE_SIZE: usize = 5;
 
 const MESSAGE_FRAME_HEADER_SIZE: usize = 7;
+
+pub use build::MAX_CHANNELS;
+pub const MAX_MESSAGE_OVERHEAD: usize = DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT;
+pub const MESSAGE_FRAME_OVERHEAD: usize = MESSAGE_FRAME_HEADER_SIZE;
+pub const MAX_FRAGMENTS: usize = 1 << 16;
 
 fn read_connect(data: &[u8]) -> Option<Frame> {
     if data.len() != CONNECT_FRAME_PAYLOAD_SIZE {

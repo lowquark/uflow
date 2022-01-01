@@ -1,9 +1,5 @@
 
-mod serial;
-
-pub use serial::Serialize;
-pub use serial::build::MessageFrameBuilder;
-pub use serial::build::MAX_CHANNELS;
+pub mod serial;
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct FragmentId {
