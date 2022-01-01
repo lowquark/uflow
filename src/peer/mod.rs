@@ -34,6 +34,13 @@ pub enum Event {
     Timeout,
 }
 
+#[derive(Debug)]
+struct SendEntry {
+    data: Box<[u8]>,
+    channel_id: u8,
+    mode: SendMode,
+}
+
 struct ConnectingState {
     last_send_time: Option<time::Instant>,
 
@@ -41,7 +48,7 @@ struct ConnectingState {
     connect_ack_received: bool,
     connect_frame_remote: Option<frame::ConnectFrame>,
 
-    // TODO: Pending send queue
+    initial_sends: VecDeque<SendEntry>,
 }
 
 struct ConnectedState {
@@ -121,6 +128,8 @@ impl Peer {
             connect_frame,
             connect_ack_received: false,
             connect_frame_remote: None,
+
+            initial_sends: VecDeque::new(),
         });
 
         Self {
@@ -135,11 +144,10 @@ impl Peer {
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
-        // TODO: Validate channel_id
-
         match self.state {
-            State::Connecting(_) => {
-                // TODO: Enqueue
+            State::Connecting(ref mut state) => {
+                // TODO: Validate channel_id
+                state.initial_sends.push_back(SendEntry { data, channel_id, mode });
             }
             State::Connected(ref mut state) => {
                 state.daten_meister.send(data, channel_id, mode);
@@ -193,8 +201,9 @@ impl Peer {
                             state.connect_ack_received = true;
                             // Try to enter connected state
                             if let Some(connect_frame_remote) = state.connect_frame_remote.take() {
+                                let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                self.enter_connected(connect_frame_local, connect_frame_remote);
+                                self.enter_connected(connect_frame_local, connect_frame_remote, initial_sends);
                             }
                         } else {
                             // The acknowledgement doesn't match our connection request id, fail lol
@@ -207,8 +216,9 @@ impl Peer {
                             sink.send(&frame::Frame::ConnectAckFrame(frame::ConnectAckFrame { nonce: frame.nonce }).write());
                             // Try to enter connected state
                             if state.connect_ack_received {
+                                let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                self.enter_connected(connect_frame_local, frame);
+                                self.enter_connected(connect_frame_local, frame, initial_sends);
                             } else {
                                 // Wait for ack
                                 state.connect_frame_remote = Some(frame);
@@ -294,6 +304,9 @@ impl Peer {
                 state.daten_meister.flush(sink);
 
                 if state.disconnect_flush {
+                    if !state.daten_meister.is_send_pending() {
+                        self.enter_disconnecting();
+                    }
                 }
             }
             State::Disconnecting(ref mut state) => {
@@ -347,16 +360,22 @@ impl Peer {
         todo!()
     }
 
-    fn enter_connected(&mut self, connect_frame_local: frame::ConnectFrame, connect_frame_remote: frame::ConnectFrame) {
-        let tx_channels = 1;
-        let rx_channels = 1;
-        let tx_alloc_limit = 100000;
-        let rx_alloc_limit = 100000;
+    fn enter_connected(&mut self, connect_frame_local: frame::ConnectFrame, connect_frame_remote: frame::ConnectFrame, initial_sends: VecDeque<SendEntry>) {
+        let tx_channels = connect_frame_local.tx_channels_sup as usize + 1;
+        let rx_channels = connect_frame_remote.tx_channels_sup as usize + 1;
+        let tx_alloc_limit = connect_frame_remote.max_rx_alloc as usize;
+        let rx_alloc_limit = connect_frame_local.max_rx_alloc as usize;
         let tx_base_id = connect_frame_local.nonce;
         let rx_base_id = connect_frame_remote.nonce;
 
+        let mut daten_meister = DatenMeister::new(tx_channels, rx_channels, tx_alloc_limit, rx_alloc_limit, tx_base_id, rx_base_id);
+
+        for send in initial_sends.into_iter() {
+            daten_meister.send(send.data, send.channel_id, send.mode);
+        }
+
         self.state = State::Connected(ConnectedState {
-            daten_meister: DatenMeister::new(tx_channels, rx_channels, tx_alloc_limit, rx_alloc_limit, tx_base_id, rx_base_id),
+            daten_meister,
             disconnect_flush: false,
         });
 

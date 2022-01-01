@@ -121,12 +121,12 @@ impl FrameQueue {
         }
     }
 
-    pub fn enqueue_message(&mut self, message: Message, resend: bool) {
-        self.send_queue.push_back(SendEntry::new(message, resend));
-    }
-
     pub fn pending_count(&self) -> usize {
         self.send_queue.len() + self.resend_queue.len()
+    }
+
+    pub fn enqueue_message(&mut self, message: Message, resend: bool) {
+        self.send_queue.push_back(SendEntry::new(message, resend));
     }
 
     pub fn emit_frame(&mut self, now_ms: u64, rto_ms: u64, size_limit: usize) -> Result<(Box<[u8]>, u32, bool), Error> {
@@ -162,7 +162,11 @@ impl FrameQueue {
                 let encoded_size = MessageFrameBuilder::message_size(&persistent_message.message);
 
                 if fbuilder.size() + encoded_size > size_limit {
-                    return Err(Error::SizeLimited);
+                    if fbuilder.count() == 0 {
+                        return Err(Error::SizeLimited);
+                    } else {
+                        break;
+                    }
                 }
 
                 fbuilder.add(&persistent_message.message);
@@ -181,7 +185,11 @@ impl FrameQueue {
             let encoded_size = MessageFrameBuilder::message_size(&entry.message);
 
             if fbuilder.size() + encoded_size > size_limit {
-                return Err(Error::SizeLimited);
+                if fbuilder.count() == 0 {
+                    return Err(Error::SizeLimited);
+                } else {
+                    break;
+                }
             }
 
             fbuilder.add(&entry.message);
@@ -238,6 +246,8 @@ impl FrameQueue {
             if frame.send_time_ms < thresh_ms {
                 self.sent_frames.pop_front();
                 self.base_id = self.base_id.wrapping_add(1);
+            } else {
+                return;
             }
         }
     }

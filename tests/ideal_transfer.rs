@@ -23,15 +23,16 @@ fn server_thread() -> Vec<md5::Digest> {
             for event in client.poll_events() {
                 match event {
                     udpl::host::Event::Connect => {
+                        println!("Server connect");
                     }
                     udpl::host::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
                     udpl::host::Event::Disconnect => {
+                        println!("Server disconnect");
                         break 'outer;
                     }
-                    udpl::host::Event::Timeout => {
-                    }
+                    _ => panic!()
                 }
             }
         }
@@ -60,7 +61,13 @@ fn client_thread() -> Vec<md5::Digest> {
     for _ in 0..num_steps {
         host.step();
 
-        for _ in client.poll_events() {
+        for event in client.poll_events() {
+            match event {
+                udpl::host::Event::Connect => {
+                    println!("Client connect");
+                }
+                _ => panic!()
+            }
         }
 
         for _ in 0..packets_per_step {
@@ -77,6 +84,7 @@ fn client_thread() -> Vec<md5::Digest> {
             };
 
             all_data[channel_id as usize].extend_from_slice(&data);
+
             client.send(data, channel_id, mode);
         }
 
@@ -85,6 +93,7 @@ fn client_thread() -> Vec<md5::Digest> {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
+    println!("Client disconnecting...");
     client.disconnect();
 
     'outer: loop {
@@ -92,15 +101,11 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::host::Event::Connect => {
-                }
-                udpl::host::Event::Receive(_, _) => {
-                }
                 udpl::host::Event::Disconnect => {
+                    println!("Client disconnect");
                     break 'outer;
                 }
-                udpl::host::Event::Timeout => {
-                }
+                _ => panic!()
             }
         }
 

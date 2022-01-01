@@ -65,6 +65,10 @@ impl DatenMeister {
         }
     }
 
+    pub fn is_send_pending(&self) -> bool {
+        self.packet_sender.pending_count() != 0 || self.frame_queue.pending_count() != 0
+    }
+
     pub fn send(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
         self.packet_sender.enqueue_packet(data, channel_id, mode);
     }
@@ -139,9 +143,11 @@ impl DatenMeister {
 
         // Send as many frames as possible
         loop {
-            match self.frame_queue.emit_frame(now_ms, rtt_ms, self.flush_alloc) {
+            match self.frame_queue.emit_frame(now_ms, rtt_ms, self.flush_alloc.min(MAX_TRANSFER_UNIT)) {
                 Ok((frame_data, frame_id, nonce)) => {
                     let frame_size = frame_data.len();
+
+                    use frame::serial::Serialize;
 
                     sink.send(&frame_data);
 

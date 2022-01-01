@@ -268,8 +268,13 @@ impl LossRateComp {
     }
 
     pub fn post_pop_sync(&mut self, frame_log: &frame_log::FrameLog, rtt_ms: u64) {
+        /*
         let base_id = frame_log.base_id();
         let end_delta = frame_log.len();
+
+        println!("base_id: {}", base_id);
+        println!("end_delta: {}", end_delta);
+        println!("next_ack_id: {}", self.next_ack_id);
 
         while let Some(min_frame_id) = self.reorder_buffer.min(self.next_ack_id) {
             let min_delta = min_frame_id.wrapping_sub(base_id);
@@ -291,6 +296,7 @@ impl LossRateComp {
             self.put_nack_range(self.next_ack_id, base_id.wrapping_sub(self.next_ack_id), &frame_log, rtt_ms);
             self.next_ack_id = base_id;
         }
+        */
     }
 }
 

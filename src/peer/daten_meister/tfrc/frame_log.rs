@@ -37,6 +37,8 @@ impl FrameLog {
             if frame.send_time_ms < thresh_ms {
                 self.frames.pop_front();
                 self.base_id = self.base_id.wrapping_add(1);
+            } else {
+                return;
             }
         }
     }

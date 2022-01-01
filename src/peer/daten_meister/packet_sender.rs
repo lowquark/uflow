@@ -147,6 +147,10 @@ impl PacketSender {
         }
     }
 
+    pub fn pending_count(&self) -> usize {
+        self.packet_send_queue.len()
+    }
+
     // Places a user packet on the send queue.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
         // TODO: If the application wishes to place a limit on pending packet memory, this would be

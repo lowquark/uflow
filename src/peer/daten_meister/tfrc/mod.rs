@@ -245,7 +245,7 @@ impl SendRateComp {
             let rtt_ms = pending_feedback.rtt_ms as f64 / 1000.0;
 
             let receive_rate = if let Some(last_feedback_time) = self.last_feedback_time {
-                (pending_feedback.size_total as f64 / (last_feedback_time - now).as_secs_f64()).clamp(0.0, u32::MAX as f64) as u32
+                (pending_feedback.size_total as f64 / (now - last_feedback_time).as_secs_f64()).clamp(0.0, u32::MAX as f64) as u32
             } else {
                 0
             };
@@ -255,6 +255,8 @@ impl SendRateComp {
             let rate_limited = pending_feedback.rate_limited;
 
             self.handle_feedback(now, rtt_ms, receive_rate, loss_rate, rate_limited);
+
+            self.last_feedback_time = Some(now);
         } else if let Some(nofeedback_exp) = self.nofeedback_exp {
             if now >= nofeedback_exp {
                 self.nofeedback_expired(now);
@@ -290,8 +292,6 @@ impl SendRateComp {
     }
 
     fn handle_feedback(&mut self, now: time::Instant, rtt_sample_s: f64, recv_rate: u32, loss_rate: f64, rate_limited: bool) {
-        println!("\nhandle_feedback()");
-
         let rtt_s = self.update_rtt(rtt_sample_s);
         let rto_s = eval_rto_s(rtt_s, self.send_rate);
 
@@ -309,14 +309,11 @@ impl SendRateComp {
 
         self.prev_loss_rate = loss_rate;
 
-        println!("send_rate_limit: {}", send_rate_limit);
-
         match &mut self.send_rate_mode {
             SendRateMode::AwaitFeedback => {
                 if loss_rate == 0.0 {
                     // Enter slow start phase
                     self.send_rate = (Self::INITIAL_RATE as f64 / rtt_s) as u32;
-                    println!("Send rate: {}", self.send_rate);
 
                     self.send_rate_mode = SendRateMode::SlowStart(
                         SlowStartState {
@@ -329,8 +326,7 @@ impl SendRateComp {
                     let initial_p = eval_tcp_throughput_inv(rtt_s, send_rate_target);
                     self.loss_rate_comp.seed(initial_p);
 
-                    self.send_rate = send_rate_target.clamp(Self::MINIMUM_RATE, send_rate_limit);
-                    println!("Send rate: {}", self.send_rate);
+                    self.send_rate = send_rate_target.min(send_rate_limit).max(Self::MINIMUM_RATE);
 
                     self.send_rate_mode = SendRateMode::ThroughputEqn(
                         ThroughputEqnState {
@@ -345,10 +341,8 @@ impl SendRateComp {
                     let rtt_dur = time::Duration::from_secs_f64(rtt_s);
 
                     if now - state.time_last_doubled >= rtt_dur {
-                        self.send_rate = (2*self.send_rate).clamp(Self::INITIAL_RATE, send_rate_limit);
+                        self.send_rate = (2*self.send_rate).min(send_rate_limit).max(Self::INITIAL_RATE);
                         state.time_last_doubled = now;
-
-                        println!("Updated send rate (p = 0.0): {}", self.send_rate);
                     }
                 } else {
                     // Enter throughput equation phase
@@ -356,8 +350,7 @@ impl SendRateComp {
                     let initial_p = eval_tcp_throughput_inv(rtt_s, send_rate_target);
                     self.loss_rate_comp.seed(initial_p);
 
-                    self.send_rate = send_rate_target.clamp(Self::MINIMUM_RATE, send_rate_limit);
-                    println!("Send rate: {}", self.send_rate);
+                    self.send_rate = send_rate_target.min(send_rate_limit).max(Self::MINIMUM_RATE);
 
                     self.send_rate_mode = SendRateMode::ThroughputEqn(
                         ThroughputEqnState {
@@ -369,8 +362,7 @@ impl SendRateComp {
             SendRateMode::ThroughputEqn(state) => {
                 // Continue throughput equation phase
                 state.send_rate_tcp = eval_tcp_throughput(rtt_s, loss_rate);
-                self.send_rate = state.send_rate_tcp.clamp(Self::MINIMUM_RATE, send_rate_limit);
-                println!("Send rate: {}", self.send_rate);
+                self.send_rate = state.send_rate_tcp.min(send_rate_limit).max(Self::MINIMUM_RATE);
             }
             _ => ()
         }
