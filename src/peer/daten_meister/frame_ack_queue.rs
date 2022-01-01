@@ -1,16 +1,8 @@
 
-use crate::frame::FrameAck;
-
-struct Entry {
-    base_id: u32,
-    size: u8,
-    bitfield: u32,
-    // TODO: Just store this as a bool and update as frames are received
-    nonce_bits: u32,
-}
+use crate::frame;
 
 pub struct FrameAckQueue {
-    entries: std::collections::VecDeque<Entry>,
+    entries: std::collections::VecDeque<frame::FrameAck>,
 }
 
 impl FrameAckQueue {
@@ -27,43 +19,31 @@ impl FrameAckQueue {
                 if last_entry.bitfield & (0x00000001 << bit) == 0 {
                     last_entry.bitfield |= 0x00000001 << bit;
                     last_entry.size += 1;
-                    last_entry.nonce_bits |= (nonce as u32) << bit;
+                    last_entry.nonce ^= nonce;
                 }
             } else {
-                self.entries.push_back(Entry {
+                self.entries.push_back(frame::FrameAck {
                     base_id: frame_id,
                     size: 1,
                     bitfield: 0x00000001,
-                    nonce_bits: nonce as u32,
+                    nonce: nonce,
                 });
             }
         } else {
-            self.entries.push_back(Entry {
+            self.entries.push_back(frame::FrameAck {
                 base_id: frame_id,
                 size: 1,
                 bitfield: 0x00000001,
-                nonce_bits: nonce as u32,
+                nonce: nonce,
             });
         }
     }
 
-    pub fn pop(&mut self) -> Option<FrameAck> {
+    pub fn pop(&mut self) -> Option<frame::FrameAck> {
         if let Some(first_entry) = self.entries.pop_front() {
-            let mut nonce = false;
-            for bit in 0 .. 32 {
-                if first_entry.bitfield & (0x00000001 << bit) != 0 {
-                    nonce ^= (first_entry.nonce_bits & (0x00000001 << bit)) != 0;
-                }
-            }
-
             debug_assert!(first_entry.bitfield & 0x00000001 != 0);
 
-            return Some(FrameAck {
-                base_id: first_entry.base_id,
-                size: first_entry.size,
-                bitfield: first_entry.bitfield,
-                nonce: nonce,
-            });
+            return Some(first_entry);
         }
 
         return None;
