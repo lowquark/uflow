@@ -78,8 +78,6 @@ impl DatenMeister {
     }
 
     pub fn handle_message_frame(&mut self, frame: frame::MessageFrame) {
-        let now_ms = self.time_base.elapsed().as_millis() as u64;
-
         self.frame_ack_queue.mark_seen(frame.sequence_id, frame.nonce);
 
         for message in frame.messages.into_iter() {
@@ -89,7 +87,7 @@ impl DatenMeister {
                 }
                 frame::Message::Ack(ack) => {
                     self.frame_queue.acknowledge_frames(ack.frames.clone());
-                    self.send_rate_comp.acknowledge_frames(ack.frames, now_ms);
+                    self.send_rate_comp.acknowledge_frames(ack.frames);
 
                     self.packet_sender.acknowledge(ack.receiver_base_id);
                 }

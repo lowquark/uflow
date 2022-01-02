@@ -200,7 +200,7 @@ impl LossIntervalQueue {
 
 #[derive(Debug)]
 pub struct Feedback {
-    pub rtt_ms: u64,
+    pub last_send_time_ms: u64,
     pub total_ack_size: usize,
     pub loss_rate: f64,
     pub rate_limited: bool,
@@ -240,7 +240,7 @@ impl FeedbackComp {
         self.next_frame_rate_limited = true;
     }
 
-    pub fn acknowledge_frames(&mut self, ack: frame::FrameAck, now_ms: u64, rtt_ms: u64) {
+    pub fn acknowledge_frames(&mut self, ack: frame::FrameAck, rtt_ms: u64) {
         let mut true_nonce = false;
         let mut recv_size = 0;
         let mut last_id = None;
@@ -283,17 +283,14 @@ impl FeedbackComp {
         if let Some(last_id) = last_id {
             let ref last_frame = self.frame_log.get(last_id).unwrap();
 
-            // TODO: Don't compute RTT here, no need to know now_ms
-            let rtt_sample_ms = now_ms - last_frame.send_time_ms;
-
             if let Some(ref mut pending_feedback) = self.pending_feedback {
+                pending_feedback.last_send_time_ms = pending_feedback.last_send_time_ms.max(last_frame.send_time_ms);
                 pending_feedback.total_ack_size += recv_size;
-                pending_feedback.rtt_ms = pending_feedback.rtt_ms.min(rtt_sample_ms);
                 pending_feedback.rate_limited |= rate_limited;
             } else {
                 self.pending_feedback = Some(Feedback {
+                    last_send_time_ms: last_frame.send_time_ms,
                     total_ack_size: recv_size,
-                    rtt_ms: rtt_sample_ms,
                     rate_limited,
                     loss_rate: 0.0,
                 });

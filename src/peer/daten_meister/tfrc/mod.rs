@@ -140,8 +140,8 @@ impl SendRateComp {
         self.feedback_comp.log_rate_limited();
     }
 
-    pub fn acknowledge_frames(&mut self, ack: FrameAck, now_ms: u64) {
-        self.feedback_comp.acknowledge_frames(ack, now_ms, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
+    pub fn acknowledge_frames(&mut self, ack: FrameAck) {
+        self.feedback_comp.acknowledge_frames(ack, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
     }
 
     pub fn forget_frames(&mut self, thresh_ms: u64) {
@@ -159,7 +159,7 @@ impl SendRateComp {
         if let Some(pending_feedback) = self.feedback_comp.pending_feedback() {
             println!("pending_feedback: {:?}", pending_feedback);
 
-            let rtt_sample_s = pending_feedback.rtt_ms as f64 / 1000.0;
+            let rtt_sample_s = (now_ms - pending_feedback.last_send_time_ms) as f64 / 1000.0;
 
             let receive_rate = if let Some(last_feedback_time_ms) = self.last_feedback_time_ms {
                 (pending_feedback.total_ack_size as f64 * 1000.0 / (now_ms - last_feedback_time_ms) as f64).clamp(0.0, u32::MAX as f64) as u32
