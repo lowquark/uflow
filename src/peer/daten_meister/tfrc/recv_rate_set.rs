@@ -1,10 +1,8 @@
 
-use std::time;
-
 #[derive(Clone,Debug)]
 struct RecvEntry {
     value: u32,
-    timestamp: time::Instant,
+    timestamp_ms: u64,
     is_initial: bool,
 }
 
@@ -20,17 +18,17 @@ impl RecvRateSet {
         }
     }
 
-    pub fn reset_initial(&mut self, now: time::Instant) {
+    pub fn reset_initial(&mut self, now_ms: u64) {
         self.entries.clear();
 
         self.entries.push(RecvEntry {
             value: u32::max_value(),
-            timestamp: now,
+            timestamp_ms: now_ms,
             is_initial: true,
         });
     }
 
-    fn replace_max(&mut self, now: time::Instant, recv_rate: u32) -> u32 {
+    fn replace_max(&mut self, now_ms: u64, recv_rate: u32) -> u32 {
         self.entries.retain(|e| e.is_initial == false);
 
         let max_rate = if self.entries.is_empty() {
@@ -39,43 +37,43 @@ impl RecvRateSet {
             self.max().max(recv_rate) // lul
         };
 
-        self.reset(now, max_rate);
+        self.reset(now_ms, max_rate);
 
         return max_rate;
     }
 
-    pub fn reset(&mut self, now: time::Instant, recv_rate: u32) {
+    pub fn reset(&mut self, now_ms: u64, recv_rate: u32) {
         self.entries.clear();
 
         self.entries.push(RecvEntry {
             value: recv_rate,
-            timestamp: now,
+            timestamp_ms: now_ms,
             is_initial: false,
         });
     }
 
-    pub fn rate_limited_update(&mut self, now: time::Instant, recv_rate: u32, rtt_s: f64) -> u32 {
+    pub fn rate_limited_update(&mut self, now_ms: u64, recv_rate: u32, rtt_s: f64) -> u32 {
         self.entries.push(RecvEntry {
             value: recv_rate,
-            timestamp: now,
+            timestamp_ms: now_ms,
             is_initial: false
         });
 
-        self.entries.retain(|e| (now - e.timestamp).as_secs_f64() < 2.0 * rtt_s);
+        self.entries.retain(|e| (((now_ms - e.timestamp_ms) * 1000) as f64) < 2.0 * rtt_s);
 
         return self.max();
     }
 
-    pub fn loss_increase_update(&mut self, now: time::Instant, recv_rate: u32) -> u32 {
+    pub fn loss_increase_update(&mut self, now_ms: u64, recv_rate: u32) -> u32 {
         for entry in self.entries.iter_mut() {
             entry.value /= 2;
         }
 
-        return self.replace_max(now, (recv_rate as f64 * 0.85) as u32);
+        return self.replace_max(now_ms, (recv_rate as f64 * 0.85) as u32);
     }
 
-    pub fn data_limited_update(&mut self, now: time::Instant, recv_rate: u32) -> u32 {
-        return self.replace_max(now, recv_rate);
+    pub fn data_limited_update(&mut self, now_ms: u64, recv_rate: u32) -> u32 {
+        return self.replace_max(now_ms, recv_rate);
     }
 
     pub fn max(&self) -> u32 {

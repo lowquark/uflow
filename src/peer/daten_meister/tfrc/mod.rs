@@ -7,8 +7,6 @@ use recv_rate_set::RecvRateSet;
 
 use crate::frame::FrameAck;
 
-use std::time;
-
 const MSS: usize = super::MAX_TRANSFER_UNIT;
 
 fn eval_rto_s(rtt_s: f64, send_rate: u32) -> f64 {
@@ -56,7 +54,7 @@ fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
 }
 
 struct SlowStartState {
-    time_last_doubled: time::Instant,
+    time_last_doubled_ms: u64,
 }
 
 struct ThroughputEqnState {
@@ -76,10 +74,10 @@ pub struct SendRateComp {
     // Previous loss rate computation
     prev_loss_rate: f64,
     // Last time feedback was handled
-    last_feedback_time: Option<time::Instant>,
+    last_feedback_time_ms: Option<u64>,
 
     // Expiration of nofeedback timer
-    nofeedback_exp: Option<time::Instant>,
+    nofeedback_exp_ms: Option<u64>,
     // Flag indicating whether sender has been idle since the nofeedback timer was sent
     nofeedback_idle: bool,
 
@@ -108,9 +106,9 @@ impl SendRateComp {
             feedback_comp: feedback::FeedbackComp::new(base_id),
 
             prev_loss_rate: 0.0,
-            last_feedback_time: None,
+            last_feedback_time_ms: None,
 
-            nofeedback_exp: None,
+            nofeedback_exp_ms: None,
             nofeedback_idle: false,
 
             send_rate_mode: SendRateMode::AwaitSend,
@@ -123,16 +121,14 @@ impl SendRateComp {
         }
     }
 
-    pub fn log_frame(&mut self, frame_id: u32, nonce: bool, size: usize, send_time_ms: u64) {
-        self.feedback_comp.log_frame(frame_id, nonce, size, send_time_ms);
-
-        let now = time::Instant::now();
+    pub fn log_frame(&mut self, frame_id: u32, nonce: bool, size: usize, now_ms: u64) {
+        self.feedback_comp.log_frame(frame_id, nonce, size, now_ms);
 
         match self.send_rate_mode {
             SendRateMode::AwaitSend => {
                 self.send_rate_mode = SendRateMode::AwaitFeedback;
-                self.nofeedback_exp = Some(now + time::Duration::from_millis(2000));
-                self.recv_rate_set.reset_initial(now);
+                self.nofeedback_exp_ms = Some(now_ms + 2000);
+                self.recv_rate_set.reset_initial(now_ms);
             }
             _ => ()
         }
@@ -152,7 +148,7 @@ impl SendRateComp {
         self.feedback_comp.forget_frames(thresh_ms, self.rtt_ms.unwrap_or(Self::LOSS_INITIAL_RTT_MS));
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self, now_ms: u64) {
         match self.send_rate_mode {
             SendRateMode::AwaitSend => {
                 return;
@@ -160,15 +156,13 @@ impl SendRateComp {
             _ => ()
         }
 
-        let now = time::Instant::now();
-
         if let Some(pending_feedback) = self.feedback_comp.pending_feedback() {
             println!("pending_feedback: {:?}", pending_feedback);
 
-            let rtt_ms = pending_feedback.rtt_ms as f64 / 1000.0;
+            let rtt_sample_s = pending_feedback.rtt_ms as f64 / 1000.0;
 
-            let receive_rate = if let Some(last_feedback_time) = self.last_feedback_time {
-                (pending_feedback.total_ack_size as f64 / (now - last_feedback_time).as_secs_f64()).clamp(0.0, u32::MAX as f64) as u32
+            let receive_rate = if let Some(last_feedback_time_ms) = self.last_feedback_time_ms {
+                (pending_feedback.total_ack_size as f64 * 1000.0 / (now_ms - last_feedback_time_ms) as f64).clamp(0.0, u32::MAX as f64) as u32
             } else {
                 0
             };
@@ -177,14 +171,14 @@ impl SendRateComp {
 
             let rate_limited = pending_feedback.rate_limited;
 
-            self.handle_feedback(now, rtt_ms, receive_rate, loss_rate, rate_limited);
+            self.handle_feedback(now_ms, rtt_sample_s, receive_rate, loss_rate, rate_limited);
 
-            self.last_feedback_time = Some(now);
+            self.last_feedback_time_ms = Some(now_ms);
 
             println!("New send rate: {}", self.send_rate);
-        } else if let Some(nofeedback_exp) = self.nofeedback_exp {
-            if now >= nofeedback_exp {
-                self.nofeedback_expired(now);
+        } else if let Some(nofeedback_exp_ms) = self.nofeedback_exp_ms {
+            if now_ms >= nofeedback_exp_ms {
+                self.nofeedback_expired(now_ms);
             }
         }
     }
@@ -216,19 +210,19 @@ impl SendRateComp {
         return new_rtt;
     }
 
-    fn handle_feedback(&mut self, now: time::Instant, rtt_sample_s: f64, recv_rate: u32, loss_rate: f64, rate_limited: bool) {
+    fn handle_feedback(&mut self, now_ms: u64, rtt_sample_s: f64, recv_rate: u32, loss_rate: f64, rate_limited: bool) {
         let rtt_s = self.update_rtt(rtt_sample_s);
         let rto_s = eval_rto_s(rtt_s, self.send_rate);
 
         let send_rate_limit =
             if rate_limited {
-                let max_val = self.recv_rate_set.rate_limited_update(now, recv_rate, rtt_s);
+                let max_val = self.recv_rate_set.rate_limited_update(now_ms, recv_rate, rtt_s);
                 max_val.saturating_mul(2)
             } else if loss_rate > self.prev_loss_rate {
-                let max_val = self.recv_rate_set.loss_increase_update(now, recv_rate);
+                let max_val = self.recv_rate_set.loss_increase_update(now_ms, recv_rate);
                 max_val
             } else {
-                let max_val = self.recv_rate_set.data_limited_update(now, recv_rate);
+                let max_val = self.recv_rate_set.data_limited_update(now_ms, recv_rate);
                 max_val.saturating_mul(2)
             };
 
@@ -242,7 +236,7 @@ impl SendRateComp {
 
                     self.send_rate_mode = SendRateMode::SlowStart(
                         SlowStartState {
-                            time_last_doubled: now,
+                            time_last_doubled_ms: now_ms,
                         }
                     );
                 } else {
@@ -263,11 +257,11 @@ impl SendRateComp {
             SendRateMode::SlowStart(state) => {
                 if loss_rate == 0.0 {
                     // Continue slow start phase
-                    let rtt_dur = time::Duration::from_secs_f64(rtt_s);
+                    let rtt_ms = (rtt_s * 1000.0) as u64;
 
-                    if now - state.time_last_doubled >= rtt_dur {
+                    if now_ms - state.time_last_doubled_ms >= rtt_ms {
                         self.send_rate = (2*self.send_rate).min(send_rate_limit).max(Self::INITIAL_RATE);
-                        state.time_last_doubled = now;
+                        state.time_last_doubled_ms = now_ms;
                     }
                 } else {
                     // Enter throughput equation phase
@@ -292,11 +286,11 @@ impl SendRateComp {
             _ => ()
         }
 
-        self.nofeedback_exp = Some(now + time::Duration::from_secs_f64(rto_s));
+        self.nofeedback_exp_ms = Some(now_ms + (rto_s*1000.0) as u64);
         self.nofeedback_idle = true;
     }
 
-    fn nofeedback_expired(&mut self, now: time::Instant) {
+    fn nofeedback_expired(&mut self, now_ms: u64) {
         match &self.send_rate_mode {
             SendRateMode::AwaitFeedback => {
                 // Halve send rate every RTO, subject to minimum
@@ -318,7 +312,7 @@ impl SendRateComp {
                     // Alter recv_rate_set so as to halve current send rate moving forward
                     let current_limit = state.send_rate_tcp.min(recv_rate.saturating_mul(2));
                     let new_limit = (current_limit/2).max(Self::MINIMUM_RATE);
-                    self.recv_rate_set.reset(now, new_limit/2);
+                    self.recv_rate_set.reset(now_ms, new_limit/2);
                     self.send_rate = state.send_rate_tcp.min(new_limit);
                 }
             }
@@ -328,7 +322,7 @@ impl SendRateComp {
         // Compute RTO for the new send rate
         let rto_s = eval_rto_s(self.rtt_s.unwrap_or(0.0), self.send_rate);
 
-        self.nofeedback_exp = Some(now + time::Duration::from_secs_f64(rto_s));
+        self.nofeedback_exp_ms = Some(now_ms + (rto_s*1000.0) as u64);
         self.nofeedback_idle = true;
     }
 }

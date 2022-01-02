@@ -126,7 +126,7 @@ impl DatenMeister {
         self.packet_sender.emit_datagrams(&mut self.frame_queue);
 
         // Update send rate value
-        self.send_rate_comp.step();
+        self.send_rate_comp.step(now_ms);
 
         // Fill flush allocation according to send rate
         if let Some(time_last_flushed) = self.time_last_flushed {
