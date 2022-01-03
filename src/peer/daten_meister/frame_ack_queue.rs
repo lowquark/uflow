@@ -18,13 +18,11 @@ impl FrameAckQueue {
             if bit < 32 {
                 if last_entry.bitfield & (0x00000001 << bit) == 0 {
                     last_entry.bitfield |= 0x00000001 << bit;
-                    last_entry.size += 1;
                     last_entry.nonce ^= nonce;
                 }
             } else {
                 self.entries.push_back(frame::FrameAck {
                     base_id: frame_id,
-                    size: 1,
                     bitfield: 0x00000001,
                     nonce: nonce,
                 });
@@ -32,7 +30,6 @@ impl FrameAckQueue {
         } else {
             self.entries.push_back(frame::FrameAck {
                 base_id: frame_id,
-                size: 1,
                 bitfield: 0x00000001,
                 nonce: nonce,
             });

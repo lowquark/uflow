@@ -217,7 +217,13 @@ impl FrameQueue {
     }
 
     pub fn acknowledge_frames(&mut self, ack: FrameAck) {
-        let ack_size = ack.size.min(32) as u32;
+        let mut ack_size = 0;
+        for i in (0 .. 32).rev() {
+            if ack.bitfield & (1 << i) != 0 {
+                ack_size = i + 1;
+                break;
+            }
+        }
 
         for i in 0 .. ack_size {
             if ack.bitfield & (1 << i) != 0 {
@@ -433,7 +439,7 @@ mod tests {
         fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
 
-        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 5, bitfield: 0b11101, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11101, nonce: false });
 
         verify_frame(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), 5, vec![ msg1.clone() ]);
     }
@@ -450,7 +456,7 @@ mod tests {
             fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         }
 
-        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 32, bitfield: 0xFFFFFFFF, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
 
         assert_eq!(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
     }
@@ -467,8 +473,8 @@ mod tests {
             fs.emit_frame(0, rto_ms, MAX_SIZE_LIMIT).unwrap();
         }
 
-        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_sub(16), size: 32, bitfield: 0xFFFF0000, nonce: false });
-        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_add(16), size: 16, bitfield: 0x0000FFFF, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
 
         assert_eq!(fs.emit_frame(rto_ms, rto_ms, MAX_SIZE_LIMIT), Err(Error::DataLimited));
     }
@@ -498,7 +504,7 @@ mod tests {
 
         fs.forget_frames(10);
 
-        fs.acknowledge_frames(frame::FrameAck { base_id: 0, size: 5, bitfield: 0b11111, nonce: false });
+        fs.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11111, nonce: false });
 
         verify_frame(fs.emit_frame(rto_ms + 9, rto_ms, MAX_SIZE_LIMIT), 5, vec![ msg0.clone() ]);
         verify_frame(fs.emit_frame(rto_ms + 9, rto_ms, MAX_SIZE_LIMIT), 6, vec![ msg1.clone() ]);

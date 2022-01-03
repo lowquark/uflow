@@ -93,7 +93,6 @@ impl MessageFrameBuilder {
             (ack.frames.base_id >> 16) as u8,
             (ack.frames.base_id >>  8) as u8,
             (ack.frames.base_id      ) as u8,
-            ack.frames.size,
             (ack.frames.bitfield >> 24) as u8,
             (ack.frames.bitfield >> 16) as u8,
             (ack.frames.bitfield >>  8) as u8,

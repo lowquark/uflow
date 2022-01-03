@@ -44,7 +44,6 @@ impl Datagram {
 #[derive(Clone,Debug,PartialEq)]
 pub struct FrameAck {
     pub base_id: u32,
-    pub size: u8,
     pub bitfield: u32,
     pub nonce: bool,
 }

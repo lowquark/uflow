@@ -246,7 +246,13 @@ impl FeedbackComp {
         let mut last_id = None;
         let mut rate_limited = false;
 
-        let ack_size = ack.size.min(32) as u32;
+        let mut ack_size = 0;
+        for i in (0 .. 32).rev() {
+            if ack.bitfield & (1 << i) != 0 {
+                ack_size = i + 1;
+                break;
+            }
+        }
 
         for i in 0 .. ack_size {
             let frame_id = ack.base_id.wrapping_add(i);

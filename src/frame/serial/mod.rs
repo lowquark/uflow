@@ -19,7 +19,7 @@ const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 const MESSAGE_HEADER_SIZE: usize = 1;
 const DATAGRAM_MESSAGE_HEADER_SIZE_FRAGMENT: usize = 15;
 const DATAGRAM_MESSAGE_HEADER_SIZE_FULL: usize = 11;
-const ACK_MESSAGE_SIZE: usize = 14;
+const ACK_MESSAGE_SIZE: usize = 13;
 const RESYNC_MESSAGE_SIZE: usize = 5;
 
 const MESSAGE_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
@@ -198,22 +198,19 @@ fn read_message_message(data: &[u8]) -> Option<(Message, usize)> {
                                 ((data[3] as u32) <<  8) |
                                 ((data[4] as u32)      );
 
-        let frame_ack_size = data[5];
+        let frame_ack_bitfield = ((data[5] as u32) << 24) |
+                                 ((data[6] as u32) << 16) |
+                                 ((data[7] as u32) <<  8) |
+                                 ((data[8] as u32)      );
 
-        let frame_ack_bitfield = ((data[6] as u32) << 24) |
-                                 ((data[7] as u32) << 16) |
-                                 ((data[8] as u32) <<  8) |
-                                 ((data[9] as u32)      );
-
-        let receiver_base_id = ((data[10] as u32) << 24) |
-                               ((data[11] as u32) << 16) |
-                               ((data[12] as u32) <<  8) |
-                               ((data[13] as u32)      );
+        let receiver_base_id = ((data[ 9] as u32) << 24) |
+                               ((data[10] as u32) << 16) |
+                               ((data[11] as u32) <<  8) |
+                               ((data[12] as u32)      );
 
         return Some((Message::Ack(Ack {
             frames: FrameAck {
                 base_id: frame_ack_base_id,
-                size: frame_ack_size,
                 bitfield: frame_ack_bitfield,
                 nonce: frame_ack_nonce,
             },
@@ -467,7 +464,6 @@ mod tests {
                 Message::Ack(Ack {
                     frames: FrameAck {
                         base_id: 0x28475809,
-                        size: 32,
                         bitfield: 0b01000100111101110110100110101u32,
                         nonce: true,
                     },
@@ -567,7 +563,6 @@ mod tests {
                     2 => Message::Ack(Ack {
                         frames: FrameAck {
                             base_id: rand::random::<u32>(),
-                            size: rand::random::<u8>(),
                             bitfield: rand::random::<u32>(),
                             nonce: rand::random::<bool>(),
                         },
