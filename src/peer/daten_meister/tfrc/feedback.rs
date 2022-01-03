@@ -117,6 +117,7 @@ struct LossInterval {
     is_initial: bool,
 }
 
+#[derive(Debug)]
 struct LossIntervalQueue {
     entries: VecDeque<LossInterval>,
 }
@@ -133,7 +134,7 @@ impl LossIntervalQueue {
     pub fn seed(&mut self, initial_p: f64) {
         if let Some(interval) = self.entries.back_mut() {
             if interval.is_initial {
-                interval.length = (Self::WEIGHTS[0] / initial_p).clamp(0.0, u32::MAX as f64) as u32;
+                interval.length = (Self::WEIGHTS[0] / initial_p).clamp(0.0, u32::MAX as f64).round() as u32;
             }
         }
     }
@@ -198,7 +199,7 @@ impl LossIntervalQueue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct Feedback {
     pub last_send_time_ms: u64,
     pub total_ack_size: usize,
@@ -378,6 +379,237 @@ impl FeedbackComp {
 
     fn put_ack(&mut self) {
         self.loss_intervals.ack();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame(0, false, 53, 0);
+        fbc.log_frame(1, false, 71, 0);
+        fbc.log_frame(2, false, 89, 0);
+        fbc.log_frame(3, false, 107, 10);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b1111, nonce: false }, 100);
+
+        let feedback = fbc.pending_feedback().unwrap();
+
+        assert_eq!(feedback.last_send_time_ms, 10);
+        assert_eq!(feedback.total_ack_size, 320);
+        assert_eq!(feedback.loss_rate, 0.0);
+        assert_eq!(feedback.rate_limited, false);
+
+        assert_eq!(fbc.pending_feedback(), None);
+    }
+
+    #[test]
+    fn bad_nonce() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame(0, false, 53, 0);
+        fbc.log_frame(1, true, 71, 0);
+        fbc.log_frame(2, false, 89, 0);
+        fbc.log_frame(3, true, 107, 10);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b1111, nonce: true }, 100);
+
+        assert_eq!(fbc.pending_feedback(), None);
+    }
+
+    #[test]
+    fn rate_limited() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame(0, false, 53, 0);
+        fbc.log_rate_limited();
+        fbc.log_frame(1, false, 71, 0);
+        fbc.log_frame(2, false, 89, 0);
+        fbc.log_frame(3, false, 107, 10);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b1001, nonce: false }, 100);
+
+        let feedback = fbc.pending_feedback().unwrap();
+
+        assert_eq!(feedback.last_send_time_ms, 10);
+        assert_eq!(feedback.total_ack_size, 160);
+        assert_eq!(feedback.rate_limited, true);
+    }
+
+    #[test]
+    fn loss_intervals_reorder() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64, 0);
+        fbc.log_frame( 1, false, 64, 0);
+        fbc.log_frame( 2, false, 64, 0);
+        fbc.log_frame( 3, false, 64, 0);
+        fbc.log_frame( 4, false, 64, 0);
+        fbc.log_frame( 5, false, 64, 0);
+        fbc.log_frame( 6, false, 64, 0);
+        fbc.log_frame( 7, false, 64, 0);
+        fbc.log_frame( 8, false, 64, 0);
+        fbc.log_frame( 9, false, 64, 0);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b0000001001, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b0001001001, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b1001001001, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 3 ]);
+    }
+
+    #[test]
+    fn loss_intervals_rtt() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64,   0); // ack
+        fbc.log_frame( 1, false, 64,   0);
+        fbc.log_frame( 2, false, 64,   1);
+        fbc.log_frame( 3, false, 64,  99);
+        fbc.log_frame( 4, false, 64, 100);
+        fbc.log_frame( 5, false, 64, 200);
+        fbc.log_frame( 6, false, 64, 200);
+        fbc.log_frame( 7, false, 64, 200); // ack
+        fbc.log_frame( 8, false, 64, 200); // ack
+        fbc.log_frame( 9, false, 64, 200); // ack
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b1110000001, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 3, 1, 3 ]);
+    }
+
+    #[test]
+    fn loss_intervals_reorder_forget_partial() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64,   0);
+        fbc.log_frame( 1, false, 64,   0);
+        fbc.log_frame( 2, false, 64, 100); // ack
+        fbc.log_frame( 3, false, 64, 100);
+        fbc.log_frame( 4, false, 64, 150);
+        fbc.log_frame( 5, false, 64, 150); // ack
+        fbc.log_frame( 6, false, 64, 199);
+        fbc.log_frame( 7, false, 64, 200);
+        fbc.log_frame( 8, false, 64, 300);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b000000100, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b000100000, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        assert_eq!(fbc.next_ack_id, 0);
+        assert_eq!(fbc.frame_log.base_id(), 0);
+        assert_eq!(fbc.frame_log.next_id(), 9);
+
+        fbc.forget_frames(150, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 1, 3 ]);
+
+        assert_eq!(fbc.next_ack_id, 4);
+        assert_eq!(fbc.frame_log.base_id(), 4);
+        assert_eq!(fbc.frame_log.next_id(), 9);
+    }
+
+    #[test]
+    fn loss_intervals_reorder_forget_full() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64,   0);
+        fbc.log_frame( 1, false, 64,   0);
+        fbc.log_frame( 2, false, 64, 100); // ack
+        fbc.log_frame( 3, false, 64, 100);
+        fbc.log_frame( 4, false, 64, 100);
+        fbc.log_frame( 5, false, 64, 100); // ack
+        fbc.log_frame( 6, false, 64, 199);
+        fbc.log_frame( 7, false, 64, 200);
+        fbc.log_frame( 8, false, 64, 300);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b000000100, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b000100000, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ ]);
+
+        assert_eq!(fbc.next_ack_id, 0);
+        assert_eq!(fbc.frame_log.base_id(), 0);
+        assert_eq!(fbc.frame_log.next_id(), 9);
+
+        fbc.forget_frames(300, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 1, 4, 3 ]);
+
+        assert_eq!(fbc.next_ack_id, 8);
+        assert_eq!(fbc.frame_log.base_id(), 8);
+        assert_eq!(fbc.frame_log.next_id(), 9);
+    }
+
+    #[test]
+    fn max_loss_intervals() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64,    0); // ack
+        fbc.log_frame( 1, false, 64,    0);
+        fbc.log_frame( 2, false, 64,  100);
+        fbc.log_frame( 3, false, 64,  200);
+        fbc.log_frame( 4, false, 64,  200);
+        fbc.log_frame( 5, false, 64,  300);
+        fbc.log_frame( 6, false, 64,  400);
+        fbc.log_frame( 7, false, 64,  500);
+        fbc.log_frame( 8, false, 64,  500);
+        fbc.log_frame( 9, false, 64,  500);
+        fbc.log_frame(10, false, 64,  600);
+        fbc.log_frame(11, false, 64,  700);
+        fbc.log_frame(12, false, 64,  800);
+        fbc.log_frame(13, false, 64,  800);
+        fbc.log_frame(14, false, 64,  900);
+        fbc.log_frame(15, false, 64,  900);
+        fbc.log_frame(16, false, 64,  900); // ack
+        fbc.log_frame(17, false, 64, 1000); // ack
+        fbc.log_frame(18, false, 64, 1000); // ack
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0x70001, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 3, 2, 1, 1, 3, 1, 1, 2, 1 ]);
+    }
+
+    #[test]
+    fn loss_intervals_changing_rtt() {
+        let mut fbc = FeedbackComp::new(0);
+
+        fbc.log_frame( 0, false, 64,   0); // ack @ 100ms RTT
+        fbc.log_frame( 1, false, 64,   0);
+        fbc.log_frame( 2, false, 64,   0); // ack @ 100ms RTT
+        fbc.log_frame( 3, false, 64,   0); // ack @ 100ms RTT
+        fbc.log_frame( 4, false, 64,   0); // ack @ 100ms RTT
+        fbc.log_frame( 5, false, 64,  99);
+        fbc.log_frame( 6, false, 64, 100);
+        fbc.log_frame( 7, false, 64, 150);
+        fbc.log_frame( 8, false, 64, 200); // ack @ 50ms RTT
+        fbc.log_frame( 9, false, 64, 200); // ack @ 50ms RTT
+        fbc.log_frame(10, false, 64, 200); // ack @ 50ms RTT
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b00000011101, nonce: false }, 100);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 2 ]);
+
+        fbc.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11100000000, nonce: false }, 50);
+
+        assert_eq!(fbc.loss_intervals.entries.iter().map(|entry| entry.length).collect::<Vec<_>>(), vec![ 2, 1, 5 ]);
     }
 }
 

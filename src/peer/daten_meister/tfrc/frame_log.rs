@@ -59,7 +59,7 @@ impl FrameLog {
     }
 
     pub fn next_id(&self) -> u32 {
-        self.base_id
+        self.next_id
     }
 }
 
