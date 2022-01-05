@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 #[derive(Clone,Debug)]
 pub struct Params {
     pub tx_channels: usize,
-    pub priority_channels: Range<usize>,
+    pub tx_channels_priority: Range<usize>,
     pub max_rx_alloc: usize,
     pub max_tx_bandwidth: usize,
     pub max_rx_bandwidth: usize,
@@ -30,7 +30,7 @@ impl Params {
     pub fn new() -> Self {
         Self {
             tx_channels: 1,
-            priority_channels: 0..0,
+            tx_channels_priority: 0..0,
             max_rx_alloc: 1_000_000,
             max_tx_bandwidth: 10_000_000,
             max_rx_bandwidth: 10_000_000,
@@ -42,8 +42,8 @@ impl Params {
         self
     }
 
-    pub fn priority_channels(mut self, priority_channels: Range<usize>) -> Params {
-        self.priority_channels = priority_channels;
+    pub fn tx_channels_priority(mut self, tx_channels_priority: Range<usize>) -> Params {
+        self.tx_channels_priority = tx_channels_priority;
         self
     }
 
