@@ -184,8 +184,11 @@ impl PacketReceiver {
 
         debug_assert!(slot_num <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
 
+        // println!("-- receive() base_id: {} end_id: {} --", self.base_id, self.end_id);
+
         for i in 0 .. slot_num {
             if channel_flags == 0 {
+                // println!("channel_flags == 0, breaking");
                 break;
             }
 
@@ -194,37 +197,41 @@ impl PacketReceiver {
             let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
 
             if let Some(entry) = receive_entry {
+                // println!("[{}] ch: {} ch_lead: {} win_lead: {} data[0..4]: {:?}", sequence_id, entry.channel_id, entry.channel_parent_lead, entry.window_parent_lead, entry.data.as_ref().map(|data| &data[0..4]));
+
                 let channel_id = entry.channel_id;
                 let channel_bit = 1u64 << channel_id;
 
                 if channel_flags & channel_bit != 0 {
-                    let ref mut channel = self.channels[channel_id as usize];
+                    if entry.data.is_some() {
+                        let ref mut channel = self.channels[channel_id as usize];
 
-                    let channel_base_id = channel.base_id.unwrap_or(base_id);
-                    debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
+                        let channel_base_id = channel.base_id.unwrap_or(base_id);
+                        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
 
-                    let channel_parent_lead = entry.channel_parent_lead as u32;
-                    let channel_delta = sequence_id.wrapping_sub(channel_base_id);
+                        let channel_parent_lead = entry.channel_parent_lead as u32;
+                        let channel_delta = sequence_id.wrapping_sub(channel_base_id);
 
-                    if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
-                        if let Some(data) = entry.data.take() {
-                            sink.send(data, channel_id);
+                        if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
+                            sink.send(entry.data.take().unwrap(), channel_id);
+
+                            // TODO: This only needs to be performed once per channel with packets
+                            // delivered
+                            self.set_channel_base_id(channel_id, sequence_id.wrapping_add(1));
+                        } else {
+                            // Cease to consider delivering packets from this channel
+
+                            // Note: If any packets are deliverable past this one (parent_lead = 0),
+                            // that is an error on the sender's part. However, ignoring all future
+                            // packets on this channel permits faster iteration and a possible early
+                            // exit.
+
+                            channel_flags &= !channel_bit;
                         }
-
-                        // TODO: This only needs to be performed once per channel with packets
-                        // delivered
-                        self.set_channel_base_id(channel_id, sequence_id.wrapping_add(1));
-                    } else {
-                        // Cease to consider delivering packets from this channel
-
-                        // Note: If any packets are deliverable past this one (parent_lead = 0),
-                        // that is an error on the sender's part. However, ignoring all future
-                        // packets on this channel permits faster iteration and a possible early
-                        // exit.
-
-                        channel_flags &= !channel_bit;
                     }
                 }
+            } else {
+                // println!("[{}] None", sequence_id);
             }
         }
 
@@ -240,6 +247,7 @@ impl PacketReceiver {
                 let window_delta = sequence_id.wrapping_sub(new_base_id);
 
                 if window_parent_lead == 0 || window_parent_lead > window_delta {
+                    // println!("Forget sequence ID {}", sequence_id);
                     new_base_id = sequence_id.wrapping_add(1);
                     *receive_entry = None;
                 } else {
@@ -570,6 +578,48 @@ mod tests {
 
         // C
         assert_eq!(sink.pop(), new_packet_data(0));
+        assert!(sink.is_empty());
+
+        assert_eq!(rx.base_id, 3);
+        assert_eq!(rx.end_id, 3);
+        assert_eq!(rx.channels[0].base_id, None);
+        assert_eq!(rx.channels[1].base_id, None);
+    }
+
+    #[test]
+    fn channel_skip_received() {
+        /*
+                Ref              A               B    
+           3               3              >3          
+           2  #  #         2     _         2  #  #    
+           1  O  O         1  O  O         1  O  O    
+          >0  #     #     >0               0  #     # 
+          -1  #  #        -1              -1  #  #    
+              w  c0 c1        w  c0 c1        w  c0 c1
+        */
+
+        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut sink = TestPacketSink::new();
+
+        rx.handle_datagram(new_packet_datagram(1, 0, 1, 2));
+        rx.receive(&mut sink);
+
+        // A
+        assert_eq!(sink.pop(), new_packet_data(1));
+        assert!(sink.is_empty());
+
+        assert_eq!(rx.base_id, 0);
+        assert_eq!(rx.end_id, 2);
+        assert_eq!(rx.channels[0].base_id, Some(2));
+        assert_eq!(rx.channels[1].base_id, None);
+
+        rx.handle_datagram(new_packet_datagram(0, 1, 1, 0));
+        rx.handle_datagram(new_packet_datagram(2, 0, 2, 3));
+        rx.receive(&mut sink);
+
+        // B
+        assert_eq!(sink.pop(), new_packet_data(0));
+        assert_eq!(sink.pop(), new_packet_data(2));
         assert!(sink.is_empty());
 
         assert_eq!(rx.base_id, 3);

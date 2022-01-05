@@ -2,9 +2,11 @@
 use std::net;
 use std::time;
 
+use std::convert::TryInto;
+
 extern crate md5;
 
-static NUM_CHANNELS: usize = 4;
+static NUM_CHANNELS: usize = 2;
 
 struct BandwidthLimiter {
     bandwidth: f64,
@@ -52,13 +54,13 @@ fn router_thread() {
 
     // Throttle data to 300kB/s, with a maximum queue size of 20kB
     let server_addr: net::SocketAddr = "127.0.0.1:8888".parse().unwrap();
-    let mut server_limiter = BandwidthLimiter::new(600_000.0, 100_000);
+    let mut server_limiter = BandwidthLimiter::new(300_000.0, 20_000);
 
     let mut server_bytes_sent = 0;
     let mut server_bytes_dropped = 0;
 
     let mut client_addr: Option<net::SocketAddr> = None;
-    let mut client_limiter = BandwidthLimiter::new(600_000.0, 100_000);
+    let mut client_limiter = BandwidthLimiter::new(300_000.0, 20_000);
 
     loop {
         let mut recv_buf = [0; 1500];
@@ -72,7 +74,7 @@ fn router_thread() {
                         //println!("client-bound packet sent! size: {}", recv_size);
                         socket.send_to(&recv_buf[..recv_size], client_addr).unwrap();
                     } else {
-                        println!("client-bound packet dropped!");
+                        println!("[router] client-bound packet dropped!");
                     }
                 }
             } else {
@@ -93,7 +95,7 @@ fn router_thread() {
                     //println!("server-bound packet dropped!");
                     server_bytes_dropped += udp_frame_size;
 
-                    println!("drop! dropped/total: {}/{} ({:.3})",
+                    println!("[router] drop! dropped/total: {}/{} ({:.3})",
                         server_bytes_dropped,
                         server_bytes_sent + server_bytes_dropped,
                         server_bytes_dropped as f64 / (server_bytes_sent + server_bytes_dropped) as f64);
@@ -108,30 +110,49 @@ fn server_thread() -> Vec<md5::Digest> {
         .tx_channels(NUM_CHANNELS);
 
     let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
-    let mut clients = Vec::new();
+    let mut peers = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
+
+    let mut ch0_packet_id: u32 = 0;
+    let mut ch1_packet_id: u32 = 0;
 
     'outer: loop {
         host.step();
 
-        for client in host.incoming() {
-            clients.push(client);
+        for peer in host.incoming() {
+            peers.push(peer);
         }
 
-        for client in clients.iter_mut() {
-            for event in client.poll_events() {
+        for peer in peers.iter_mut() {
+            for event in peer.poll_events() {
                 match event {
                     uflow::Event::Connect => {
+                        println!("[server] Client connected");
                     }
                     uflow::Event::Receive(data, channel_id) => {
+                        println!("[server] Received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
+
+                        let packet_id_expected = match channel_id {
+                            0 => &mut ch0_packet_id,
+                            1 => &mut ch1_packet_id,
+                            _ => panic!(),
+                        };
+
+                        let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+
+                        if packet_id != *packet_id_expected {
+                            panic!("[server] Data skipped! Received ID: {} Expected ID: {}", packet_id, *packet_id_expected);
+                        }
+
                         all_data[channel_id as usize].extend_from_slice(&data);
+                        *packet_id_expected += 1;
                     }
                     uflow::Event::Disconnect => {
+                        println!("[server] Client disconnected");
                         break 'outer;
                     }
-                    uflow::Event::Timeout => {
-                    }
+                    other => println!("[server] Unexpected event: {:?}", other),
                 }
             }
         }
@@ -140,6 +161,8 @@ fn server_thread() -> Vec<md5::Digest> {
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
+
+    println!("[server] Exiting");
 
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
@@ -150,30 +173,49 @@ fn client_thread() -> Vec<md5::Digest> {
         .tx_channels(NUM_CHANNELS);
 
     let mut host = uflow::Host::bind_any(1, params).unwrap();
-    let mut client = host.connect("127.0.0.1:9001".parse().unwrap());
+    let mut server_peer = host.connect("127.0.0.1:9001".parse().unwrap());
 
     // Send data at 654.2kB/s
-    let num_steps = 500;
+    let num_steps = 200;
     let packets_per_step = 20;
     let packet_size = uflow::MAX_TRANSFER_UNIT/3;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
+    let mut ch0_packet_id: u32 = 0;
+    let mut ch1_packet_id: u32 = 0;
+
     for _ in 0..num_steps {
         host.step();
 
-        for _ in client.poll_events() {
+        for event in server_peer.poll_events() {
+            match event {
+                uflow::Event::Connect => {
+                    println!("[client] Server connected");
+                }
+                other => println!("[client] Unexpected event: {:?}", other),
+            }
         }
 
         for _ in 0..packets_per_step {
-            let data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
-
             let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
 
-            let mode = uflow::SendMode::Reliable;
+            let mut data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
+
+            let packet_id = match channel_id {
+                0 => &mut ch0_packet_id,
+                1 => &mut ch1_packet_id,
+                _ => panic!(),
+            };
+
+            data[0..4].clone_from_slice(&packet_id.to_be_bytes());
 
             all_data[channel_id as usize].extend_from_slice(&data);
-            client.send(data, channel_id, mode);
+            server_peer.send(data, channel_id, uflow::SendMode::Reliable);
+
+            println!("[client] Sent packet {} on channel {}", *packet_id, channel_id);
+
+            *packet_id += 1;
         }
 
         host.flush();
@@ -181,27 +223,26 @@ fn client_thread() -> Vec<md5::Digest> {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
-    client.disconnect();
+    println!("[client] disconnecting");
+    server_peer.disconnect();
 
     'outer: loop {
         host.step();
 
-        for event in client.poll_events() {
+        for event in server_peer.poll_events() {
             match event {
-                uflow::Event::Connect => {
-                }
-                uflow::Event::Receive(_, _) => {
-                }
                 uflow::Event::Disconnect => {
+                    println!("[client] Disconnected");
                     break 'outer;
                 }
-                uflow::Event::Timeout => {
-                }
+                other => println!("[client] Unexpected event: {:?}", other),
             }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
+
+    println!("[client] Exiting");
 
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
