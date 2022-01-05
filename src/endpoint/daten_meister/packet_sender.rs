@@ -151,12 +151,18 @@ impl PacketSender {
         self.packet_send_queue.len()
     }
 
-    // Places a user packet on the send queue.
+    // Places a user packet on the send queue. Fails silently if the packet is impossible to send.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
-        // TODO: If the application wishes to place a limit on pending packet memory, this would be
-        // the place to return false.
-        debug_assert!(data.len() <= MAX_PACKET_SIZE);
-        debug_assert!(channel_id as usize <= MAX_CHANNELS);
+        if data.len() > MAX_PACKET_SIZE {
+            return;
+        }
+        if alloc_size(data.len()) > self.max_alloc {
+            return;
+        }
+        if channel_id as usize > self.channels.len() {
+            return;
+        }
+
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode));
     }
 
@@ -220,7 +226,7 @@ impl PacketSender {
     }
 
     // Responds to a receive window acknowledgement. All packet data beyond the new receive window
-    // is forgotten, thereby freeing transfer window / allocation space for newly sent packets.
+    // is forgotten, thereby freeing transfer window & allocation space for new packets.
     pub fn acknowledge(&mut self, receiver_base_id: u32) {
         let window_size = self.next_id.wrapping_sub(self.base_id);
         let ack_delta = receiver_base_id.wrapping_sub(self.base_id);

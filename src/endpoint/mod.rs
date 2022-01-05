@@ -183,7 +183,6 @@ impl Endpoint {
     pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
         match self.state {
             State::Connecting(ref mut state) => {
-                // TODO: Validate channel_id
                 state.initial_sends.push_back(SendEntry { data, channel_id, mode });
             }
             State::Connected(ref mut state) => {
