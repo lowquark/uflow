@@ -3,6 +3,11 @@ pub mod host;
 pub mod frame;
 mod peer;
 
+pub use host::Host;
+pub use host::Client;
+pub use peer::Params as PeerParams;
+pub use host::Event;
+
 pub const PROTOCOL_VERSION: u8 = 0;
 
 pub const MAX_CHANNELS: usize = frame::serial::MAX_CHANNELS;

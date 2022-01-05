@@ -13,8 +13,6 @@ use std::collections::HashMap;
 use std::net;
 use std::rc::Rc;
 
-pub use peer::Params as PeerParams;
-
 struct PeerFrameSink<'a> {
     socket: &'a net::UdpSocket,
     address: net::SocketAddr,

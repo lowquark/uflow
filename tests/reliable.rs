@@ -104,10 +104,10 @@ fn router_thread() {
 }
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -122,15 +122,15 @@ fn server_thread() -> Vec<md5::Digest> {
         for client in clients.iter_mut() {
             for event in client.poll_events() {
                 match event {
-                    udpl::host::Event::Connect => {
+                    udpl::Event::Connect => {
                     }
-                    udpl::host::Event::Receive(data, channel_id) => {
+                    udpl::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
-                    udpl::host::Event::Disconnect => {
+                    udpl::Event::Disconnect => {
                         break 'outer;
                     }
-                    udpl::host::Event::Timeout => {
+                    udpl::Event::Timeout => {
                     }
                 }
             }
@@ -145,11 +145,11 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .max_tx_bandwidth(10_000_000)
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind_any(1, params).unwrap();
+    let mut host = udpl::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:9001".parse().unwrap());
 
     // Send data at 654.2kB/s
@@ -188,14 +188,14 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::host::Event::Connect => {
+                udpl::Event::Connect => {
                 }
-                udpl::host::Event::Receive(_, _) => {
+                udpl::Event::Receive(_, _) => {
                 }
-                udpl::host::Event::Disconnect => {
+                udpl::Event::Disconnect => {
                     break 'outer;
                 }
-                udpl::host::Event::Timeout => {
+                udpl::Event::Timeout => {
                 }
             }
         }

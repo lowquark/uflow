@@ -4,10 +4,10 @@ extern crate md5;
 static NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -22,13 +22,13 @@ fn server_thread() -> Vec<md5::Digest> {
         for client in clients.iter_mut() {
             for event in client.poll_events() {
                 match event {
-                    udpl::host::Event::Connect => {
+                    udpl::Event::Connect => {
                         println!("Server connect");
                     }
-                    udpl::host::Event::Receive(data, channel_id) => {
+                    udpl::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
-                    udpl::host::Event::Disconnect => {
+                    udpl::Event::Disconnect => {
                         println!("Server disconnect");
                         break 'outer;
                     }
@@ -46,10 +46,10 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind_any(1, params).unwrap();
+    let mut host = udpl::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
     let num_steps = 100;
@@ -63,7 +63,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::host::Event::Connect => {
+                udpl::Event::Connect => {
                     println!("Client connect");
                 }
                 other => println!("Unexpected client event: {:?}", other),
@@ -101,7 +101,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::host::Event::Disconnect => {
+                udpl::Event::Disconnect => {
                     println!("Client disconnect");
                     break 'outer;
                 }

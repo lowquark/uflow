@@ -1,11 +1,13 @@
 
+// TODO: Actual echo example
+
 fn server_thread() {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(500_000)
         .tx_channels(2);
 
-    let mut host = udpl::host::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     for _ in 0..220 {
@@ -29,13 +31,13 @@ fn server_thread() {
 }
 
 fn client_thread() {
-    let params = udpl::host::PeerParams::new()
+    let params = udpl::PeerParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(750_000)
         .tx_channels(2)
         .priority_channels(0..1);
 
-    let mut host = udpl::host::Host::bind_any(1, params).unwrap();
+    let mut host = udpl::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
     for i in 0..200 {
