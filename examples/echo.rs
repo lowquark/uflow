@@ -2,12 +2,12 @@
 // TODO: Actual echo example
 
 fn server_thread() {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(500_000)
         .tx_channels(2);
 
-    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     for _ in 0..220 {
@@ -31,13 +31,13 @@ fn server_thread() {
 }
 
 fn client_thread() {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(750_000)
         .tx_channels(2)
         .priority_channels(0..1);
 
-    let mut host = udpl::Host::bind_any(1, params).unwrap();
+    let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
     for i in 0..200 {
@@ -51,9 +51,9 @@ fn client_thread() {
         let b = i*3 + 1 as u16;
         let c = i*3 + 2 as u16;
 
-        client.send(Box::new(a.to_be_bytes()), 1, udpl::SendMode::Reliable);
-        client.send(Box::new(b.to_be_bytes()), 0, udpl::SendMode::Reliable);
-        client.send(Box::new(c.to_be_bytes()), 0, udpl::SendMode::Reliable);
+        client.send(Box::new(a.to_be_bytes()), 1, uflow::SendMode::Reliable);
+        client.send(Box::new(b.to_be_bytes()), 0, uflow::SendMode::Reliable);
+        client.send(Box::new(c.to_be_bytes()), 0, uflow::SendMode::Reliable);
 
         host.flush();
 

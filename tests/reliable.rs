@@ -64,7 +64,7 @@ fn router_thread() {
         let mut recv_buf = [0; 1500];
 
         while let Ok((recv_size, src_addr)) = socket.recv_from(&mut recv_buf) {
-            let udp_frame_size = recv_size + udpl::UDP_HEADER_SIZE;
+            let udp_frame_size = recv_size + uflow::UDP_HEADER_SIZE;
 
             if src_addr.port() == 8888 {
                 if let Some(client_addr) = client_addr {
@@ -104,10 +104,10 @@ fn router_thread() {
 }
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -122,15 +122,15 @@ fn server_thread() -> Vec<md5::Digest> {
         for client in clients.iter_mut() {
             for event in client.poll_events() {
                 match event {
-                    udpl::Event::Connect => {
+                    uflow::Event::Connect => {
                     }
-                    udpl::Event::Receive(data, channel_id) => {
+                    uflow::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
-                    udpl::Event::Disconnect => {
+                    uflow::Event::Disconnect => {
                         break 'outer;
                     }
-                    udpl::Event::Timeout => {
+                    uflow::Event::Timeout => {
                     }
                 }
             }
@@ -145,17 +145,17 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .max_tx_bandwidth(10_000_000)
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::Host::bind_any(1, params).unwrap();
+    let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:9001".parse().unwrap());
 
     // Send data at 654.2kB/s
     let num_steps = 500;
     let packets_per_step = 20;
-    let packet_size = udpl::MAX_TRANSFER_UNIT/3;
+    let packet_size = uflow::MAX_TRANSFER_UNIT/3;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
@@ -170,7 +170,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
             let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
 
-            let mode = udpl::SendMode::Reliable;
+            let mode = uflow::SendMode::Reliable;
 
             all_data[channel_id as usize].extend_from_slice(&data);
             client.send(data, channel_id, mode);
@@ -188,14 +188,14 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::Event::Connect => {
+                uflow::Event::Connect => {
                 }
-                udpl::Event::Receive(_, _) => {
+                uflow::Event::Receive(_, _) => {
                 }
-                udpl::Event::Disconnect => {
+                uflow::Event::Disconnect => {
                     break 'outer;
                 }
-                udpl::Event::Timeout => {
+                uflow::Event::Timeout => {
                 }
             }
         }

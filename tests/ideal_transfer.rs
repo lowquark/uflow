@@ -4,10 +4,10 @@ extern crate md5;
 static NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -22,13 +22,13 @@ fn server_thread() -> Vec<md5::Digest> {
         for client in clients.iter_mut() {
             for event in client.poll_events() {
                 match event {
-                    udpl::Event::Connect => {
+                    uflow::Event::Connect => {
                         println!("Server connect");
                     }
-                    udpl::Event::Receive(data, channel_id) => {
+                    uflow::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
-                    udpl::Event::Disconnect => {
+                    uflow::Event::Disconnect => {
                         println!("Server disconnect");
                         break 'outer;
                     }
@@ -46,15 +46,15 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = udpl::PeerParams::new()
+    let params = uflow::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::Host::bind_any(1, params).unwrap();
+    let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
 
     let num_steps = 100;
     let packets_per_step = 20;
-    let packet_size = udpl::MAX_TRANSFER_UNIT/3;
+    let packet_size = uflow::MAX_TRANSFER_UNIT/3;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
@@ -63,7 +63,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::Event::Connect => {
+                uflow::Event::Connect => {
                     println!("Client connect");
                 }
                 other => println!("Unexpected client event: {:?}", other),
@@ -77,9 +77,9 @@ fn client_thread() -> Vec<md5::Digest> {
 
             // Our local loopback connection is assumed to be both ordered and lossless!
             let mode = match rand::random::<u32>() % 3 {
-                0 => udpl::SendMode::Unreliable,
-                1 => udpl::SendMode::Resend,
-                2 => udpl::SendMode::Reliable,
+                0 => uflow::SendMode::Unreliable,
+                1 => uflow::SendMode::Resend,
+                2 => uflow::SendMode::Reliable,
                 _ => panic!("NANI!?"),
             };
 
@@ -101,7 +101,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for event in client.poll_events() {
             match event {
-                udpl::Event::Disconnect => {
+                uflow::Event::Disconnect => {
                     println!("Client disconnect");
                     break 'outer;
                 }
