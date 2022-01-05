@@ -2,7 +2,7 @@
 // TODO: Actual echo example
 
 fn server_thread() {
-    let params = uflow::PeerParams::new()
+    let params = uflow::EndpointParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(500_000)
         .tx_channels(2);
@@ -31,7 +31,7 @@ fn server_thread() {
 }
 
 fn client_thread() {
-    let params = uflow::PeerParams::new()
+    let params = uflow::EndpointParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(750_000)
         .tx_channels(2)

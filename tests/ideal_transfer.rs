@@ -4,7 +4,7 @@ extern crate md5;
 static NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = uflow::PeerParams::new()
+    let params = uflow::EndpointParams::new()
         .tx_channels(NUM_CHANNELS);
 
     let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
@@ -46,7 +46,7 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = uflow::PeerParams::new()
+    let params = uflow::EndpointParams::new()
         .tx_channels(NUM_CHANNELS);
 
     let mut host = uflow::Host::bind_any(1, params).unwrap();

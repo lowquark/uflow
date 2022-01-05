@@ -1,11 +1,11 @@
 
 pub mod host;
 pub mod frame;
-mod peer;
+mod endpoint;
 
 pub use host::Host;
-pub use host::Client;
-pub use peer::Params as PeerParams;
+pub use host::Peer;
+pub use endpoint::Params as EndpointParams;
 pub use host::Event;
 
 pub const PROTOCOL_VERSION: u8 = 0;

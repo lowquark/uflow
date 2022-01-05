@@ -136,7 +136,7 @@ impl<'a> daten_meister::PacketSink for EventPacketSink<'a> {
     }
 }
 
-pub struct Peer {
+pub struct Endpoint {
     state: State,
 
     event_queue: VecDeque<Event>,
@@ -146,7 +146,7 @@ pub struct Peer {
     was_connected: bool,
 }
 
-impl Peer {
+impl Endpoint {
     pub fn new(params: Params) -> Self {
         assert!(params.tx_channels > 0, "Must have at least one channel");
         assert!(params.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
@@ -236,7 +236,7 @@ impl Peer {
                 match frame {
                     frame::Frame::ConnectAckFrame(frame) => {
                         if frame.nonce == state.connect_frame.nonce {
-                            // The remote peer acknowledged our connection request, stop sending more
+                            // The remote endpoint acknowledged our connection request, stop sending more
                             state.connect_ack_received = true;
                             // Try to enter connected state
                             if let Some(connect_frame_remote) = state.connect_frame_remote.take() {
@@ -268,7 +268,7 @@ impl Peer {
                         }
                     }
                     frame::Frame::DisconnectFrame(_) => {
-                        // Peer must not have liked our connect info
+                        // Remote endpoint must not have liked our connect info
                         sink.send(&frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame { }).write());
                         self.enter_disconnected();
                     }
