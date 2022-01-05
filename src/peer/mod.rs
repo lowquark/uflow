@@ -26,6 +26,43 @@ pub struct Params {
     pub max_rx_bandwidth: usize,
 }
 
+impl Params {
+    pub fn new() -> Self {
+        Self {
+            tx_channels: 1,
+            priority_channels: 0..0,
+            max_rx_alloc: 1_000_000,
+            max_tx_bandwidth: 10_000_000,
+            max_rx_bandwidth: 10_000_000,
+        }
+    }
+
+    pub fn tx_channels(mut self, tx_channels: usize) -> Params {
+        self.tx_channels = tx_channels;
+        self
+    }
+
+    pub fn priority_channels(mut self, priority_channels: Range<usize>) -> Params {
+        self.priority_channels = priority_channels;
+        self
+    }
+
+    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Params {
+        self.max_rx_alloc = max_rx_alloc;
+        self
+    }
+
+    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Params {
+        self.max_tx_bandwidth = bandwidth;
+        self
+    }
+
+    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Params {
+        self.max_rx_bandwidth = bandwidth;
+        self
+    }
+}
+
 #[derive(Clone,Debug,PartialEq)]
 pub enum Event {
     Connect,

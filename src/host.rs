@@ -11,8 +11,9 @@ use frame::serial::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net;
-use std::ops::Range;
 use std::rc::Rc;
+
+pub use peer::Params as PeerParams;
 
 struct PeerFrameSink<'a> {
     socket: &'a net::UdpSocket,
@@ -34,87 +35,12 @@ impl<'a> FrameSink for PeerFrameSink<'a> {
     }
 }
 
-#[derive(Clone)]
-pub struct Params {
-    tx_channels: usize,
-    priority_channels: Range<usize>,
-    max_peer_rx_alloc: usize,
-    max_peer_tx_bandwidth: usize,
-    max_peer_rx_bandwidth: usize,
-    max_connected_peers: usize,
-
-    // TODO: Blacklist, whitelist
-}
-
-impl Params {
-    pub fn new() -> Self {
-        Self {
-            tx_channels: 1,
-            priority_channels: 0..0,
-            max_peer_rx_alloc: 1_000_000,
-            max_peer_tx_bandwidth: 10_000_000,
-            max_peer_rx_bandwidth: 10_000_000,
-            max_connected_peers: 16,
-        }
-    }
-
-    pub fn tx_channels(mut self, tx_channels: usize) -> Params {
-        self.tx_channels = tx_channels;
-        self
-    }
-
-    pub fn priority_channels(mut self, priority_channels: Range<usize>) -> Params {
-        self.priority_channels = priority_channels;
-        self
-    }
-
-    pub fn max_peer_rx_alloc(mut self, max_peer_rx_alloc: usize) -> Params {
-        self.max_peer_rx_alloc = max_peer_rx_alloc;
-        self
-    }
-
-    pub fn max_peer_tx_bandwidth(mut self, bandwidth: usize) -> Params {
-        self.max_peer_tx_bandwidth = bandwidth;
-        self
-    }
-
-    pub fn max_peer_rx_bandwidth(mut self, bandwidth: usize) -> Params {
-        self.max_peer_rx_bandwidth = bandwidth;
-        self
-    }
-
-    pub fn max_connected_peers(mut self, num_peers: usize) -> Params {
-        self.max_connected_peers = num_peers;
-        self
-    }
-}
-
-impl From<Params> for peer::Params {
-    fn from(params: Params) -> Self {
-        Self {
-            tx_channels: params.tx_channels,
-            priority_channels: params.priority_channels,
-            max_rx_alloc: params.max_peer_rx_alloc,
-            max_tx_bandwidth: params.max_peer_tx_bandwidth,
-            max_rx_bandwidth: params.max_peer_rx_bandwidth,
-        }
-    }
-}
+pub type Event = peer::Event;
 
 pub struct Client {
     address: net::SocketAddr,
     peer_ref: Rc<RefCell<peer::Peer>>,
 }
-
-pub struct Host {
-    socket: net::UdpSocket,
-    peer_list: HashMap<net::SocketAddr, Rc<RefCell<peer::Peer>>>,
-    peer_params: peer::Params,
-    new_clients: Vec<Client>,
-    max_connected_peers: usize,
-}
-
-pub type Event = peer::Event;
 
 impl Client {
     fn new(address: net::SocketAddr, peer_ref: Rc<RefCell<peer::Peer>>) -> Self {
@@ -149,25 +75,35 @@ impl Client {
     }
 }
 
+pub struct Host {
+    socket: net::UdpSocket,
+
+    max_connected_peers: usize,
+    peer_params: peer::Params,
+
+    peer_list: HashMap<net::SocketAddr, Rc<RefCell<peer::Peer>>>,
+    new_clients: Vec<Client>,
+}
+
 impl Host {
-    pub fn bind<A: net::ToSocketAddrs>(addr: A, params: Params) -> Result<Host, std::io::Error> {
+    pub fn bind<A: net::ToSocketAddrs>(addr: A, max_connected_peers: usize, peer_params: peer::Params) -> Result<Host, std::io::Error> {
         let socket = net::UdpSocket::bind(addr)?;
 
         socket.set_nonblocking(true)?;
 
-        let max_connected_peers = params.max_connected_peers;
-
         Ok(Host {
             socket,
+
             peer_list: HashMap::new(),
-            peer_params: params.into(),
             new_clients: Vec::new(),
+
             max_connected_peers,
+            peer_params,
         })
     }
 
-    pub fn bind_any(params: Params) -> Result<Host, std::io::Error> {
-        Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), params)
+    pub fn bind_any(max_connected_peers: usize, peer_params: peer::Params) -> Result<Host, std::io::Error> {
+        Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connected_peers, peer_params)
     }
 
     // TODO: It would be possible to use special peer parameters here
@@ -198,7 +134,7 @@ impl Host {
                             peer.handle_frame(frame, &mut data_sink);
 
                             let peer_ref = Rc::new(RefCell::new(peer));
-                            self.peer_list.insert(src_addr, peer_ref.clone());
+                            self.peer_list.insert(src_addr, Rc::clone(&peer_ref));
                             self.new_clients.push(Client::new(src_addr, peer_ref));
                         }
                     }

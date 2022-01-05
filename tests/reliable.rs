@@ -104,10 +104,10 @@ fn router_thread() {
 }
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::Params::new()
+    let params = udpl::host::PeerParams::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind("127.0.0.1:8888", params).unwrap();
+    let mut host = udpl::host::Host::bind("127.0.0.1:8888", 1, params).unwrap();
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -145,11 +145,11 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = udpl::host::Params::new()
-        .max_peer_tx_bandwidth(10_000_000)
+    let params = udpl::host::PeerParams::new()
+        .max_tx_bandwidth(10_000_000)
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = udpl::host::Host::bind_any(params).unwrap();
+    let mut host = udpl::host::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:9001".parse().unwrap());
 
     // Send data at 654.2kB/s
