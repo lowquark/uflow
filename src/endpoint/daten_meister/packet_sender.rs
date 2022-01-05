@@ -159,7 +159,7 @@ impl PacketSender {
         if alloc_size(data.len()) > self.max_alloc {
             return;
         }
-        if channel_id as usize > self.channels.len() {
+        if channel_id as usize >= self.channels.len() {
             return;
         }
 
