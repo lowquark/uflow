@@ -180,7 +180,7 @@ impl PacketReceiver {
         let base_id = self.base_id;
         let slot_num = self.end_id.wrapping_sub(base_id);
 
-        let mut channel_flags = (1u64 << self.channels.len()).wrapping_sub(1);
+        let mut channel_flags = if self.channels.len() == 64 { 0xFFFFFFFFFFFFFFFF } else { (1u64 << self.channels.len()) - 1 };
 
         debug_assert!(slot_num <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
 

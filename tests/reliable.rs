@@ -6,7 +6,7 @@ use std::convert::TryInto;
 
 extern crate md5;
 
-static NUM_CHANNELS: usize = 2;
+const NUM_CHANNELS: usize = 64;
 
 struct BandwidthLimiter {
     bandwidth: f64,
@@ -114,8 +114,7 @@ fn server_thread() -> Vec<md5::Digest> {
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
-    let mut ch0_packet_id: u32 = 0;
-    let mut ch1_packet_id: u32 = 0;
+    let mut packet_ids = [0u32; NUM_CHANNELS];
 
     'outer: loop {
         host.step();
@@ -133,16 +132,12 @@ fn server_thread() -> Vec<md5::Digest> {
                     uflow::Event::Receive(data, channel_id) => {
                         println!("[server] Received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
 
-                        let packet_id_expected = match channel_id {
-                            0 => &mut ch0_packet_id,
-                            1 => &mut ch1_packet_id,
-                            _ => panic!(),
-                        };
+                        let ref mut packet_id_expected = packet_ids[channel_id as usize];
 
                         let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
                         if packet_id != *packet_id_expected {
-                            panic!("[server] Data skipped! Received ID: {} Expected ID: {}", packet_id, *packet_id_expected);
+                            panic!("[server] Data skipped! Received ID: {} Expected ID: {}", packet_id, packet_id_expected);
                         }
 
                         all_data[channel_id as usize].extend_from_slice(&data);
@@ -182,8 +177,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
-    let mut ch0_packet_id: u32 = 0;
-    let mut ch1_packet_id: u32 = 0;
+    let mut packet_ids = [0u32; NUM_CHANNELS];
 
     for _ in 0..num_steps {
         host.step();
@@ -199,21 +193,15 @@ fn client_thread() -> Vec<md5::Digest> {
 
         for _ in 0..packets_per_step {
             let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
+            let ref mut packet_id = packet_ids[channel_id as usize];
 
             let mut data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
-
-            let packet_id = match channel_id {
-                0 => &mut ch0_packet_id,
-                1 => &mut ch1_packet_id,
-                _ => panic!(),
-            };
-
             data[0..4].clone_from_slice(&packet_id.to_be_bytes());
 
             all_data[channel_id as usize].extend_from_slice(&data);
             server_peer.send(data, channel_id, uflow::SendMode::Reliable);
 
-            println!("[client] Sent packet {} on channel {}", *packet_id, channel_id);
+            println!("[client] Sent packet {} on channel {}", packet_id, channel_id);
 
             *packet_id += 1;
         }
