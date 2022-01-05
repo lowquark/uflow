@@ -36,7 +36,6 @@ fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
                 return c;
             } else {
                 a = c;
-                println!("a: {}, b: {}", a, b);
                 continue;
             }
         } else if rate < target_rate_bps {
@@ -44,7 +43,6 @@ fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
                 return c;
             } else {
                 b = c;
-                println!("a: {}, b: {}", a, b);
                 continue;
             }
         } else {
@@ -157,8 +155,6 @@ impl SendRateComp {
         }
 
         if let Some(pending_feedback) = self.feedback_comp.pending_feedback() {
-            println!("pending_feedback: {:?}", pending_feedback);
-
             let rtt_sample_s = (now_ms - pending_feedback.last_send_time_ms) as f64 / 1000.0;
 
             let receive_rate = if let Some(last_feedback_time_ms) = self.last_feedback_time_ms {
@@ -174,8 +170,6 @@ impl SendRateComp {
             self.handle_feedback(now_ms, rtt_sample_s, receive_rate, loss_rate, rate_limited);
 
             self.last_feedback_time_ms = Some(now_ms);
-
-            println!("New send rate: {}", self.send_rate);
         } else if let Some(nofeedback_exp_ms) = self.nofeedback_exp_ms {
             if now_ms >= nofeedback_exp_ms {
                 self.nofeedback_expired(now_ms);
