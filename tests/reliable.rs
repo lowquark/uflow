@@ -38,8 +38,6 @@ impl BandwidthLimiter {
             self.count = 0;
         }
 
-        //println!("count/limit: {}/{}", self.count, self.limit);
-
         if self.count + size <= self.limit {
             self.count += size;
             return true;
@@ -127,27 +125,27 @@ fn server_thread() -> Vec<md5::Digest> {
             for event in peer.poll_events() {
                 match event {
                     uflow::Event::Connect => {
-                        println!("[server] Client connected");
+                        println!("[server] client connected");
                     }
                     uflow::Event::Receive(data, channel_id) => {
-                        println!("[server] Received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
+                        //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
 
                         let ref mut packet_id_expected = packet_ids[channel_id as usize];
 
                         let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
                         if packet_id != *packet_id_expected {
-                            panic!("[server] Data skipped! Received ID: {} Expected ID: {}", packet_id, packet_id_expected);
+                            panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
                         }
 
                         all_data[channel_id as usize].extend_from_slice(&data);
                         *packet_id_expected += 1;
                     }
                     uflow::Event::Disconnect => {
-                        println!("[server] Client disconnected");
+                        println!("[server] client disconnected");
                         break 'outer;
                     }
-                    other => println!("[server] Unexpected event: {:?}", other),
+                    other => println!("[server] unexpected event: {:?}", other),
                 }
             }
         }
@@ -157,7 +155,7 @@ fn server_thread() -> Vec<md5::Digest> {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
-    println!("[server] Exiting");
+    println!("[server] exiting");
 
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
@@ -170,7 +168,7 @@ fn client_thread() -> Vec<md5::Digest> {
     let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut server_peer = host.connect("127.0.0.1:9001".parse().unwrap());
 
-    // Send data at 654.2kB/s
+    // Send data at 20 * 1472/3 B / 0.015 s = 654.2kB/s
     let num_steps = 200;
     let packets_per_step = 20;
     let packet_size = uflow::MAX_TRANSFER_UNIT/3;
@@ -185,9 +183,9 @@ fn client_thread() -> Vec<md5::Digest> {
         for event in server_peer.poll_events() {
             match event {
                 uflow::Event::Connect => {
-                    println!("[client] Server connected");
+                    println!("[client] connected to server");
                 }
-                other => println!("[client] Unexpected event: {:?}", other),
+                other => println!("[client] unexpected event: {:?}", other),
             }
         }
 
@@ -201,7 +199,7 @@ fn client_thread() -> Vec<md5::Digest> {
             all_data[channel_id as usize].extend_from_slice(&data);
             server_peer.send(data, channel_id, uflow::SendMode::Reliable);
 
-            println!("[client] Sent packet {} on channel {}", packet_id, channel_id);
+            println!("[client] sent packet {} on channel {}", packet_id, channel_id);
 
             *packet_id += 1;
         }
@@ -220,23 +218,23 @@ fn client_thread() -> Vec<md5::Digest> {
         for event in server_peer.poll_events() {
             match event {
                 uflow::Event::Disconnect => {
-                    println!("[client] Disconnected");
+                    println!("[client] server disconnected");
                     break 'outer;
                 }
-                other => println!("[client] Unexpected event: {:?}", other),
+                other => println!("[client] unexpected event: {:?}", other),
             }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
-    println!("[client] Exiting");
+    println!("[client] exiting");
 
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
 
 #[test]
-fn test_reliable_transfer() {
+fn reliable() {
     std::thread::spawn(router_thread);
 
     std::thread::sleep(std::time::Duration::from_millis(200));

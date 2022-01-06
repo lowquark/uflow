@@ -23,16 +23,16 @@ fn server_thread() -> Vec<md5::Digest> {
             for event in client.poll_events() {
                 match event {
                     uflow::Event::Connect => {
-                        println!("Server connect");
+                        println!("[server] client connected");
                     }
                     uflow::Event::Receive(data, channel_id) => {
                         all_data[channel_id as usize].extend_from_slice(&data);
                     }
                     uflow::Event::Disconnect => {
-                        println!("Server disconnect");
+                        println!("[server] client disconnected");
                         break 'outer;
                     }
-                    other => println!("Unexpected server event: {:?}", other),
+                    other => println!("[server] unexpected event: {:?}", other),
                 }
             }
         }
@@ -41,6 +41,8 @@ fn server_thread() -> Vec<md5::Digest> {
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
+
+    println!("[server] exiting");
 
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
@@ -64,9 +66,9 @@ fn client_thread() -> Vec<md5::Digest> {
         for event in client.poll_events() {
             match event {
                 uflow::Event::Connect => {
-                    println!("Client connect");
+                    println!("[client] connected to server");
                 }
-                other => println!("Unexpected client event: {:?}", other),
+                other => println!("[client] unexpected event: {:?}", other),
             }
         }
 
@@ -93,7 +95,7 @@ fn client_thread() -> Vec<md5::Digest> {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
-    println!("Client disconnecting...");
+    println!("[client] disconnecting");
     client.disconnect();
 
     'outer: loop {
@@ -102,21 +104,23 @@ fn client_thread() -> Vec<md5::Digest> {
         for event in client.poll_events() {
             match event {
                 uflow::Event::Disconnect => {
-                    println!("Client disconnect");
+                    println!("[client] server disconnected");
                     break 'outer;
                 }
-                other => println!("Unexpected client event: {:?}", other),
+                other => println!("[client] unexpected event: {:?}", other),
             }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
+    println!("[client] Exiting");
+
     return all_data.into_iter().map(|data| md5::compute(data)).collect();
 }
 
 #[test]
-fn test_ideal_transfer() {
+fn ideal_transfer() {
     let server = std::thread::spawn(server_thread);
 
     std::thread::sleep(std::time::Duration::from_millis(200));
