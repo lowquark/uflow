@@ -13,6 +13,9 @@ mod frame_ack_queue;
 
 mod tfrc;
 
+#[cfg(test)]
+mod packet_tests;
+
 use packet_receiver::PacketReceiver;
 use packet_sender::PacketSender;
 use frame_queue::FrameQueue;
