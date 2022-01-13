@@ -1,7 +1,9 @@
 
 extern crate md5;
 
-static NUM_CHANNELS: usize = 4;
+use std::convert::TryInto;
+
+const NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
     let params = uflow::EndpointParams::new()
@@ -11,6 +13,8 @@ fn server_thread() -> Vec<md5::Digest> {
     let mut clients = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
+
+    let mut packet_ids = [0u32; NUM_CHANNELS];
 
     'outer: loop {
         host.step();
@@ -26,7 +30,18 @@ fn server_thread() -> Vec<md5::Digest> {
                         println!("[server] client connected");
                     }
                     uflow::Event::Receive(data, channel_id) => {
+                        println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
+
+                        let ref mut packet_id_expected = packet_ids[channel_id as usize];
+
+                        let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+
+                        if packet_id != *packet_id_expected {
+                            panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
+                        }
+
                         all_data[channel_id as usize].extend_from_slice(&data);
+                        *packet_id_expected += 1;
                     }
                     uflow::Event::Disconnect => {
                         println!("[server] client disconnected");
@@ -60,6 +75,8 @@ fn client_thread() -> Vec<md5::Digest> {
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
+    let mut packet_ids = [0u32; NUM_CHANNELS];
+
     for _ in 0..num_steps {
         host.step();
 
@@ -73,9 +90,11 @@ fn client_thread() -> Vec<md5::Digest> {
         }
 
         for _ in 0..packets_per_step {
-            let data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
-
             let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
+            let ref mut packet_id = packet_ids[channel_id as usize];
+
+            let mut data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
+            data[0..4].clone_from_slice(&packet_id.to_be_bytes());
 
             // Our local loopback connection is assumed to be both ordered and lossless!
             let mode = match rand::random::<u32>() % 3 {
@@ -88,6 +107,10 @@ fn client_thread() -> Vec<md5::Digest> {
             all_data[channel_id as usize].extend_from_slice(&data);
 
             client.send(data, channel_id, mode);
+
+            println!("[client] sent packet {} on channel {}", packet_id, channel_id);
+
+            *packet_id += 1;
         }
 
         host.flush();
