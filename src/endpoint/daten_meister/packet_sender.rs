@@ -168,13 +168,13 @@ impl PacketSender {
 
     // Sends as many packets from the send queue as possible, respecting both the maximum
     // allocation limit, and the maximum transfer window.
-    pub fn emit_datagrams(&mut self, sink: &mut impl DatagramSink) {
-        while let Some(packet) = self.packet_send_queue.front() {
-            let packet_alloc_size = alloc_size(packet.data.len());
-
+    pub fn emit_packet_datagrams(&mut self, sink: &mut impl DatagramSink) {
+        if let Some(packet) = self.packet_send_queue.front() {
             if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_TRANSFER_WINDOW_SIZE {
                 return;
             }
+
+            let packet_alloc_size = alloc_size(packet.data.len());
 
             if self.alloc + packet_alloc_size > self.max_alloc {
                 return;
@@ -267,6 +267,7 @@ impl PacketSender {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::MAX_PACKET_TRANSFER_WINDOW_SIZE;
@@ -502,4 +503,5 @@ mod tests {
         assert!(sink.is_empty());
     }
 }
+*/
 

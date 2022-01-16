@@ -1,5 +1,4 @@
 
-use crate::frame::Datagram;
 use crate::MAX_TRANSFER_UNIT;
 use crate::SendMode;
 use crate::frame;
@@ -13,8 +12,14 @@ mod frame_ack_queue;
 
 mod tfrc;
 
+mod frame_log;
+mod resend_queue;
+mod message_queue;
+
+/*
 #[cfg(test)]
 mod packet_tests;
+*/
 
 use packet_receiver::PacketReceiver;
 use packet_sender::PacketSender;
@@ -23,11 +28,29 @@ use frame_ack_queue::FrameAckQueue;
 
 use std::time;
 
-impl packet_sender::DatagramSink for FrameQueue {
-    fn send(&mut self, datagram: Datagram, resend: bool) {
-        self.enqueue_message(frame::Message::Datagram(datagram), resend);
+use std::rc::Rc;
+use std::rc::Weak;
+use std::cell::RefCell;
+
+
+#[derive(Debug)]
+pub struct PersistentMessage {
+    message: frame::Message,
+    acknowledged: bool,
+}
+
+impl PersistentMessage {
+    fn new(message: frame::Message) -> Self {
+        Self {
+            message,
+            acknowledged: false,
+        }
     }
 }
+
+pub type PersistentMessageRc = Rc<RefCell<PersistentMessage>>;
+pub type PersistentMessageWeak = Weak<RefCell<PersistentMessage>>;
+
 
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8);
@@ -123,9 +146,6 @@ impl DatenMeister {
             self.frame_queue.enqueue_message(ack_message, false);
         }
 
-        // Enqueue new packets
-        self.packet_sender.emit_datagrams(&mut self.frame_queue);
-
         // Update send rate value
         self.send_rate_comp.step(now_ms);
 
@@ -144,7 +164,7 @@ impl DatenMeister {
 
         // Send as many frames as possible
         loop {
-            match self.frame_queue.emit_frame(now_ms, rtt_ms, self.flush_alloc.min(MAX_TRANSFER_UNIT)) {
+            match self.frame_queue.emit_frame(&mut self.packet_sender, now_ms, rtt_ms, self.flush_alloc.min(MAX_TRANSFER_UNIT)) {
                 Ok((frame_data, frame_id, nonce)) => {
                     let frame_size = frame_data.len();
 

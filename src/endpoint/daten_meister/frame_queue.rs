@@ -1,96 +1,22 @@
 
 use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 
+use super::packet_sender;
+use super::frame_log;
+use super::resend_queue;
+use super::message_queue;
+
+use super::PersistentMessage;
+
 use crate::frame::FrameAck;
 use crate::frame::Message;
+use crate::frame::Datagram;
 use crate::frame::serial::MessageFrameBuilder;
 
-use std::collections::BinaryHeap;
-use std::collections::VecDeque;
-use std::cmp::Ordering;
-
 use std::rc::Rc;
-use std::rc::Weak;
 use std::cell::RefCell;
 
 const MAX_SEND_COUNT: u8 = 4;
-
-#[derive(Debug)]
-struct PersistentMessage {
-    message: Message,
-    acknowledged: bool,
-}
-
-impl PersistentMessage {
-    fn new(message: Message) -> Self {
-        Self {
-            message,
-            acknowledged: false,
-        }
-    }
-}
-
-type PersistentMessageRc = Rc<RefCell<PersistentMessage>>;
-type PersistentMessageWeak = Weak<RefCell<PersistentMessage>>;
-
-
-#[derive(Debug)]
-struct ResendEntry {
-    pub persistent_message: PersistentMessageRc,
-    pub resend_time: u64,
-    pub send_count: u8,
-}
-
-impl ResendEntry {
-    pub fn new(persistent_message: PersistentMessageRc, resend_time: u64, send_count: u8) -> Self {
-        Self { persistent_message, resend_time, send_count }
-    }
-}
-
-impl PartialOrd for ResendEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.resend_time.cmp(&other.resend_time).reverse())
-    }
-}
-
-impl PartialEq for ResendEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.resend_time == other.resend_time
-    }
-}
-
-impl Eq for ResendEntry {}
-
-impl Ord for ResendEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.resend_time.cmp(&other.resend_time).reverse()
-    }
-}
-
-type ResendQueue = BinaryHeap<ResendEntry>;
-
-
-#[derive(Debug)]
-struct SendEntry {
-    message: Message,
-    resend: bool,
-}
-
-impl SendEntry {
-    fn new(message: Message, resend: bool) -> Self {
-        Self {
-            message,
-            resend,
-        }
-    }
-}
-
-
-#[derive(Debug)]
-struct SentFrame {
-    send_time_ms: u64,
-    persistent_messages: Box<[PersistentMessageWeak]>,
-}
 
 
 #[derive(Debug,PartialEq)]
@@ -101,41 +27,45 @@ pub enum Error {
 }
 
 
-pub struct FrameQueue {
-    send_queue: VecDeque<SendEntry>,
-    resend_queue: ResendQueue,
+impl packet_sender::DatagramSink for message_queue::MessageQueue {
+    fn send(&mut self, datagram: Datagram, resend: bool) {
+        self.push_back(message_queue::Entry::new(Message::Datagram(datagram), resend));
+    }
+}
 
-    next_id: u32,
-    base_id: u32,
-    sent_frames: VecDeque<SentFrame>,
+
+pub struct FrameQueue {
+    message_queue: message_queue::MessageQueue,
+    resend_queue: resend_queue::ResendQueue,
+    frame_log: frame_log::FrameLog,
 }
 
 impl FrameQueue {
     pub fn new(base_id: u32) -> Self {
         Self {
-            send_queue: VecDeque::new(),
-            resend_queue: ResendQueue::new(),
-
-            next_id: base_id,
-            base_id: base_id,
-            sent_frames: VecDeque::new(),
+            message_queue: message_queue::MessageQueue::new(),
+            resend_queue: resend_queue::ResendQueue::new(),
+            frame_log: frame_log::FrameLog::new(base_id),
         }
     }
 
     pub fn pending_count(&self) -> usize {
-        self.send_queue.len() + self.resend_queue.len()
+        self.message_queue.len() + self.resend_queue.len()
     }
 
+    #[deprecated]
     pub fn enqueue_message(&mut self, message: Message, resend: bool) {
-        self.send_queue.push_back(SendEntry::new(message, resend));
+        self.message_queue.push_back(message_queue::Entry::new(message, resend));
     }
 
-    pub fn emit_frame(&mut self, now_ms: u64, rto_ms: u64, size_limit: usize) -> Result<(Box<[u8]>, u32, bool), Error> {
-        if self.sent_frames.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE as usize {
+    pub fn emit_frame(&mut self,
+                      packet_sender: &mut packet_sender::PacketSender,
+                      now_ms: u64, rto_ms: u64, size_limit: usize) -> Result<(Box<[u8]>, u32, bool), Error> {
+        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
             return Err(Error::WindowLimited);
         }
 
-        let frame_id = self.next_id;
+        let frame_id = self.frame_log.next_id();
         let nonce = rand::random();
 
         let mut fbuilder = MessageFrameBuilder::new(frame_id, nonce);
@@ -173,32 +103,41 @@ impl FrameQueue {
 
             persistent_messages.push(Rc::downgrade(&entry.persistent_message));
 
-            self.resend_queue.push(ResendEntry::new(entry.persistent_message,
-                                                    now_ms + rto_ms*(1 << entry.send_count),
-                                                    (entry.send_count + 1).min(MAX_SEND_COUNT)));
+            self.resend_queue.push(resend_queue::Entry::new(entry.persistent_message,
+                                                            now_ms + rto_ms*(1 << entry.send_count),
+                                                            (entry.send_count + 1).min(MAX_SEND_COUNT)));
         }
 
-        while let Some(entry) = self.send_queue.front() {
-            let encoded_size = MessageFrameBuilder::message_size(&entry.message);
-
-            if fbuilder.size() + encoded_size > size_limit {
-                if fbuilder.count() == 0 {
-                    return Err(Error::SizeLimited);
-                } else {
-                    break;
+        'outer: loop {
+            if self.message_queue.is_empty() {
+                packet_sender.emit_packet_datagrams(&mut self.message_queue);
+                if self.message_queue.is_empty() {
+                    break 'outer;
                 }
             }
 
-            fbuilder.add(&entry.message);
+            while let Some(entry) = self.message_queue.front() {
+                let encoded_size = MessageFrameBuilder::message_size(&entry.message);
 
-            let entry = self.send_queue.pop_front().unwrap();
+                if fbuilder.size() + encoded_size > size_limit {
+                    if fbuilder.count() == 0 {
+                        return Err(Error::SizeLimited);
+                    } else {
+                        break 'outer;
+                    }
+                }
 
-            if entry.resend {
-                let persistent_message = Rc::new(RefCell::new(PersistentMessage::new(entry.message)));
+                fbuilder.add(&entry.message);
 
-                persistent_messages.push(Rc::downgrade(&persistent_message));
+                let entry = self.message_queue.pop_front().unwrap();
 
-                self.resend_queue.push(ResendEntry::new(persistent_message, now_ms + rto_ms, 1));
+                if entry.resend {
+                    let persistent_message = Rc::new(RefCell::new(PersistentMessage::new(entry.message)));
+
+                    persistent_messages.push(Rc::downgrade(&persistent_message));
+
+                    self.resend_queue.push(resend_queue::Entry::new(persistent_message, now_ms + rto_ms, 1));
+                }
             }
         }
 
@@ -207,8 +146,7 @@ impl FrameQueue {
             return Err(Error::DataLimited);
         }
 
-        self.next_id = self.next_id.wrapping_add(1);
-        self.sent_frames.push_back(SentFrame {
+        self.frame_log.push(frame_id, frame_log::Entry {
             send_time_ms: now_ms,
             persistent_messages: persistent_messages.into(),
         });
@@ -217,43 +155,15 @@ impl FrameQueue {
     }
 
     pub fn acknowledge_frames(&mut self, ack: FrameAck) {
-        let mut ack_size = 0;
-        for i in (0 .. 32).rev() {
-            if ack.bitfield & (1 << i) != 0 {
-                ack_size = i + 1;
-                break;
-            }
-        }
-
-        for i in 0 .. ack_size {
-            if ack.bitfield & (1 << i) != 0 {
-                let frame_id = ack.base_id.wrapping_add(i);
-
-                if let Some(sent_frame) = self.sent_frames.get_mut(frame_id.wrapping_sub(self.base_id) as usize) {
-                    let persistent_messages = std::mem::take(&mut sent_frame.persistent_messages);
-
-                    for pmsg in persistent_messages.into_iter() {
-                        if let Some(pmsg) = pmsg.upgrade() {
-                            pmsg.borrow_mut().acknowledged = true;
-                        }
-                    }
-                }
-            }
-        }
+        self.frame_log.acknowledge_frames(ack);
     }
 
     pub fn forget_frames(&mut self, thresh_ms: u64) {
-        while let Some(frame) = self.sent_frames.front() {
-            if frame.send_time_ms < thresh_ms {
-                self.sent_frames.pop_front();
-                self.base_id = self.base_id.wrapping_add(1);
-            } else {
-                return;
-            }
-        }
+        self.frame_log.forget_frames(thresh_ms);
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::frame;
@@ -510,4 +420,5 @@ mod tests {
         verify_frame(fs.emit_frame(rto_ms + 9, rto_ms, MAX_SIZE_LIMIT), 6, vec![ msg1.clone() ]);
     }
 }
+*/
 
