@@ -1,4 +1,5 @@
 
+use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 use crate::MAX_TRANSFER_UNIT;
 use crate::SendMode;
 use crate::frame;
@@ -7,14 +8,13 @@ use crate::FrameSink;
 mod packet_sender;
 mod packet_receiver;
 
-mod frame_queue;
-mod frame_ack_queue;
-
-mod tfrc;
-
 mod frame_log;
 mod resend_queue;
 mod message_queue;
+
+mod tfrc;
+
+mod frame_ack_queue;
 
 /*
 #[cfg(test)]
@@ -23,14 +23,27 @@ mod packet_tests;
 
 use packet_receiver::PacketReceiver;
 use packet_sender::PacketSender;
-use frame_queue::FrameQueue;
 use frame_ack_queue::FrameAckQueue;
+
+use crate::frame::Message;
+use crate::frame::Datagram;
+use crate::frame::serial::MessageFrameBuilder;
 
 use std::time;
 
 use std::rc::Rc;
 use std::rc::Weak;
 use std::cell::RefCell;
+
+
+const MAX_SEND_COUNT: u8 = 4;
+
+#[derive(Debug,PartialEq)]
+pub enum Error {
+    WindowLimited,
+    DataLimited,
+    SizeLimited,
+}
 
 
 #[derive(Debug)]
@@ -52,6 +65,13 @@ pub type PersistentMessageRc = Rc<RefCell<PersistentMessage>>;
 pub type PersistentMessageWeak = Weak<RefCell<PersistentMessage>>;
 
 
+impl packet_sender::DatagramSink for message_queue::MessageQueue {
+    fn send(&mut self, datagram: Datagram, resend: bool) {
+        self.push_back(message_queue::Entry::new(Message::Datagram(datagram), resend));
+    }
+}
+
+
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8);
 }
@@ -60,7 +80,10 @@ pub struct DatenMeister {
     packet_sender: PacketSender,
     packet_receiver: PacketReceiver,
 
-    frame_queue: FrameQueue,
+    message_queue: message_queue::MessageQueue,
+    resend_queue: resend_queue::ResendQueue,
+    frame_log: frame_log::FrameLog,
+
     frame_ack_queue: FrameAckQueue,
 
     send_rate_comp: tfrc::SendRateComp,
@@ -79,7 +102,10 @@ impl DatenMeister {
             packet_sender: PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
             packet_receiver: PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
 
-            frame_queue: FrameQueue::new(tx_base_id),
+            message_queue: message_queue::MessageQueue::new(),
+            resend_queue: resend_queue::ResendQueue::new(),
+            frame_log: frame_log::FrameLog::new(tx_base_id),
+
             frame_ack_queue: FrameAckQueue::new(),
 
             send_rate_comp: tfrc::SendRateComp::new(tx_base_id),
@@ -92,7 +118,7 @@ impl DatenMeister {
     }
 
     pub fn is_send_pending(&self) -> bool {
-        self.packet_sender.pending_count() != 0 || self.frame_queue.pending_count() != 0
+        self.packet_sender.pending_count() != 0 || self.message_queue.len() != 0 || self.resend_queue.len() != 0
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
@@ -112,7 +138,7 @@ impl DatenMeister {
                     self.packet_receiver.handle_datagram(datagram);
                 }
                 frame::Message::Ack(ack) => {
-                    self.frame_queue.acknowledge_frames(ack.frames.clone());
+                    self.frame_log.acknowledge_frames(ack.frames.clone());
                     self.send_rate_comp.acknowledge_frames(ack.frames);
 
                     self.packet_sender.acknowledge(ack.receiver_base_id);
@@ -131,19 +157,17 @@ impl DatenMeister {
         let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(100);
 
         // Forget old frame data
-        self.frame_queue.forget_frames(now_ms.saturating_sub(rtt_ms*4));
+        self.frame_log.forget_frames(now_ms.saturating_sub(rtt_ms*4));
         self.send_rate_comp.forget_frames(now_ms.saturating_sub(rtt_ms*4));
 
         // Enqueue acknowledgements
         let packet_base_id = self.packet_receiver.base_id();
 
         while let Some(frame_ack) = self.frame_ack_queue.pop() {
-            let ack_message = frame::Message::Ack(frame::Ack {
+            self.enqueue_ack(frame::Ack {
                 frames: frame_ack,
                 receiver_base_id: packet_base_id,
             });
-
-            self.frame_queue.enqueue_message(ack_message, false);
         }
 
         // Update send rate value
@@ -164,7 +188,7 @@ impl DatenMeister {
 
         // Send as many frames as possible
         loop {
-            match self.frame_queue.emit_frame(&mut self.packet_sender, now_ms, rtt_ms, self.flush_alloc.min(MAX_TRANSFER_UNIT)) {
+            match self.emit_frame(now_ms, rtt_ms, self.flush_alloc.min(MAX_TRANSFER_UNIT)) {
                 Ok((frame_data, frame_id, nonce)) => {
                     let frame_size = frame_data.len();
 
@@ -175,14 +199,113 @@ impl DatenMeister {
                 }
                 Err(cond) => {
                     match cond {
-                        frame_queue::Error::WindowLimited => (),
-                        frame_queue::Error::SizeLimited => self.send_rate_comp.log_rate_limited(),
-                        frame_queue::Error::DataLimited => (),
+                        Error::WindowLimited => (),
+                        Error::SizeLimited => self.send_rate_comp.log_rate_limited(),
+                        Error::DataLimited => (),
                     }
                     break;
                 }
             }
         }
+    }
+
+    fn enqueue_ack(&mut self, ack: frame::Ack) {
+        // TODO: Separate ack queue
+        self.message_queue.push_back(message_queue::Entry::new(frame::Message::Ack(ack), false));
+    }
+
+    fn emit_frame(&mut self, now_ms: u64, rto_ms: u64, size_limit: usize) -> Result<(Box<[u8]>, u32, bool), Error> {
+        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
+            return Err(Error::WindowLimited);
+        }
+
+        let frame_id = self.frame_log.next_id();
+        let nonce = rand::random();
+
+        let mut fbuilder = MessageFrameBuilder::new(frame_id, nonce);
+        let mut persistent_messages = Vec::new();
+
+        while let Some(entry) = self.resend_queue.peek() {
+            if entry.resend_time > now_ms {
+                break;
+            }
+
+            if entry.persistent_message.borrow().acknowledged {
+                self.resend_queue.pop();
+                continue;
+            }
+
+            // TODO: If this message is a datagram, drop if beyond packet transfer window
+
+            {
+                let persistent_message = entry.persistent_message.borrow();
+
+                let encoded_size = MessageFrameBuilder::message_size(&persistent_message.message);
+
+                if fbuilder.size() + encoded_size > size_limit {
+                    if fbuilder.count() == 0 {
+                        return Err(Error::SizeLimited);
+                    } else {
+                        break;
+                    }
+                }
+
+                fbuilder.add(&persistent_message.message);
+            }
+
+            let entry = self.resend_queue.pop().unwrap();
+
+            persistent_messages.push(Rc::downgrade(&entry.persistent_message));
+
+            self.resend_queue.push(resend_queue::Entry::new(entry.persistent_message,
+                                                            now_ms + rto_ms*(1 << entry.send_count),
+                                                            (entry.send_count + 1).min(MAX_SEND_COUNT)));
+        }
+
+        'outer: loop {
+            if self.message_queue.is_empty() {
+                self.packet_sender.emit_packet_datagrams(&mut self.message_queue);
+                if self.message_queue.is_empty() {
+                    break 'outer;
+                }
+            }
+
+            while let Some(entry) = self.message_queue.front() {
+                let encoded_size = MessageFrameBuilder::message_size(&entry.message);
+
+                if fbuilder.size() + encoded_size > size_limit {
+                    if fbuilder.count() == 0 {
+                        return Err(Error::SizeLimited);
+                    } else {
+                        break 'outer;
+                    }
+                }
+
+                fbuilder.add(&entry.message);
+
+                let entry = self.message_queue.pop_front().unwrap();
+
+                if entry.resend {
+                    let persistent_message = Rc::new(RefCell::new(PersistentMessage::new(entry.message)));
+
+                    persistent_messages.push(Rc::downgrade(&persistent_message));
+
+                    self.resend_queue.push(resend_queue::Entry::new(persistent_message, now_ms + rto_ms, 1));
+                }
+            }
+        }
+
+        if fbuilder.count() == 0 {
+            // Nothing to send!
+            return Err(Error::DataLimited);
+        }
+
+        self.frame_log.push(frame_id, frame_log::Entry {
+            send_time_ms: now_ms,
+            persistent_messages: persistent_messages.into(),
+        });
+
+        return Ok((fbuilder.build(), frame_id, nonce));
     }
 }
 
