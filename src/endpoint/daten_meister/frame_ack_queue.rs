@@ -45,5 +45,9 @@ impl FrameAckQueue {
 
         return None;
     }
+
+    pub fn peek(&self) -> Option<&frame::FrameAck> {
+        self.entries.front()
+    }
 }
 

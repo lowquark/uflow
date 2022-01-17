@@ -49,24 +49,6 @@ pub struct FrameAck {
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct Ack {
-    pub frames: FrameAck,
-    pub receiver_base_id: u32,
-}
-
-#[derive(Clone,Debug,PartialEq)]
-pub struct Resync {
-    pub sender_next_id: u32,
-}
-
-#[derive(Clone,Debug,PartialEq)]
-pub enum Message {
-    Datagram(Datagram),
-    Ack(Ack),
-    Resync(Resync),
-}
-
-#[derive(Clone,Debug,PartialEq)]
 pub struct ConnectFrame {
     pub version: u8,
     pub nonce: u32,
@@ -89,10 +71,23 @@ pub struct DisconnectAckFrame {
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct MessageFrame {
+pub struct DataFrame {
     pub sequence_id: u32,
     pub nonce: bool,
-    pub messages: Vec<Message>,
+    pub datagrams: Vec<Datagram>,
+}
+
+#[derive(Clone,Debug,PartialEq)]
+pub struct SyncFrame {
+    pub sequence_id: u32,
+    pub nonce: bool,
+    pub sender_next_id: u32,
+}
+
+#[derive(Clone,Debug,PartialEq)]
+pub struct AckFrame {
+    pub receiver_base_id: u32,
+    pub frame_acks: Vec<FrameAck>,
 }
 
 #[derive(Clone,Debug,PartialEq)]
@@ -101,6 +96,8 @@ pub enum Frame {
     ConnectAckFrame(ConnectAckFrame),
     DisconnectFrame(DisconnectFrame),
     DisconnectAckFrame(DisconnectAckFrame),
-    MessageFrame(MessageFrame),
+    DataFrame(DataFrame),
+    SyncFrame(SyncFrame),
+    AckFrame(AckFrame),
 }
 

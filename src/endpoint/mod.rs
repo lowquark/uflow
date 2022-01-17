@@ -291,8 +291,14 @@ impl Endpoint {
 
                         self.enter_disconnected();
                     }
-                    frame::Frame::MessageFrame(message_frame) => {
-                        state.daten_meister.handle_message_frame(message_frame);
+                    frame::Frame::DataFrame(data_frame) => {
+                        state.daten_meister.handle_data_frame(data_frame);
+                    }
+                    frame::Frame::SyncFrame(sync_frame) => {
+                        state.daten_meister.handle_sync_frame(sync_frame);
+                    }
+                    frame::Frame::AckFrame(ack_frame) => {
+                        state.daten_meister.handle_ack_frame(ack_frame);
                     }
                     _ => ()
                 }

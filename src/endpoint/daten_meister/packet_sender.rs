@@ -151,6 +151,10 @@ impl PacketSender {
         self.packet_send_queue.len()
     }
 
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
     // Places a user packet on the send queue. Fails silently if the packet is impossible to send.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
         if data.len() > MAX_PACKET_SIZE {

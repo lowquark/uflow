@@ -1,13 +1,13 @@
 
 use crate::frame::FrameAck;
 
-use super::PersistentMessageWeak;
+use super::PersistentDatagramWeak;
 
 use std::collections::VecDeque;
 
 pub struct Entry {
     pub send_time_ms: u64,
-    pub persistent_messages: Box<[PersistentMessageWeak]>,
+    pub persistent_datagrams: Box<[PersistentDatagramWeak]>,
 }
 
 pub struct FrameLog {
@@ -54,9 +54,9 @@ impl FrameLog {
                 let frame_id = ack.base_id.wrapping_add(i);
 
                 if let Some(sent_frame) = self.frames.get_mut(frame_id.wrapping_sub(self.base_id) as usize) {
-                    let persistent_messages = std::mem::take(&mut sent_frame.persistent_messages);
+                    let persistent_datagrams = std::mem::take(&mut sent_frame.persistent_datagrams);
 
-                    for pmsg in persistent_messages.into_iter() {
+                    for pmsg in persistent_datagrams.into_iter() {
                         if let Some(pmsg) = pmsg.upgrade() {
                             pmsg.borrow_mut().acknowledged = true;
                         }

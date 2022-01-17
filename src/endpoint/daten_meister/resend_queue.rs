@@ -1,19 +1,19 @@
 
-use super::PersistentMessageRc;
+use super::PersistentDatagramRc;
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 #[derive(Debug)]
 pub struct Entry {
-    pub persistent_message: PersistentMessageRc,
+    pub persistent_datagram: PersistentDatagramRc,
     pub resend_time: u64,
     pub send_count: u8,
 }
 
 impl Entry {
-    pub fn new(persistent_message: PersistentMessageRc, resend_time: u64, send_count: u8) -> Self {
-        Self { persistent_message, resend_time, send_count }
+    pub fn new(persistent_datagram: PersistentDatagramRc, resend_time: u64, send_count: u8) -> Self {
+        Self { persistent_datagram, resend_time, send_count }
     }
 }
 
