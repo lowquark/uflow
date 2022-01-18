@@ -81,6 +81,7 @@ pub struct DatenMeister {
     time_data_sent_ms: Option<u64>,
 
     flush_alloc: usize,
+    flush_id: u32,
 }
 
 impl DatenMeister {
@@ -104,6 +105,7 @@ impl DatenMeister {
             time_data_sent_ms: None,
 
             flush_alloc: MAX_TRANSFER_UNIT,
+            flush_id: 0,
         }
     }
 
@@ -112,7 +114,7 @@ impl DatenMeister {
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
-        self.packet_sender.enqueue_packet(data, channel_id, mode);
+        self.packet_sender.enqueue_packet(data, channel_id, mode, self.flush_id);
     }
 
     pub fn receive(&mut self, sink: &mut impl PacketSink) {
@@ -155,6 +157,13 @@ impl DatenMeister {
         self.send_rate_comp.step(now_ms);
 
         // Fill flush allocation according to send rate
+        self.fill_flush_alloc(now);
+
+        // Send as many frames as possible
+        self.emit_frames(now_ms, rtt_ms, sink);
+    }
+
+    fn fill_flush_alloc(&mut self, now: time::Instant) {
         if let Some(time_last_flushed) = self.time_last_flushed {
             let send_rate = self.send_rate_comp.send_rate();
             let rtt_s = self.send_rate_comp.rtt_s();
@@ -166,12 +175,12 @@ impl DatenMeister {
             self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
         }
         self.time_last_flushed = Some(now);
-
-        // Send as many frames as possible
-        self.emit_frames(now_ms, rtt_ms, sink);
     }
 
     fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, sink: &mut impl FrameSink) {
+        let flush_id = self.flush_id;
+        self.flush_id = self.flush_id.wrapping_add(1);
+
         let sender_next_id = self.packet_sender.next_id();
         let receiver_base_id = self.packet_receiver.base_id();
 
@@ -179,7 +188,8 @@ impl DatenMeister {
                                                    &mut self.datagram_queue,
                                                    &mut self.resend_queue,
                                                    &mut self.frame_log,
-                                                   &mut self.frame_ack_queue);
+                                                   &mut self.frame_ack_queue,
+                                                   flush_id);
 
         let ref mut send_rate_comp = self.send_rate_comp;
         let ref mut time_data_sent_ms = self.time_data_sent_ms;

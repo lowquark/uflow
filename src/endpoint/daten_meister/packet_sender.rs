@@ -42,14 +42,16 @@ struct PacketSendEntry {
     data: Box<[u8]>,
     channel_id: u8,
     mode: SendMode,
+    flush_id: u32,
 }
 
 impl PacketSendEntry {
-    fn new(data: Box<[u8]>, channel_id: u8, mode: SendMode) -> Self {
+    fn new(data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) -> Self {
         Self {
             data,
             channel_id,
             mode,
+            flush_id,
         }
     }
 }
@@ -156,7 +158,7 @@ impl PacketSender {
     }
 
     // Places a user packet on the send queue. Fails silently if the packet is impossible to send.
-    pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
+    pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {
         if data.len() > MAX_PACKET_SIZE {
             return;
         }
@@ -167,12 +169,23 @@ impl PacketSender {
             return;
         }
 
-        self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode));
+        self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));
     }
 
     // Sends as many packets from the send queue as possible, respecting both the maximum
     // allocation limit, and the maximum transfer window.
-    pub fn emit_packet_datagrams(&mut self, sink: &mut impl DatagramSink) {
+    pub fn emit_packet_datagrams(&mut self, flush_id: u32, sink: &mut impl DatagramSink) {
+        while let Some(packet) = self.packet_send_queue.front() {
+            match packet.mode {
+                SendMode::TimeSensitive => {
+                    if packet.flush_id != flush_id {
+                        self.packet_send_queue.pop_front();
+                    }
+                }
+                _ => break
+            }
+        }
+
         if let Some(packet) = self.packet_send_queue.front() {
             if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_TRANSFER_WINDOW_SIZE {
                 return;
