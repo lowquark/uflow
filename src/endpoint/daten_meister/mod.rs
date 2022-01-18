@@ -178,10 +178,21 @@ impl DatenMeister {
         self.emit_data_frames(now_ms, rtt_ms, sink);
     }
 
+    fn log_frame_sent(&mut self, now_ms: u64, frame_id: u32, nonce: bool, size: usize, persistent_datagrams: Vec<PersistentDatagramWeak>) {
+        self.frame_log.push(frame_id, frame_log::Entry {
+            send_time_ms: now_ms,
+            persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+        });
+
+        self.send_rate_comp.log_frame(frame_id, nonce, size, now_ms);
+
+        self.time_data_sent_ms = Some(now_ms);
+    }
+
     fn emit_sync_frame(&mut self, now_ms: u64, timeout_ms: u64, sink: &mut impl FrameSink) {
         if let Some(time_data_sent_ms) = self.time_data_sent_ms {
             if now_ms - time_data_sent_ms >= timeout_ms {
-                if self.packet_sender.pending_count() == 0 && self.resend_queue.len() == 0 && self.datagram_queue.len() == 0 {
+                if self.resend_queue.len() == 0 && self.datagram_queue.len() == 0 {
                     if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
                         return;
                     }
@@ -199,14 +210,7 @@ impl DatenMeister {
                         self.flush_alloc -= frame_data.len();
                         sink.send(&frame_data);
 
-                        self.frame_log.push(frame_id, frame_log::Entry {
-                            send_time_ms: now_ms,
-                            persistent_datagrams: Box::new([]),
-                        });
-
-                        self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-                        self.time_data_sent_ms = Some(now_ms);
+                        self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), vec![]);
                     }
                 }
             }
@@ -274,6 +278,8 @@ impl DatenMeister {
         while let Some(entry) = self.resend_queue.peek() {
             let pmsg_ref = entry.persistent_datagram.borrow();
 
+            // TODO: Also drop if beyond packet transfer window
+
             if pmsg_ref.acknowledged {
                 std::mem::drop(pmsg_ref);
                 self.resend_queue.pop();
@@ -284,23 +290,16 @@ impl DatenMeister {
                 break;
             }
 
-            // TODO: Drop if beyond packet transfer window
-
             let encoded_size = DataFrameBuilder::encoded_size(&pmsg_ref.datagram);
             let potential_frame_size = fbuilder.size() + encoded_size;
 
             if potential_frame_size > self.flush_alloc {
+                std::mem::drop(pmsg_ref);
+
                 if fbuilder.count() > 0 {
                     let frame_data = fbuilder.build();
 
-                    self.frame_log.push(frame_id, frame_log::Entry {
-                        send_time_ms: now_ms,
-                        persistent_datagrams: persistent_datagrams.into(),
-                    });
-
-                    self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-                    self.time_data_sent_ms = Some(now_ms);
+                    self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
 
                     self.flush_alloc -= frame_data.len();
                     sink.send(&frame_data);
@@ -311,18 +310,12 @@ impl DatenMeister {
             }
 
             if potential_frame_size > MAX_TRANSFER_UNIT {
+                std::mem::drop(pmsg_ref);
                 debug_assert!(fbuilder.count() > 0);
 
                 let frame_data = fbuilder.build();
 
-                self.frame_log.push(frame_id, frame_log::Entry {
-                    send_time_ms: now_ms,
-                    persistent_datagrams: persistent_datagrams.into(),
-                });
-
-                self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-                self.time_data_sent_ms = Some(now_ms);
+                self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
 
                 self.flush_alloc -= frame_data.len();
                 sink.send(&frame_data);
@@ -367,14 +360,7 @@ impl DatenMeister {
                     if fbuilder.count() > 0 {
                         let frame_data = fbuilder.build();
 
-                        self.frame_log.push(frame_id, frame_log::Entry {
-                            send_time_ms: now_ms,
-                            persistent_datagrams: persistent_datagrams.into(),
-                        });
-
-                        self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-                        self.time_data_sent_ms = Some(now_ms);
+                        self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
 
                         self.flush_alloc -= frame_data.len();
                         sink.send(&frame_data);
@@ -389,14 +375,7 @@ impl DatenMeister {
 
                     let frame_data = fbuilder.build();
 
-                    self.frame_log.push(frame_id, frame_log::Entry {
-                        send_time_ms: now_ms,
-                        persistent_datagrams: persistent_datagrams.into(),
-                    });
-
-                    self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-                    self.time_data_sent_ms = Some(now_ms);
+                    self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
 
                     self.flush_alloc -= frame_data.len();
                     sink.send(&frame_data);
@@ -430,14 +409,7 @@ impl DatenMeister {
         if fbuilder.count() > 0 {
             let frame_data = fbuilder.build();
 
-            self.frame_log.push(frame_id, frame_log::Entry {
-                send_time_ms: now_ms,
-                persistent_datagrams: persistent_datagrams.into(),
-            });
-
-            self.send_rate_comp.log_frame(frame_id, nonce, frame_data.len(), now_ms);
-
-            self.time_data_sent_ms = Some(now_ms);
+            self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
 
             self.flush_alloc -= frame_data.len();
             sink.send(&frame_data);
