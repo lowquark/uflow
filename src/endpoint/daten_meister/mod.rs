@@ -1,5 +1,4 @@
 
-use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 use crate::MAX_TRANSFER_UNIT;
 use crate::SendMode;
 use crate::frame;
@@ -8,13 +7,14 @@ use crate::FrameSink;
 mod packet_sender;
 mod packet_receiver;
 
-mod frame_log;
-mod resend_queue;
 mod datagram_queue;
+mod resend_queue;
+mod frame_log;
+mod frame_ack_queue;
 
 mod tfrc;
 
-mod frame_ack_queue;
+mod emit_frame;
 
 /*
 #[cfg(test)]
@@ -26,17 +26,12 @@ use packet_sender::PacketSender;
 use frame_ack_queue::FrameAckQueue;
 
 use crate::frame::Datagram;
-use crate::frame::serial::DataFrameBuilder;
-use crate::frame::serial::AckFrameBuilder;
 
 use std::time;
 
 use std::rc::Rc;
 use std::rc::Weak;
 use std::cell::RefCell;
-
-
-const MAX_SEND_COUNT: u8 = 4;
 
 
 #[derive(Debug)]
@@ -173,246 +168,63 @@ impl DatenMeister {
         self.time_last_flushed = Some(now);
 
         // Send as many frames as possible
-        self.emit_sync_frame(now_ms, rtt_ms*4, sink);
-        self.emit_ack_frames(sink);
-        self.emit_data_frames(now_ms, rtt_ms, sink);
+        self.emit_frames(now_ms, rtt_ms, sink);
     }
 
-    fn log_frame_sent(&mut self, now_ms: u64, frame_id: u32, nonce: bool, size: usize, persistent_datagrams: Vec<PersistentDatagramWeak>) {
-        self.frame_log.push(frame_id, frame_log::Entry {
-            send_time_ms: now_ms,
-            persistent_datagrams: persistent_datagrams.into_boxed_slice(),
-        });
-
-        self.send_rate_comp.log_frame(frame_id, nonce, size, now_ms);
-
-        self.time_data_sent_ms = Some(now_ms);
-    }
-
-    fn emit_sync_frame(&mut self, now_ms: u64, timeout_ms: u64, sink: &mut impl FrameSink) {
-        if let Some(time_data_sent_ms) = self.time_data_sent_ms {
-            if now_ms - time_data_sent_ms >= timeout_ms {
-                if self.resend_queue.len() == 0 && self.datagram_queue.len() == 0 {
-                    if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                        return;
-                    }
-
-                    if self.flush_alloc >= frame::serial::SYNC_FRAME_SIZE {
-                        let frame_id = self.frame_log.next_id();
-                        let nonce = rand::random();
-                        let sender_next_id = self.packet_sender.next_id();
-
-                        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id: frame_id, nonce, sender_next_id });
-
-                        use frame::serial::Serialize;
-                        let frame_data = frame.write();
-
-                        self.flush_alloc -= frame_data.len();
-                        sink.send(&frame_data);
-
-                        self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), vec![]);
-                    }
-                }
-            }
-        }
-    }
-
-    fn emit_ack_frames(&mut self, sink: &mut impl FrameSink) {
+    fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, sink: &mut impl FrameSink) {
+        let sender_next_id = self.packet_sender.next_id();
         let receiver_base_id = self.packet_receiver.base_id();
 
-        let mut fbuilder = AckFrameBuilder::new(receiver_base_id);
+        let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
+                                                   &mut self.datagram_queue,
+                                                   &mut self.resend_queue,
+                                                   &mut self.frame_log,
+                                                   &mut self.frame_ack_queue);
 
-        while let Some(frame_ack) = self.frame_ack_queue.peek() {
-            let encoded_size = AckFrameBuilder::encoded_size(&frame_ack);
-            let potential_frame_size = fbuilder.size() + encoded_size;
+        let ref mut send_rate_comp = self.send_rate_comp;
+        let ref mut time_data_sent_ms = self.time_data_sent_ms;
 
-            if potential_frame_size > self.flush_alloc {
-                if fbuilder.count() > 0 {
-                    let frame_data = fbuilder.build();
+        if let Some(time_data_sent_ms) = time_data_sent_ms {
+            let sync_timeout_ms = rtt_ms*4;
 
-                    self.flush_alloc -= frame_data.len();
-                    sink.send(&frame_data);
-                }
+            if now_ms - *time_data_sent_ms >= sync_timeout_ms {
+                let (send_size, rate_limited) =
+                    fe.emit_sync_frame(sender_next_id, self.flush_alloc, |data, id, nonce| {
+                        send_rate_comp.log_frame(id, nonce, data.len(), now_ms);
+                        *time_data_sent_ms = now_ms;
+                        sink.send(&data);
+                    });
 
-                self.send_rate_comp.log_rate_limited();
-                return;
-            }
-
-            if potential_frame_size > MAX_TRANSFER_UNIT {
-                debug_assert!(fbuilder.count() > 0);
-
-                let frame_data = fbuilder.build();
-
-                self.flush_alloc -= frame_data.len();
-                sink.send(&frame_data);
-
-                fbuilder = AckFrameBuilder::new(receiver_base_id);
-
-                continue;
-            }
-
-            fbuilder.add(&frame_ack);
-
-            self.frame_ack_queue.pop();
-        }
-
-        if fbuilder.count() > 0 {
-            let frame_data = fbuilder.build();
-
-            self.flush_alloc -= frame_data.len();
-            sink.send(&frame_data);
-        }
-    }
-
-    fn emit_data_frames(&mut self, now_ms: u64, rtt_ms: u64, sink: &mut impl FrameSink) {
-        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-            return;
-        }
-
-        let mut frame_id = self.frame_log.next_id();
-        let mut nonce = rand::random();
-
-        let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
-        let mut persistent_datagrams = Vec::new();
-
-        while let Some(entry) = self.resend_queue.peek() {
-            let pmsg_ref = entry.persistent_datagram.borrow();
-
-            // TODO: Also drop if beyond packet transfer window
-
-            if pmsg_ref.acknowledged {
-                std::mem::drop(pmsg_ref);
-                self.resend_queue.pop();
-                continue;
-            }
-
-            if entry.resend_time > now_ms {
-                break;
-            }
-
-            let encoded_size = DataFrameBuilder::encoded_size(&pmsg_ref.datagram);
-            let potential_frame_size = fbuilder.size() + encoded_size;
-
-            if potential_frame_size > self.flush_alloc {
-                std::mem::drop(pmsg_ref);
-
-                if fbuilder.count() > 0 {
-                    let frame_data = fbuilder.build();
-
-                    self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
-
-                    self.flush_alloc -= frame_data.len();
-                    sink.send(&frame_data);
-                }
-
-                self.send_rate_comp.log_rate_limited();
-                return;
-            }
-
-            if potential_frame_size > MAX_TRANSFER_UNIT {
-                std::mem::drop(pmsg_ref);
-                debug_assert!(fbuilder.count() > 0);
-
-                let frame_data = fbuilder.build();
-
-                self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
-
-                self.flush_alloc -= frame_data.len();
-                sink.send(&frame_data);
-
-                if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                    return;
-                }
-
-                frame_id = self.frame_log.next_id();
-                nonce = rand::random();
-
-                fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                persistent_datagrams = Vec::new();
-                continue;
-            }
-
-            fbuilder.add(&pmsg_ref.datagram);
-
-            std::mem::drop(pmsg_ref);
-            let entry = self.resend_queue.pop().unwrap();
-
-            persistent_datagrams.push(Rc::downgrade(&entry.persistent_datagram));
-
-            self.resend_queue.push(resend_queue::Entry::new(entry.persistent_datagram,
-                                                            now_ms + rtt_ms*(1 << entry.send_count),
-                                                            (entry.send_count + 1).min(MAX_SEND_COUNT)));
-        }
-
-        'outer: loop {
-            if self.datagram_queue.is_empty() {
-                self.packet_sender.emit_packet_datagrams(&mut self.datagram_queue);
-                if self.datagram_queue.is_empty() {
-                    break 'outer;
-                }
-            }
-
-            while let Some(entry) = self.datagram_queue.front() {
-                let encoded_size = DataFrameBuilder::encoded_size(&entry.datagram);
-                let potential_frame_size = fbuilder.size() + encoded_size;
-
-                if potential_frame_size > self.flush_alloc {
-                    if fbuilder.count() > 0 {
-                        let frame_data = fbuilder.build();
-
-                        self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
-
-                        self.flush_alloc -= frame_data.len();
-                        sink.send(&frame_data);
-                    }
-
+                self.flush_alloc -= send_size;
+                if rate_limited {
                     self.send_rate_comp.log_rate_limited();
                     return;
                 }
-
-                if potential_frame_size > MAX_TRANSFER_UNIT {
-                    debug_assert!(fbuilder.count() > 0);
-
-                    let frame_data = fbuilder.build();
-
-                    self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
-
-                    self.flush_alloc -= frame_data.len();
-                    sink.send(&frame_data);
-
-                    if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                        return;
-                    }
-
-                    frame_id = self.frame_log.next_id();
-                    nonce = rand::random();
-
-                    fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                    persistent_datagrams = Vec::new();
-                    continue;
-                }
-
-                fbuilder.add(&entry.datagram);
-
-                let entry = self.datagram_queue.pop_front().unwrap();
-
-                if entry.resend {
-                    let persistent_datagram = Rc::new(RefCell::new(PersistentDatagram::new(entry.datagram)));
-
-                    persistent_datagrams.push(Rc::downgrade(&persistent_datagram));
-
-                    self.resend_queue.push(resend_queue::Entry::new(persistent_datagram, now_ms + rtt_ms, 1));
-                }
             }
         }
 
-        if fbuilder.count() > 0 {
-            let frame_data = fbuilder.build();
+        let (send_size, rate_limited) =
+            fe.emit_ack_frames(receiver_base_id, self.flush_alloc, |data| {
+                sink.send(&data);
+            });
 
-            self.log_frame_sent(now_ms, frame_id, nonce, frame_data.len(), persistent_datagrams);
+        self.flush_alloc -= send_size;
+        if rate_limited {
+            self.send_rate_comp.log_rate_limited();
+            return;
+        }
 
-            self.flush_alloc -= frame_data.len();
-            sink.send(&frame_data);
+        let (send_size, rate_limited) =
+            fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |data, id, nonce| {
+                send_rate_comp.log_frame(id, nonce, data.len(), now_ms);
+                *time_data_sent_ms = Some(now_ms);
+                sink.send(&data);
+            });
+
+        self.flush_alloc -= send_size;
+        if rate_limited {
+            self.send_rate_comp.log_rate_limited();
+            return;
         }
     }
 }
