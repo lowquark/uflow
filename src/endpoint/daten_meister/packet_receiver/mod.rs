@@ -334,7 +334,7 @@ mod tests {
     }
 
     impl super::PacketSink for TestPacketSink {
-        fn send(&mut self, packet: Box<[u8]>, channel_id: u8) {
+        fn send(&mut self, packet: Box<[u8]>, _channel_id: u8) {
             self.packets.push_back(packet);
         }
     }

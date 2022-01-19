@@ -1,9 +1,7 @@
 
 use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 use crate::MAX_TRANSFER_UNIT;
-
 use crate::frame;
-
 use crate::frame::serial::DataFrameBuilder;
 use crate::frame::serial::AckFrameBuilder;
 
@@ -12,13 +10,18 @@ use super::datagram_queue;
 use super::resend_queue;
 use super::frame_log;
 use super::frame_ack_queue;
-
 use super::PersistentDatagram;
 
 use std::rc::Rc;
 use std::cell::RefCell;
 
 const MAX_SEND_COUNT: u8 = 2;
+
+impl packet_sender::DatagramSink for datagram_queue::DatagramQueue {
+    fn send(&mut self, datagram: frame::Datagram, resend: bool) {
+        self.push_back(datagram_queue::Entry::new(datagram, resend));
+    }
+}
 
 pub struct FrameEmitter<'a> {
     packet_sender: &'a mut packet_sender::PacketSender,
@@ -216,6 +219,7 @@ impl<'a> FrameEmitter<'a> {
     }
 
     pub fn emit_sync_frame<F>(&mut self, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
+        // TODO: This check seems out of place
         if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
             return (0, false);
         }
@@ -268,7 +272,6 @@ impl<'a> FrameEmitter<'a> {
                 f(frame_data);
 
                 fbuilder = AckFrameBuilder::new(receiver_base_id);
-
                 continue;
             }
 
@@ -279,7 +282,6 @@ impl<'a> FrameEmitter<'a> {
 
         if fbuilder.count() > 0 {
             let frame_data = fbuilder.build();
-
             bytes_remaining -= frame_data.len();
             f(frame_data);
         }

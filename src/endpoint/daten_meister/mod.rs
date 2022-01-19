@@ -4,6 +4,11 @@ use crate::SendMode;
 use crate::frame;
 use crate::FrameSink;
 
+use std::time;
+use std::rc::Rc;
+use std::rc::Weak;
+use std::cell::RefCell;
+
 mod packet_sender;
 mod packet_receiver;
 
@@ -20,19 +25,6 @@ mod emit_frame;
 #[cfg(test)]
 mod packet_tests;
 */
-
-use packet_receiver::PacketReceiver;
-use packet_sender::PacketSender;
-use frame_ack_queue::FrameAckQueue;
-
-use crate::frame::Datagram;
-
-use std::time;
-
-use std::rc::Rc;
-use std::rc::Weak;
-use std::cell::RefCell;
-
 
 #[derive(Debug)]
 pub struct PersistentDatagram {
@@ -52,29 +44,20 @@ impl PersistentDatagram {
 pub type PersistentDatagramRc = Rc<RefCell<PersistentDatagram>>;
 pub type PersistentDatagramWeak = Weak<RefCell<PersistentDatagram>>;
 
-
-impl packet_sender::DatagramSink for datagram_queue::DatagramQueue {
-    fn send(&mut self, datagram: Datagram, resend: bool) {
-        self.push_back(datagram_queue::Entry::new(datagram, resend));
-    }
-}
-
-
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8);
 }
 
 pub struct DatenMeister {
-    packet_sender: PacketSender,
-    packet_receiver: PacketReceiver,
-
+    packet_sender: packet_sender::PacketSender,
     datagram_queue: datagram_queue::DatagramQueue,
     resend_queue: resend_queue::ResendQueue,
     frame_log: frame_log::FrameLog,
 
-    frame_ack_queue: FrameAckQueue,
-
     send_rate_comp: tfrc::SendRateComp,
+
+    packet_receiver: packet_receiver::PacketReceiver,
+    frame_ack_queue: frame_ack_queue::FrameAckQueue,
 
     time_base: time::Instant,
     time_last_flushed: Option<time::Instant>,
@@ -89,16 +72,15 @@ impl DatenMeister {
                tx_alloc_limit: usize, rx_alloc_limit: usize,
                tx_base_id: u32, rx_base_id: u32) -> Self {
         Self {
-            packet_sender: PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
-            packet_receiver: PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
-
+            packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
             datagram_queue: datagram_queue::DatagramQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
             frame_log: frame_log::FrameLog::new(tx_base_id),
 
-            frame_ack_queue: FrameAckQueue::new(),
-
             send_rate_comp: tfrc::SendRateComp::new(tx_base_id),
+
+            packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
+            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(),
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
@@ -241,14 +223,13 @@ impl DatenMeister {
 
 #[cfg(test)]
 mod tests {
-    use super::DatenMeister;
-    use super::SendMode;
+    use super::*;
 
     struct TestFrameSink {
         label: Box<str>,
     }
 
-    impl super::FrameSink for TestFrameSink {
+    impl FrameSink for TestFrameSink {
         fn send(&mut self, frame_bytes: &[u8]) {
             println!("{} -> {:?}", self.label, frame_bytes);
         }
