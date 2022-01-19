@@ -34,8 +34,7 @@ fn client_thread() {
     let params = uflow::EndpointParams::new()
         .max_tx_bandwidth(1_000_000)
         .max_rx_bandwidth(750_000)
-        .tx_channels(2)
-        .tx_channels_priority(0..1);
+        .tx_channels(2);
 
     let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut client = host.connect("127.0.0.1:8888".parse().unwrap());

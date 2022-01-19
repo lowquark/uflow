@@ -14,13 +14,11 @@ use daten_meister::DatenMeister;
 use rand;
 
 use std::time;
-use std::ops::Range;
 use std::collections::VecDeque;
 
 #[derive(Clone,Debug)]
 pub struct Params {
     pub tx_channels: usize,
-    pub tx_channels_priority: Range<usize>,
     pub max_rx_alloc: usize,
     pub max_tx_bandwidth: usize,
     pub max_rx_bandwidth: usize,
@@ -30,7 +28,6 @@ impl Params {
     pub fn new() -> Self {
         Self {
             tx_channels: 1,
-            tx_channels_priority: 0..0,
             max_rx_alloc: 1_000_000,
             max_tx_bandwidth: 10_000_000,
             max_rx_bandwidth: 10_000_000,
@@ -39,11 +36,6 @@ impl Params {
 
     pub fn tx_channels(mut self, tx_channels: usize) -> Params {
         self.tx_channels = tx_channels;
-        self
-    }
-
-    pub fn tx_channels_priority(mut self, tx_channels_priority: Range<usize>) -> Params {
-        self.tx_channels_priority = tx_channels_priority;
         self
     }
 
