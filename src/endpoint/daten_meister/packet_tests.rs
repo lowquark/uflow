@@ -133,3 +133,25 @@ fn min_max_packet_transfer() {
     assert_eq!(packet_sink.packets[0].0, packet_data);
 }
 
+#[test]
+fn null_packet_transfer() {
+    let mut sender = packet_sender::PacketSender::new(1, 10000, 0);
+    let mut receiver = packet_receiver::PacketReceiver::new(1, 10000, 0);
+
+    let packet_data = vec![].into_boxed_slice();
+    sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
+
+    let mut datagram_sink = TestDatagramSink::new();
+    sender.emit_packet_datagrams(0, &mut datagram_sink);
+
+    for (datagram, _) in datagram_sink.datagrams.into_iter() {
+        receiver.handle_datagram(datagram);
+    }
+
+    let mut packet_sink = TestPacketSink::new();
+    receiver.receive(&mut packet_sink);
+
+    assert_eq!(packet_sink.packets.len(), 1);
+    assert_eq!(packet_sink.packets[0].0, packet_data);
+}
+
