@@ -86,6 +86,7 @@ struct ConnectingState {
     connect_frame_remote: Option<frame::ConnectFrame>,
 
     initial_sends: VecDeque<SendEntry>,
+    max_tx_bandwidth: u32,
 }
 
 struct ConnectedState {
@@ -167,6 +168,7 @@ impl Endpoint {
             connect_frame_remote: None,
 
             initial_sends: VecDeque::new(),
+            max_tx_bandwidth: params.max_tx_bandwidth.min(u32::MAX as usize) as u32,
         });
 
         Self {
@@ -241,7 +243,8 @@ impl Endpoint {
                             if let Some(connect_frame_remote) = state.connect_frame_remote.take() {
                                 let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                self.enter_connected(connect_frame_local, connect_frame_remote, initial_sends);
+                                let max_tx_bandwidth = state.max_tx_bandwidth;
+                                self.enter_connected(connect_frame_local, connect_frame_remote, initial_sends, max_tx_bandwidth);
                             }
                         } else {
                             // The acknowledgement doesn't match our connection request id, fail lol
@@ -256,7 +259,8 @@ impl Endpoint {
                             if state.connect_ack_received {
                                 let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                self.enter_connected(connect_frame_local, frame, initial_sends);
+                                let max_tx_bandwidth = state.max_tx_bandwidth;
+                                self.enter_connected(connect_frame_local, frame, initial_sends, max_tx_bandwidth);
                             } else {
                                 // Wait for ack
                                 state.connect_frame_remote = Some(frame);
@@ -406,15 +410,24 @@ impl Endpoint {
         todo!()
     }
 
-    fn enter_connected(&mut self, connect_frame_local: frame::ConnectFrame, connect_frame_remote: frame::ConnectFrame, initial_sends: VecDeque<SendEntry>) {
-        let tx_channels = connect_frame_local.tx_channels_sup as usize + 1;
-        let rx_channels = connect_frame_remote.tx_channels_sup as usize + 1;
-        let tx_alloc_limit = connect_frame_remote.max_rx_alloc as usize;
-        let rx_alloc_limit = connect_frame_local.max_rx_alloc as usize;
-        let tx_base_id = connect_frame_local.nonce;
-        let rx_base_id = connect_frame_remote.nonce;
+    fn enter_connected(&mut self,
+                       local: frame::ConnectFrame,
+                       remote: frame::ConnectFrame,
+                       initial_sends: VecDeque<SendEntry>,
+                       max_tx_bandwidth: u32) {
+        // XXX TODO: Validate channel num!
+        let tx_channels = local.tx_channels_sup as usize + 1;
+        let rx_channels = remote.tx_channels_sup as usize + 1;
+        let tx_alloc_limit = remote.max_rx_alloc as usize;
+        let rx_alloc_limit = local.max_rx_alloc as usize;
+        let tx_base_id = local.nonce;
+        let rx_base_id = remote.nonce;
+        let tx_bandwidth_limit = max_tx_bandwidth.min(remote.max_rx_bandwidth);
 
-        let mut daten_meister = DatenMeister::new(tx_channels, rx_channels, tx_alloc_limit, rx_alloc_limit, tx_base_id, rx_base_id);
+        let mut daten_meister = DatenMeister::new(tx_channels, rx_channels,
+                                                  tx_alloc_limit, rx_alloc_limit,
+                                                  tx_base_id, rx_base_id,
+                                                  tx_bandwidth_limit);
 
         for send in initial_sends.into_iter() {
             daten_meister.send(send.data, send.channel_id, send.mode);

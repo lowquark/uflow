@@ -68,14 +68,15 @@ pub struct DatenMeister {
 impl DatenMeister {
     pub fn new(tx_channels: usize, rx_channels: usize,
                tx_alloc_limit: usize, rx_alloc_limit: usize,
-               tx_base_id: u32, rx_base_id: u32) -> Self {
+               tx_base_id: u32, rx_base_id: u32,
+               tx_bandwidth_limit: u32) -> Self {
         Self {
             packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
             datagram_queue: datagram_queue::DatagramQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
             frame_log: frame_log::FrameLog::new(tx_base_id),
 
-            send_rate_comp: tfrc::SendRateComp::new(tx_base_id),
+            send_rate_comp: tfrc::SendRateComp::new(tx_base_id, tx_bandwidth_limit),
 
             packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
             frame_ack_queue: frame_ack_queue::FrameAckQueue::new(),
@@ -216,30 +217,6 @@ impl DatenMeister {
             self.send_rate_comp.log_rate_limited();
             return;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestFrameSink {
-        label: Box<str>,
-    }
-
-    impl FrameSink for TestFrameSink {
-        fn send(&mut self, frame_bytes: &[u8]) {
-            println!("{} -> {:?}", self.label, frame_bytes);
-        }
-    }
-
-    #[test]
-    fn basic_test() {
-        let mut dm0 = DatenMeister::new(1, 1, 100000, 100000, 0, 0);
-        let mut sink0 = TestFrameSink { label: "DatenMeister 0".into() };
-
-        dm0.send(vec![0xBE, 0xEF].into_boxed_slice(), 0, SendMode::Reliable);
-        dm0.flush(&mut sink0);
     }
 }
 

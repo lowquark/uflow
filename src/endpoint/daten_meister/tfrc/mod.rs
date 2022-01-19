@@ -83,6 +83,8 @@ pub struct SendRateComp {
     send_rate_mode: SendRateMode,
     // Allowed transmit rate (X)
     send_rate: u32,
+    // Application specified maximum transmit rate
+    max_send_rate: u32,
 
     // Queue of receive rates reported by receiver (X_recv_set)
     recv_rate_set: RecvRateSet,
@@ -99,7 +101,7 @@ impl SendRateComp {
 
     const LOSS_INITIAL_RTT_MS: u64 = 100;
 
-    pub fn new(base_id: u32) -> Self {
+    pub fn new(base_id: u32, max_send_rate: u32) -> Self {
         Self {
             feedback_comp: feedback::FeedbackComp::new(base_id),
 
@@ -111,6 +113,7 @@ impl SendRateComp {
 
             send_rate_mode: SendRateMode::AwaitSend,
             send_rate: MSS as u32,
+            max_send_rate: max_send_rate.max(Self::INITIAL_RATE),
 
             recv_rate_set: RecvRateSet::new(),
 
@@ -218,7 +221,7 @@ impl SendRateComp {
             } else {
                 let max_val = self.recv_rate_set.data_limited_update(now_ms, recv_rate);
                 max_val.saturating_mul(2)
-            };
+            }.min(self.max_send_rate);
 
         self.prev_loss_rate = loss_rate;
 
@@ -255,6 +258,7 @@ impl SendRateComp {
 
                     if now_ms - state.time_last_doubled_ms >= rtt_ms {
                         self.send_rate = (2*self.send_rate).min(send_rate_limit).max(Self::INITIAL_RATE);
+
                         state.time_last_doubled_ms = now_ms;
                     }
                 } else {
