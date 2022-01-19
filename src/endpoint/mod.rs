@@ -107,10 +107,6 @@ enum State {
     Zombie,
 }
 
-fn compare_connect_info(remote_info: &frame::ConnectFrame, local_info: &frame::ConnectFrame) -> bool {
-    remote_info.tx_channels_sup == local_info.tx_channels_sup && remote_info.version == local_info.version
-}
-
 static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
 static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
 
@@ -229,6 +225,11 @@ impl Endpoint {
         }
     }
 
+    fn validate_handshake(remote_info: &frame::ConnectFrame) -> bool {
+        remote_info.tx_channels_sup as usize <= MAX_CHANNELS - 1 &&
+        remote_info.version == PROTOCOL_VERSION
+    }
+
     pub fn handle_frame(&mut self, frame: frame::Frame, sink: &mut impl FrameSink) {
         match self.state {
             State::Connecting(ref mut state) => {
@@ -252,7 +253,7 @@ impl Endpoint {
                         }
                     }
                     frame::Frame::ConnectFrame(frame) => {
-                        if compare_connect_info(&frame, &state.connect_frame) {
+                        if Self::validate_handshake(&frame) {
                             // Connection is possible, acknowledge request
                             sink.send(&frame::Frame::ConnectAckFrame(frame::ConnectAckFrame { nonce: frame.nonce }).write());
                             // Try to enter connected state
@@ -415,7 +416,6 @@ impl Endpoint {
                        remote: frame::ConnectFrame,
                        initial_sends: VecDeque<SendEntry>,
                        max_tx_bandwidth: u32) {
-        // XXX TODO: Validate channel num!
         let tx_channels = local.tx_channels_sup as usize + 1;
         let rx_channels = remote.tx_channels_sup as usize + 1;
         let tx_alloc_limit = remote.max_rx_alloc as usize;
