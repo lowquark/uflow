@@ -180,6 +180,8 @@ impl PacketSender {
                 SendMode::TimeSensitive => {
                     if packet.flush_id != flush_id {
                         self.packet_send_queue.pop_front();
+                    } else {
+                        break;
                     }
                 }
                 _ => break
@@ -284,18 +286,9 @@ impl PacketSender {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
-    use super::MAX_PACKET_TRANSFER_WINDOW_SIZE;
-    use super::MAX_FRAGMENT_SIZE;
-    use super::Datagram;
-    use super::FragmentId;
-
-    use super::PacketSender;
-    use super::SendMode;
-
-    use std::collections::VecDeque;
+    use super::*;
 
     fn new_packet_data(sequence_id: u32) -> Box<[u8]> {
         sequence_id.to_be_bytes().into()
@@ -340,7 +333,6 @@ mod tests {
 
     #[test]
     fn alloc_size_correct() {
-        use super::alloc_size;
         assert_eq!(alloc_size(0), 0);
         assert_eq!(alloc_size(1), 1);
         assert_eq!(alloc_size(  MAX_FRAGMENT_SIZE-1),   MAX_FRAGMENT_SIZE-1);
@@ -356,11 +348,14 @@ mod tests {
         let mut tx = PacketSender::new(1, 10000, 0);
         let mut sink = TestDatagramSink::new();
 
-        tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive);
-        tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable);
-        tx.enqueue_packet(new_packet_data(2), 0, SendMode::Resend);
-        tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable);
-        tx.emit_datagrams(&mut sink);
+        tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive, 0);
+        tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable, 0);
+        tx.enqueue_packet(new_packet_data(2), 0, SendMode::Resend, 0);
+        tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable, 0);
+
+        for _ in 0..4 {
+            tx.emit_packet_datagrams(0, &mut sink);
+        }
 
         assert_eq!(sink.pop(), (new_packet_datagram(0, 0, 0, 0), false));
         assert_eq!(sink.pop(), (new_packet_datagram(1, 0, 0, 0), false));
@@ -386,18 +381,20 @@ mod tests {
         let mut tx = PacketSender::new(2, 10000, 0);
         let mut sink = TestDatagramSink::new();
 
-        tx.enqueue_packet(new_packet_data(0), 1, SendMode::Unreliable);
-        tx.enqueue_packet(new_packet_data(1), 1, SendMode::Reliable);
-        tx.enqueue_packet(new_packet_data(2), 1, SendMode::Unreliable);
+        tx.enqueue_packet(new_packet_data(0), 1, SendMode::Unreliable, 0);
+        tx.enqueue_packet(new_packet_data(1), 1, SendMode::Reliable, 0);
+        tx.enqueue_packet(new_packet_data(2), 1, SendMode::Unreliable, 0);
 
-        tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable);
-        tx.enqueue_packet(new_packet_data(4), 0, SendMode::Unreliable);
-        tx.enqueue_packet(new_packet_data(5), 0, SendMode::Unreliable);
-        tx.enqueue_packet(new_packet_data(6), 0, SendMode::Reliable);
+        tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable, 0);
+        tx.enqueue_packet(new_packet_data(4), 0, SendMode::Unreliable, 0);
+        tx.enqueue_packet(new_packet_data(5), 0, SendMode::Unreliable, 0);
+        tx.enqueue_packet(new_packet_data(6), 0, SendMode::Reliable, 0);
 
-        tx.enqueue_packet(new_packet_data(7), 1, SendMode::Reliable);
+        tx.enqueue_packet(new_packet_data(7), 1, SendMode::Reliable, 0);
 
-        tx.emit_datagrams(&mut sink);
+        for _ in 0..8 {
+            tx.emit_packet_datagrams(0, &mut sink);
+        }
 
         assert_eq!(sink.pop(), (new_packet_datagram(0, 1, 0, 0), false));
         assert_eq!(sink.pop(), (new_packet_datagram(1, 1, 0, 0), true));
@@ -429,22 +426,26 @@ mod tests {
         let mut tx = PacketSender::new(2, 10000, 0);
         let mut sink = TestDatagramSink::new();
 
+        let mut flush_id = 0;
+
         for i in 0 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
             let ref_id = i*7;
 
             tx.acknowledge(ref_id);
 
-            tx.enqueue_packet(new_packet_data(ref_id + 0), 1, SendMode::Unreliable);
-            tx.enqueue_packet(new_packet_data(ref_id + 1), 1, SendMode::Reliable);
-            tx.enqueue_packet(new_packet_data(ref_id + 2), 1, SendMode::Unreliable);
+            tx.enqueue_packet(new_packet_data(ref_id + 0), 1, SendMode::Unreliable, flush_id);
+            tx.enqueue_packet(new_packet_data(ref_id + 1), 1, SendMode::Reliable, flush_id);
+            tx.enqueue_packet(new_packet_data(ref_id + 2), 1, SendMode::Unreliable, flush_id);
 
-            tx.enqueue_packet(new_packet_data(ref_id + 3), 0, SendMode::Reliable);
-            tx.enqueue_packet(new_packet_data(ref_id + 4), 0, SendMode::Unreliable);
-            tx.enqueue_packet(new_packet_data(ref_id + 5), 0, SendMode::Reliable);
+            tx.enqueue_packet(new_packet_data(ref_id + 3), 0, SendMode::Reliable, flush_id);
+            tx.enqueue_packet(new_packet_data(ref_id + 4), 0, SendMode::Unreliable, flush_id);
+            tx.enqueue_packet(new_packet_data(ref_id + 5), 0, SendMode::Reliable, flush_id);
 
-            tx.enqueue_packet(new_packet_data(ref_id + 6), 1, SendMode::Reliable);
+            tx.enqueue_packet(new_packet_data(ref_id + 6), 1, SendMode::Reliable, flush_id);
 
-            tx.emit_datagrams(&mut sink);
+            for _ in 0 .. 7 {
+                tx.emit_packet_datagrams(flush_id, &mut sink);
+            }
 
             assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 0, 1, 0, 0), false));
             assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 1, 1, 0, 0), true));
@@ -457,6 +458,8 @@ mod tests {
             assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 6, 1, 1, 5), true));
 
             assert!(sink.is_empty());
+
+            flush_id = flush_id.wrapping_add(1);
         }
     }
 
@@ -467,7 +470,7 @@ mod tests {
 
         let mut sink = TestDatagramSink::new();
 
-        emit_fragments(PacketSendEntry { data: Box::new([]), channel_id: 0, mode: SendMode::Unreliable }, 0, 0, 0, &mut sink);
+        emit_fragments(PacketSendEntry::new(Box::new([]), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
         assert_eq!(sink.pop(), (Datagram {
             sequence_id: 0,
@@ -482,7 +485,7 @@ mod tests {
 
         let packet_data = (0..MAX_FRAGMENT_SIZE).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
 
-        emit_fragments(PacketSendEntry { data: packet_data.clone(), channel_id: 0, mode: SendMode::Unreliable }, 0, 0, 0, &mut sink);
+        emit_fragments(PacketSendEntry::new(packet_data.clone(), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
         assert_eq!(sink.pop(), (Datagram {
             sequence_id: 0,
@@ -497,7 +500,7 @@ mod tests {
 
         let packet_data = (0..MAX_FRAGMENT_SIZE+1).map(|v| v as u8).collect::<Vec<_>>().into_boxed_slice();
 
-        emit_fragments(PacketSendEntry { data: packet_data.clone(), channel_id: 0, mode: SendMode::Unreliable }, 0, 0, 0, &mut sink);
+        emit_fragments(PacketSendEntry::new(packet_data.clone(), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
         assert_eq!(sink.pop(), (Datagram {
             sequence_id: 0,
@@ -519,6 +522,9 @@ mod tests {
 
         assert!(sink.is_empty());
     }
+
+    // TODO: Test transfer window limit
+    // TODO: Test allocation limit
+    // TODO: Test allocation size tracking
 }
-*/
 
