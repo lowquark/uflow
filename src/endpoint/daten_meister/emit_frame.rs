@@ -543,5 +543,167 @@ mod tests {
 
         test_data_frame(&frames[0], 0, vec![ dg0 ]);
     }
+
+    #[test]
+    fn basic_acknowledgement() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        let p0 = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p1 = vec![ 1; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p2 = vec![ 2; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+
+        ps.enqueue_packet(p0        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p1.clone(), 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p2        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p3        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p4        , 0, SendMode::Resend, 0);
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 5);
+
+        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11101, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg1 = Datagram {
+            sequence_id: 1,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p1,
+        };
+
+        test_data_frame(&frames[0], 5, vec![ dg1 ]);
+    }
+
+    #[test]
+    fn max_acknowledgement() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        for _ in 0..32 {
+            let packet_data = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+            ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
+        }
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 32);
+
+        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 0);
+    }
+
+    #[test]
+    fn multi_acknowledgement() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        for _ in 0..32 {
+            let packet_data = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+            ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
+        }
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 32);
+
+        fl.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
+        fl.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 0);
+    }
+
+    #[test]
+    fn forget_frames() {
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        let p0 = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p1 = vec![ 1; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p2 = vec![ 2; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+
+        ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, 0);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 0, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        ps.enqueue_packet(p1.clone(), 0, SendMode::Resend, 0);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 9, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        ps.enqueue_packet(p2, 0, SendMode::Resend, 0);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 10, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        ps.enqueue_packet(p3, 0, SendMode::Resend, 0);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 11, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        ps.enqueue_packet(p4, 0, SendMode::Resend, 0);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 12, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        fl.forget_frames(10);
+        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11111, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 2*rtt_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 2);
+
+        let dg0 = Datagram {
+            sequence_id: 0,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p0,
+        };
+
+        let dg1 = Datagram {
+            sequence_id: 1,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p1,
+        };
+
+        test_data_frame(&frames[0], 5, vec![ dg0 ]);
+        test_data_frame(&frames[1], 6, vec![ dg1 ]);
+    }
 }
 
