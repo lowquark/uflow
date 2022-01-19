@@ -3,35 +3,46 @@ use super::MAX_FRAGMENT_SIZE;
 
 pub struct FragmentBuffer {
     buffer: Box<[u8]>,
-    fragment_bits: Box<[bool]>,
+    fragment_bitfields: Box<[u64]>,
+    num_fragments: usize,
     fragments_remaining: usize,
     total_size: usize,
 }
 
 impl FragmentBuffer {
     pub fn new(num_fragments: usize) -> Self {
+        debug_assert!(num_fragments > 0);
+
         Self {
             buffer: vec![0; num_fragments * MAX_FRAGMENT_SIZE].into_boxed_slice(),
-            fragment_bits: vec![false; num_fragments].into_boxed_slice(),
+            fragment_bitfields: vec![0; (num_fragments + 63)/64].into_boxed_slice(),
+            num_fragments: num_fragments,
             fragments_remaining: num_fragments,
             total_size: 0,
         }
     }
 
     pub fn write(&mut self, idx: usize, data: Box<[u8]>) {
-        if !self.fragment_bits[idx] {
+        debug_assert!(idx < self.num_fragments);
+
+        let bitfield_idx = idx / 64;
+        let ref mut bitfield = self.fragment_bitfields[bitfield_idx];
+
+        let bit = idx % 64;
+
+        if *bitfield & (1 << bit) == 0 {
             let begin_idx = idx * MAX_FRAGMENT_SIZE;
 
             let end_idx = 
-                if idx == self.fragment_bits.len() - 1 {
+                if idx == self.num_fragments - 1 {
                     begin_idx + data.len()
                 } else {
-                    (idx + 1) * MAX_FRAGMENT_SIZE
+                    begin_idx + MAX_FRAGMENT_SIZE
                 };
 
             self.buffer[begin_idx..end_idx].copy_from_slice(&data);
 
-            self.fragment_bits[idx] = true;
+            *bitfield |= 1 << bit;
             self.fragments_remaining -= 1;
             self.total_size += data.len();
         }
