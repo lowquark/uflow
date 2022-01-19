@@ -50,8 +50,10 @@ fn random_packet_data(id: u32, size: usize) -> Box<[u8]> {
 }
 
 #[test]
-fn simple_random_transfer() {
-    const NUM_CHANNELS: usize = 64;
+fn random_transfer() {
+    use crate::MAX_CHANNELS;
+
+    const NUM_CHANNELS: usize = MAX_CHANNELS;
     const NUM_PACKETS: usize = 1000;
     const MAX_PACKET_SIZE: usize = 5000;
     const MAX_ALLOC_SIZE: usize = MAX_PACKET_SIZE*NUM_PACKETS;
@@ -83,11 +85,42 @@ fn simple_random_transfer() {
             _ => panic!()
         };
 
-        sender.enqueue_packet(packet, channel_id, send_mode);
+        sender.enqueue_packet(packet, channel_id, send_mode, 0);
     }
 
     let mut datagram_sink = TestDatagramSink::new();
-    sender.emit_datagrams(&mut datagram_sink);
+    loop {
+        sender.emit_packet_datagrams(0, &mut datagram_sink);
+
+        if datagram_sink.datagrams.is_empty() {
+            break;
+        }
+
+        let datagrams = std::mem::take(&mut datagram_sink.datagrams);
+
+        for (datagram, _) in datagrams.into_iter() {
+            receiver.handle_datagram(datagram);
+        }
+    }
+
+    let mut packet_sink = TestPacketSink::new();
+    receiver.receive(&mut packet_sink);
+
+    assert_eq!(packet_sink.packets, sent_packets);
+}
+
+#[test]
+fn min_max_packet_transfer() {
+    use crate::MAX_PACKET_SIZE;
+
+    let mut sender = packet_sender::PacketSender::new(1, MAX_PACKET_SIZE, 0);
+    let mut receiver = packet_receiver::PacketReceiver::new(1, MAX_PACKET_SIZE, 0);
+
+    let packet_data = random_packet_data(0, MAX_PACKET_SIZE);
+    sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
+
+    let mut datagram_sink = TestDatagramSink::new();
+    sender.emit_packet_datagrams(0, &mut datagram_sink);
 
     for (datagram, _) in datagram_sink.datagrams.into_iter() {
         receiver.handle_datagram(datagram);
@@ -96,6 +129,7 @@ fn simple_random_transfer() {
     let mut packet_sink = TestPacketSink::new();
     receiver.receive(&mut packet_sink);
 
-    assert_eq!(packet_sink.packets, sent_packets);
+    assert_eq!(packet_sink.packets.len(), 1);
+    assert_eq!(packet_sink.packets[0].0, packet_data);
 }
 

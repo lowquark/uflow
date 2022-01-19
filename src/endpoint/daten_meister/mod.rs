@@ -21,10 +21,8 @@ mod tfrc;
 
 mod emit_frame;
 
-/*
 #[cfg(test)]
 mod packet_tests;
-*/
 
 #[derive(Debug)]
 pub struct PersistentDatagram {

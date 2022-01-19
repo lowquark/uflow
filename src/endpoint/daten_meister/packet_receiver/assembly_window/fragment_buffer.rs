@@ -40,7 +40,7 @@ impl FragmentBuffer {
     pub fn finalize(mut self) -> Box<[u8]> {
         assert!(self.total_size <= self.buffer.len());
         let ptr = self.buffer.as_mut_ptr();
-        ::std::mem::forget(self.buffer);
+        std::mem::forget(self.buffer);
         unsafe { Box::from_raw(std::slice::from_raw_parts_mut(ptr, self.total_size)) }
     }
 
@@ -51,8 +51,7 @@ impl FragmentBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::FragmentBuffer;
-    use super::MAX_FRAGMENT_SIZE;
+    use super::*;
 
     #[test]
     fn single_fragment() {
@@ -93,6 +92,30 @@ mod tests {
         }
         assert_eq!(buf.is_finished(), false);
         buf.write(4, packet_data[4 * MAX_FRAGMENT_SIZE .. ].into());
+
+        assert_eq!(buf.is_finished(), true);
+        assert_eq!(buf.finalize(), packet_data);
+    }
+
+    #[test]
+    fn max_fragments() {
+        use crate::frame::serial::MAX_FRAGMENTS;
+
+        let mut buf = FragmentBuffer::new(MAX_FRAGMENTS);
+
+        let packet_data = (0..MAX_FRAGMENT_SIZE*MAX_FRAGMENTS).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
+
+        let mut indices = (0..MAX_FRAGMENTS).map(|i| i as u16).collect::<Vec<_>>();
+
+        for i in 0 ..= MAX_FRAGMENTS - 2 {
+            let j = i + rand::random::<usize>() % (MAX_FRAGMENTS - i);
+            indices.swap(i, j);
+        }
+
+        for i in 0 .. MAX_FRAGMENTS {
+            let idx = indices[i] as usize;
+            buf.write(idx, packet_data[idx * MAX_FRAGMENT_SIZE .. (idx + 1) * MAX_FRAGMENT_SIZE].into());
+        }
 
         assert_eq!(buf.is_finished(), true);
         assert_eq!(buf.finalize(), packet_data);
