@@ -65,7 +65,8 @@ impl Peer {
     }
 
     pub fn is_disconnected(&self) -> bool {
-        self.endpoint_ref.borrow().is_zombie() || self.endpoint_ref.borrow().is_disconnected()
+        let endpoint_ref = self.endpoint_ref.borrow();
+        return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();
     }
 
     pub fn is_zombie(&self) -> bool {
