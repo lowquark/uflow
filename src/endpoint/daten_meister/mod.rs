@@ -1,8 +1,9 @@
 
-use crate::MAX_TRANSFER_UNIT;
+use crate::MAX_FRAME_SIZE;
 use crate::SendMode;
 use crate::frame;
-use crate::FrameSink;
+
+use super::FrameSink;
 
 use std::time;
 use std::rc::Rc;
@@ -85,7 +86,7 @@ impl DatenMeister {
             time_last_flushed: None,
             time_data_sent_ms: None,
 
-            flush_alloc: MAX_TRANSFER_UNIT,
+            flush_alloc: MAX_FRAME_SIZE,
             flush_id: 0,
         }
     }
@@ -151,7 +152,7 @@ impl DatenMeister {
 
             let delta_time = (now - time_last_flushed).as_secs_f64();
             let new_bytes = (send_rate * delta_time).round() as usize;
-            let alloc_max = ((send_rate * rtt_s.unwrap_or(0.0)).round() as usize).max(MAX_TRANSFER_UNIT);
+            let alloc_max = ((send_rate * rtt_s.unwrap_or(0.0)).round() as usize).max(MAX_FRAME_SIZE);
 
             self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
         }

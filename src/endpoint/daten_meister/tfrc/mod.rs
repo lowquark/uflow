@@ -5,9 +5,10 @@ mod recv_rate_set;
 
 use recv_rate_set::RecvRateSet;
 
+use crate::MAX_FRAME_SIZE;
 use crate::frame::FrameAck;
 
-const MSS: usize = super::MAX_TRANSFER_UNIT;
+const MSS: usize = MAX_FRAME_SIZE;
 
 fn eval_rto_s(rtt_s: f64, send_rate: u32) -> f64 {
     (4.0*rtt_s).max((2*MSS) as f64/send_rate as f64)

@@ -1,6 +1,6 @@
 
 use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
-use crate::MAX_TRANSFER_UNIT;
+use crate::MAX_FRAME_SIZE;
 use crate::frame;
 use crate::frame::serial::DataFrameBuilder;
 use crate::frame::serial::AckFrameBuilder;
@@ -98,7 +98,7 @@ impl<'a> FrameEmitter<'a> {
                 return (max_send_size - bytes_remaining, true);
             }
 
-            if potential_frame_size > MAX_TRANSFER_UNIT {
+            if potential_frame_size > MAX_FRAME_SIZE {
                 std::mem::drop(pmsg_ref);
                 debug_assert!(fbuilder.count() > 0);
 
@@ -164,7 +164,7 @@ impl<'a> FrameEmitter<'a> {
                     return (max_send_size - bytes_remaining, true);
                 }
 
-                if potential_frame_size > MAX_TRANSFER_UNIT {
+                if potential_frame_size > MAX_FRAME_SIZE {
                     debug_assert!(fbuilder.count() > 0);
 
                     let frame_data = fbuilder.build();
@@ -269,7 +269,7 @@ impl<'a> FrameEmitter<'a> {
                 return (max_send_size - bytes_remaining, true);
             }
 
-            if potential_frame_size > MAX_TRANSFER_UNIT {
+            if potential_frame_size > MAX_FRAME_SIZE {
                 debug_assert!(fbuilder.count() > 0);
 
                 let frame_data = fbuilder.build();
@@ -413,8 +413,8 @@ mod tests {
         test_data_frame(&frames[0], 0, vec![ dg0 ]);
         test_data_frame(&frames[1], 1, vec![ dg1 ]);
 
-        assert_eq!(frames[0].data.len(), MAX_TRANSFER_UNIT);
-        assert_eq!(frames[1].data.len(), MAX_TRANSFER_UNIT);
+        assert_eq!(frames[0].data.len(), MAX_FRAME_SIZE);
+        assert_eq!(frames[1].data.len(), MAX_FRAME_SIZE);
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
@@ -444,43 +444,43 @@ mod tests {
         ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
 
         // Send path
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_TRANSFER_UNIT-1);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE-1);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
-        assert_eq!(size, MAX_TRANSFER_UNIT);
+        assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
-        assert_eq!(size, MAX_TRANSFER_UNIT);
+        assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
 
         // Resend path
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_TRANSFER_UNIT-1);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE-1);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
-        assert_eq!(size, MAX_TRANSFER_UNIT);
+        assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
-        assert_eq!(size, MAX_TRANSFER_UNIT);
+        assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
@@ -500,22 +500,22 @@ mod tests {
         let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
         ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 0, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 0, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 1, rtt_ms, MAX_TRANSFER_UNIT);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 1, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
 
         let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
 
         for time_ms in resend_times.iter() {
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms - 1, rtt_ms, MAX_TRANSFER_UNIT);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms - 1, rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 0);
 
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms    , rtt_ms, MAX_TRANSFER_UNIT);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms    , rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 1);
 
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms + 1, rtt_ms, MAX_TRANSFER_UNIT);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms + 1, rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 0);
         }
     }

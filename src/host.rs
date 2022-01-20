@@ -1,12 +1,9 @@
 
-use crate::MAX_TRANSFER_UNIT;
+use crate::MAX_FRAME_SIZE;
 use crate::frame;
 use crate::endpoint;
-use crate::ChannelId;
-use crate::FrameSink;
 use crate::SendMode;
-
-use frame::serial::Serialize;
+use crate::Event;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,13 +24,11 @@ impl<'a> UdpFrameSink<'a> {
     }
 }
 
-impl<'a> FrameSink for UdpFrameSink<'a> {
+impl<'a> endpoint::FrameSink for UdpFrameSink<'a> {
     fn send(&mut self, frame_data: &[u8]) {
         let _ = self.socket.send_to(frame_data, self.address);
     }
 }
-
-pub type Event = endpoint::Event;
 
 pub struct Peer {
     address: net::SocketAddr,
@@ -52,7 +47,7 @@ impl Peer {
         self.endpoint_ref.borrow_mut().poll_events()
     }
 
-    pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
+    pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
     }
 
@@ -82,14 +77,14 @@ pub struct Host {
     socket: net::UdpSocket,
 
     max_connections: usize,
-    endpoint_params: endpoint::Params,
+    incoming_params: endpoint::Params,
 
     endpoint_list: HashMap<net::SocketAddr, Rc<RefCell<endpoint::Endpoint>>>,
     new_clients: Vec<Peer>,
 }
 
 impl Host {
-    pub fn bind<A: net::ToSocketAddrs>(addr: A, max_connections: usize, endpoint_params: endpoint::Params) -> Result<Host, std::io::Error> {
+    pub fn bind<A: net::ToSocketAddrs>(addr: A, max_connections: usize, incoming_params: endpoint::Params) -> Result<Host, std::io::Error> {
         let socket = net::UdpSocket::bind(addr)?;
 
         socket.set_nonblocking(true)?;
@@ -101,19 +96,19 @@ impl Host {
             new_clients: Vec::new(),
 
             max_connections,
-            endpoint_params,
+            incoming_params,
         })
     }
 
-    pub fn bind_any(max_connections: usize, endpoint_params: endpoint::Params) -> Result<Host, std::io::Error> {
-        Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, endpoint_params)
+    pub fn bind_any(max_connections: usize, incoming_params: endpoint::Params) -> Result<Host, std::io::Error> {
+        Host::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_params)
     }
 
     // TODO: It would be possible to use special endpoint parameters here
     // As a bonus, if self.endpoint_params were set to None, incoming connections would not be accepted
     // TODO: Also need to consider how max_connections is interpreted w.r.t. outgoing connections
     pub fn connect(&mut self, addr: net::SocketAddr) -> Peer {
-        let endpoint = endpoint::Endpoint::new(self.endpoint_params.clone());
+        let endpoint = endpoint::Endpoint::new(self.incoming_params.clone());
 
         let endpoint_ref = Rc::new(RefCell::new(endpoint));
         self.endpoint_list.insert(addr, endpoint_ref.clone());
@@ -121,28 +116,34 @@ impl Host {
         return Peer::new(addr, endpoint_ref);
     }
 
+    pub fn handle_frame(&mut self, src_addr: net::SocketAddr, frame: frame::Frame) {
+        let mut data_sink = UdpFrameSink::new(&self.socket, src_addr);
+
+        match self.endpoint_list.get_mut(&src_addr) {
+            Some(endpoint) => {
+                endpoint.borrow_mut().handle_frame(frame, &mut data_sink);
+            }
+            None => {
+                if self.endpoint_list.len() < self.max_connections as usize {
+                    let mut endpoint = endpoint::Endpoint::new(self.incoming_params.clone());
+                    endpoint.handle_frame(frame, &mut data_sink);
+
+                    let endpoint_ref = Rc::new(RefCell::new(endpoint));
+                    self.endpoint_list.insert(src_addr, Rc::clone(&endpoint_ref));
+                    self.new_clients.push(Peer::new(src_addr, endpoint_ref));
+                }
+            }
+        }
+    }
+
     pub fn step(&mut self) {
-        let mut recv_buf = [0; MAX_TRANSFER_UNIT];
+        let mut recv_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((recv_size, src_addr)) = self.socket.recv_from(&mut recv_buf) {
+            use frame::serial::Serialize;
+
             if let Some(frame) = frame::Frame::read(&recv_buf[..recv_size]) {
-                let mut data_sink = UdpFrameSink::new(&self.socket, src_addr);
-
-                match self.endpoint_list.get_mut(&src_addr) {
-                    Some(endpoint) => {
-                        endpoint.borrow_mut().handle_frame(frame, &mut data_sink);
-                    }
-                    None => {
-                        if self.endpoint_list.len() < self.max_connections as usize {
-                            let mut endpoint = endpoint::Endpoint::new(self.endpoint_params.clone());
-                            endpoint.handle_frame(frame, &mut data_sink);
-
-                            let endpoint_ref = Rc::new(RefCell::new(endpoint));
-                            self.endpoint_list.insert(src_addr, Rc::clone(&endpoint_ref));
-                            self.new_clients.push(Peer::new(src_addr, endpoint_ref));
-                        }
-                    }
-                }
+                self.handle_frame(src_addr, frame);
             }
         }
 

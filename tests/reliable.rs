@@ -130,7 +130,7 @@ fn server_thread() -> Vec<md5::Digest> {
                     uflow::Event::Receive(data, channel_id) => {
                         //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
 
-                        let ref mut packet_id_expected = packet_ids[channel_id as usize];
+                        let ref mut packet_id_expected = packet_ids[channel_id];
 
                         let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
@@ -138,7 +138,7 @@ fn server_thread() -> Vec<md5::Digest> {
                             panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
                         }
 
-                        all_data[channel_id as usize].extend_from_slice(&data);
+                        all_data[channel_id].extend_from_slice(&data);
                         *packet_id_expected += 1;
                     }
                     uflow::Event::Disconnect => {
@@ -168,10 +168,10 @@ fn client_thread() -> Vec<md5::Digest> {
     let mut host = uflow::Host::bind_any(1, params).unwrap();
     let mut server_peer = host.connect("127.0.0.1:9001".parse().unwrap());
 
-    // Send data at 20 * 1472/3 B / 0.015 s = 654.2kB/s
+    // Send data at ~= 6 * 1500 B / 0.015 s = 600kB/s
     let num_steps = 200;
-    let packets_per_step = 20;
-    let packet_size = uflow::MAX_TRANSFER_UNIT/3;
+    let packets_per_step = 6;
+    let packet_size = uflow::MAX_FRAGMENT_SIZE;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
@@ -190,13 +190,13 @@ fn client_thread() -> Vec<md5::Digest> {
         }
 
         for _ in 0..packets_per_step {
-            let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
-            let ref mut packet_id = packet_ids[channel_id as usize];
+            let channel_id = rand::random::<usize>() % NUM_CHANNELS;
+            let ref mut packet_id = packet_ids[channel_id];
 
             let mut data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
             data[0..4].clone_from_slice(&packet_id.to_be_bytes());
 
-            all_data[channel_id as usize].extend_from_slice(&data);
+            all_data[channel_id].extend_from_slice(&data);
             server_peer.send(data, channel_id, uflow::SendMode::Reliable);
 
             println!("[client] sent packet {} on channel {}", packet_id, channel_id);

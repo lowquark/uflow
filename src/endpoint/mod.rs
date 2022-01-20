@@ -1,12 +1,11 @@
 
 mod daten_meister;
 
-use crate::frame;
-use crate::ChannelId;
-use crate::FrameSink;
 use crate::MAX_CHANNELS;
 use crate::PROTOCOL_VERSION;
+use crate::frame;
 use crate::SendMode;
+use crate::Event;
 
 use frame::serial::Serialize;
 use daten_meister::DatenMeister;
@@ -15,6 +14,10 @@ use rand;
 
 use std::time;
 use std::collections::VecDeque;
+
+pub trait FrameSink {
+    fn send(&mut self, frame_data: &[u8]);
+}
 
 #[derive(Clone,Debug)]
 pub struct Params {
@@ -53,14 +56,6 @@ impl Params {
         self.max_rx_bandwidth = bandwidth;
         self
     }
-}
-
-#[derive(Clone,Debug,PartialEq)]
-pub enum Event {
-    Connect,
-    Disconnect,
-    Receive(Box<[u8]>, ChannelId),
-    Timeout,
 }
 
 #[derive(Debug)]
@@ -121,7 +116,7 @@ impl<'a> EventPacketSink<'a> {
 
 impl<'a> daten_meister::PacketSink for EventPacketSink<'a> {
     fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8) {
-        self.event_queue.push_back(Event::Receive(packet_data, channel_id));
+        self.event_queue.push_back(Event::Receive(packet_data, channel_id as usize));
     }
 }
 
@@ -132,6 +127,7 @@ pub struct Endpoint {
 
     watchdog_time: time::Instant,
 
+    tx_channels: usize,
     was_connected: bool,
 }
 
@@ -166,17 +162,20 @@ impl Endpoint {
 
             watchdog_time: time::Instant::now(),
 
+            tx_channels: params.tx_channels,
             was_connected: false,
         }
     }
 
-    pub fn send(&mut self, data: Box<[u8]>, channel_id: ChannelId, mode: SendMode) {
+    pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
+        assert!(channel_id < self.tx_channels, "Channel ID exceeds maximum");
+
         match self.state {
             State::Connecting(ref mut state) => {
-                state.initial_sends.push_back(SendEntry { data, channel_id, mode });
+                state.initial_sends.push_back(SendEntry { data, channel_id: channel_id as u8, mode });
             }
             State::Connected(ref mut state) => {
-                state.daten_meister.send(data, channel_id, mode);
+                state.daten_meister.send(data, channel_id as u8, mode);
             }
             _ => (),
         }

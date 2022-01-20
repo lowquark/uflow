@@ -1,37 +1,74 @@
 
-pub mod host;
-pub mod frame;
+//! `uflow` is a connection-based layer over UDP that provides a loss-tolerant packet streaming
+//! interface, designed primarily for use in real-time, multiplayer games. It manages connection
+//! state, packet sequencing, packet fragmentation/reassembly, and congestion control to produce a
+//! simple and robust data link for real-time applications.
+//!
+//! # Creating a Connection
+//!
+//! # Sending Data
+//!
+//! # Closing a Connection
+//!
+
+mod frame;
+mod host;
 mod endpoint;
 
 pub use host::Host;
 pub use host::Peer;
 pub use endpoint::Params as EndpointParams;
-pub use host::Event;
 
+/// The current protocol version ID.
 pub const PROTOCOL_VERSION: u8 = 0;
 
+/// The maximum number of channels which may be used on a given connection.
 pub const MAX_CHANNELS: usize = frame::serial::MAX_CHANNELS;
 
-pub const MAX_ETHERNET_FRAME_SIZE: usize = 1500;
+/// The maximum transfer unit (MTU) of the internet.
+pub const INTERNET_MTU: usize = 1500;
+
+/// The number of header bytes of a UDP packet (including the IP header).
 pub const UDP_HEADER_SIZE: usize = 28;
-pub const MAX_TRANSFER_UNIT: usize = MAX_ETHERNET_FRAME_SIZE - UDP_HEADER_SIZE;
-pub const MAX_FRAGMENT_SIZE: usize = MAX_TRANSFER_UNIT - frame::serial::MAX_DATAGRAM_OVERHEAD - frame::serial::DATA_FRAME_OVERHEAD;
+
+/// The maximum size of a `uflow` frame in bytes, according to the internet MTU (1500 bytes) and
+/// UDP header size (28 bytes).
+pub const MAX_FRAME_SIZE: usize = INTERNET_MTU - UDP_HEADER_SIZE;
+
+/// The maximum size of a packet fragment in bytes, according to frame serialization overhead.
+pub const MAX_FRAGMENT_SIZE: usize = MAX_FRAME_SIZE - frame::serial::MAX_DATAGRAM_OVERHEAD - frame::serial::DATA_FRAME_OVERHEAD;
+
+/// The absolute maximum size of a packet, in bytes.
 pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGMENTS;
 
 const MAX_PACKET_TRANSFER_WINDOW_SIZE: u32 = 4096;
 const MAX_FRAME_TRANSFER_WINDOW_SIZE: u32 = 16384;
 
-pub type ChannelId = u8;
-
+/// An enum representing the mode with which a packet is sent.
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SendMode {
+    ///   The packet will be sent at most once. If the packet cannot be sent immediately (i.e.
+    ///   during the next call to [`Host::flush`](Host::flush)), it will be discarded rather than
+    ///   remain in a send queue. If the packet is dropped, or a subsequent packet arrives on the
+    ///   same channel before it does, the receiver may skip this packet.
     TimeSensitive,
+    ///   The packet will be sent exactly once. If the packet is dropped, or a subsequent packet
+    ///   arrives on the same channel before it does, the receiver may skip this packet.
     Unreliable,
+    ///   The packet will be sent and resent until acknowledged by the receiver. If a subsequent
+    ///   packet arrives on the same channel before it does, the receiver may skip this packet. (In
+    ///   general, the packet will cease to be resent once the sender has detected a skip.)
     Resend,
+    ///   The packet will be sent until acknowledged by the receiver. The receiver will not deliver
+    ///   subsequent packets on the same channel until the packet has been received.
     Reliable,
 }
 
-pub trait FrameSink {
-    fn send(&mut self, frame_data: &[u8]);
+#[derive(Clone,Debug,PartialEq)]
+pub enum Event {
+    Connect,
+    Disconnect,
+    Receive(Box<[u8]>, usize),
+    Timeout,
 }
 
