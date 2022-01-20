@@ -105,7 +105,7 @@ static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
 static CONNECTING_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
 static CONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
 static DISCONNECTING_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(3000);
-static DISCONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(30000);
+static DISCONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
 
 struct EventPacketSink<'a> {
     event_queue: &'a mut VecDeque::<Event>,
@@ -390,6 +390,13 @@ impl Endpoint {
         }
 
         std::mem::take(&mut self.event_queue).into_iter()
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        match self.state {
+            State::Disconnected => true,
+            _ => false,
+        }
     }
 
     pub fn is_zombie(&self) -> bool {

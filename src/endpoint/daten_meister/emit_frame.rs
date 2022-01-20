@@ -218,7 +218,7 @@ impl<'a> FrameEmitter<'a> {
         return (max_send_size - bytes_remaining, false);
     }
 
-    pub fn emit_sync_frame<F>(&mut self, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
+    pub fn emit_sync_frame<F>(&mut self, now_ms: u64, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
         // TODO: This check seems out of place
         if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
             return (0, false);
@@ -232,15 +232,20 @@ impl<'a> FrameEmitter<'a> {
             return (0, true);
         }
 
-        let sequence_id = self.frame_log.next_id();
+        let frame_id = self.frame_log.next_id();
         let nonce = rand::random();
 
-        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id, nonce, sender_next_id });
+        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id: frame_id, nonce, sender_next_id });
 
         use frame::serial::Serialize;
         let frame_data = frame.write();
 
-        f(frame_data, sequence_id, nonce);
+        f(frame_data, frame_id, nonce);
+
+        self.frame_log.push(frame_id, frame_log::Entry {
+            send_time_ms: now_ms,
+            persistent_datagrams: Box::new([]),
+        });
 
         return (frame::serial::SYNC_FRAME_SIZE, false);
     }

@@ -180,7 +180,7 @@ impl DatenMeister {
 
             if now_ms - *time_data_sent_ms >= sync_timeout_ms {
                 let (send_size, rate_limited) =
-                    fe.emit_sync_frame(sender_next_id, self.flush_alloc, |data, id, nonce| {
+                    fe.emit_sync_frame(now_ms, sender_next_id, self.flush_alloc, |data, id, nonce| {
                         send_rate_comp.log_frame(id, nonce, data.len(), now_ms);
                         *time_data_sent_ms = now_ms;
                         sink.send(&data);

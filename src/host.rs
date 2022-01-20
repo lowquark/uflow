@@ -64,6 +64,10 @@ impl Peer {
         self.address
     }
 
+    pub fn is_disconnected(&self) -> bool {
+        self.endpoint_ref.borrow().is_zombie() || self.endpoint_ref.borrow().is_disconnected()
+    }
+
     pub fn is_zombie(&self) -> bool {
         self.endpoint_ref.borrow().is_zombie()
     }
