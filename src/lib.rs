@@ -1,8 +1,8 @@
 
 //! `uflow` is a connection-based layer over UDP that provides a loss-tolerant packet streaming
 //! interface, designed primarily for use in real-time, multiplayer games. It manages connection
-//! state, packet sequencing, packet fragmentation/reassembly, and congestion control to produce a
-//! simple and robust data link for real-time applications.
+//! state, congestion control, sequencing, and packet fragmentation to produce a simple and robust
+//! data link for real-time applications.
 //!
 //! # Creating a Connection
 //!
@@ -11,13 +11,17 @@
 //! # Closing a Connection
 //!
 
-mod frame;
-mod host;
+mod client;
 mod endpoint;
+mod frame;
+mod peer;
+mod server;
+mod udp_frame_sink;
 
-pub use host::Host;
-pub use host::Peer;
-pub use endpoint::Params as EndpointParams;
+pub use server::Server;
+pub use client::Client;
+pub use peer::Peer;
+pub use endpoint::Cfg as EndpointCfg;
 
 /// The current protocol version ID.
 pub const PROTOCOL_VERSION: u8 = 0;
@@ -48,9 +52,10 @@ const MAX_FRAME_TRANSFER_WINDOW_SIZE: u32 = 16384;
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SendMode {
     ///   The packet will be sent at most once. If the packet cannot be sent immediately (i.e.
-    ///   during the next call to [`Host::flush`](Host::flush)), it will be discarded rather than
-    ///   remain in a send queue. If the packet is dropped, or a subsequent packet arrives on the
-    ///   same channel before it does, the receiver may skip this packet.
+    ///   during the next call to [`Client::flush`](Client::flush) or
+    ///   [`Server::flush`](Server::flush)), it will be discarded rather than remain in a send
+    ///   queue. If the packet is dropped, or a subsequent packet arrives on the same channel
+    ///   before it does, the receiver may skip this packet.
     TimeSensitive,
     ///   The packet will be sent exactly once. If the packet is dropped, or a subsequent packet
     ///   arrives on the same channel before it does, the receiver may skip this packet.

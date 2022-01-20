@@ -20,14 +20,14 @@ pub trait FrameSink {
 }
 
 #[derive(Clone,Debug)]
-pub struct Params {
+pub struct Cfg {
     pub tx_channels: usize,
     pub max_rx_alloc: usize,
     pub max_tx_bandwidth: usize,
     pub max_rx_bandwidth: usize,
 }
 
-impl Params {
+impl Cfg {
     pub fn new() -> Self {
         Self {
             tx_channels: 1,
@@ -37,22 +37,22 @@ impl Params {
         }
     }
 
-    pub fn tx_channels(mut self, tx_channels: usize) -> Params {
+    pub fn tx_channels(mut self, tx_channels: usize) -> Cfg {
         self.tx_channels = tx_channels;
         self
     }
 
-    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Params {
+    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Cfg {
         self.max_rx_alloc = max_rx_alloc;
         self
     }
 
-    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Params {
+    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Cfg {
         self.max_tx_bandwidth = bandwidth;
         self
     }
 
-    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Params {
+    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Cfg {
         self.max_rx_bandwidth = bandwidth;
         self
     }
@@ -132,15 +132,15 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub fn new(params: Params) -> Self {
-        assert!(params.tx_channels > 0, "Must have at least one channel");
-        assert!(params.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
+    pub fn new(cfg: Cfg) -> Self {
+        assert!(cfg.tx_channels > 0, "Must have at least one channel");
+        assert!(cfg.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
-            tx_channels_sup: (params.tx_channels - 1) as u8,
-            max_rx_alloc: params.max_rx_alloc.min(u32::MAX as usize) as u32,
-            max_rx_bandwidth: params.max_rx_bandwidth.min(u32::MAX as usize) as u32,
+            tx_channels_sup: (cfg.tx_channels - 1) as u8,
+            max_rx_alloc: cfg.max_rx_alloc.min(u32::MAX as usize) as u32,
+            max_rx_bandwidth: cfg.max_rx_bandwidth.min(u32::MAX as usize) as u32,
             nonce: rand::random::<u32>(),
         };
 
@@ -152,7 +152,7 @@ impl Endpoint {
             connect_frame_remote: None,
 
             initial_sends: VecDeque::new(),
-            max_tx_bandwidth: params.max_tx_bandwidth.min(u32::MAX as usize) as u32,
+            max_tx_bandwidth: cfg.max_tx_bandwidth.min(u32::MAX as usize) as u32,
         });
 
         Self {
@@ -162,7 +162,7 @@ impl Endpoint {
 
             watchdog_time: time::Instant::now(),
 
-            tx_channels: params.tx_channels,
+            tx_channels: cfg.tx_channels,
             was_connected: false,
         }
     }

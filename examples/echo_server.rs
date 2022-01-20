@@ -1,20 +1,20 @@
 
 fn main() {
     // The server will send data on two transmission channels
-    let params = uflow::EndpointParams::new()
+    let cfg = uflow::EndpointCfg::new()
         .tx_channels(2);
 
-    // Create a host object bound to localhost on port 8888, with a maximum of 8 concurrent connections
-    let mut host = uflow::Host::bind("127.0.0.1:8888", 8, params).unwrap();
+    // Create a server object bound to localhost on port 8888, with a maximum of 8 concurrent connections
+    let mut server = uflow::Server::bind("127.0.0.1:8888", 8, cfg).unwrap();
 
     // List of active connections
     let mut clients = Vec::new();
 
     loop {
         // Process inbound UDP frames
-        host.step();
+        server.step();
 
-        for client in host.incoming() {
+        for client in server.incoming() {
             // Add each incoming connection to the client list
             println!("[{:?}] appeared", client.address());
             clients.push(client);
@@ -49,7 +49,7 @@ fn main() {
         }
 
         // Flush outbound UDP frames
-        host.flush();
+        server.flush();
 
         // Forget clients which have disconnected
         clients.retain(|client| !client.is_disconnected());

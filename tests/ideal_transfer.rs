@@ -6,31 +6,31 @@ use std::convert::TryInto;
 const NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = uflow::EndpointParams::new()
+    let cfg = uflow::EndpointCfg::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
-    let mut clients = Vec::new();
+    let mut server = uflow::Server::bind("127.0.0.1:8888", 1, cfg).unwrap();
+    let mut peers = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     'outer: loop {
-        host.step();
+        server.step();
 
-        for client in host.incoming() {
-            clients.push(client);
+        for peer in server.incoming() {
+            peers.push(peer);
         }
 
-        for client in clients.iter_mut() {
-            for event in client.poll_events() {
+        for peer in peers.iter_mut() {
+            for event in peer.poll_events() {
                 match event {
                     uflow::Event::Connect => {
                         println!("[server] client connected");
                     }
                     uflow::Event::Receive(data, channel_id) => {
-                        println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
+                        //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
 
                         let ref mut packet_id_expected = packet_ids[channel_id];
 
@@ -52,7 +52,7 @@ fn server_thread() -> Vec<md5::Digest> {
             }
         }
 
-        host.flush();
+        server.flush();
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
@@ -63,24 +63,25 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = uflow::EndpointParams::new()
+    let mut client = uflow::Client::bind_any_ipv4().unwrap();
+
+    let cfg = uflow::EndpointCfg::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = uflow::Host::bind_any(1, params).unwrap();
-    let mut client = host.connect("127.0.0.1:8888".parse().unwrap());
+    let mut server_peer = client.connect("127.0.0.1:8888", cfg).expect("Invalid address");
 
     let num_steps = 100;
-    let packets_per_step = 20;
-    let packet_size = uflow::MAX_FRAGMENT_SIZE/3;
+    let packets_per_step = 6;
+    let packet_size = uflow::MAX_FRAGMENT_SIZE;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
 
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     for _ in 0..num_steps {
-        host.step();
+        client.step();
 
-        for event in client.poll_events() {
+        for event in server_peer.poll_events() {
             match event {
                 uflow::Event::Connect => {
                     println!("[client] connected to server");
@@ -106,25 +107,25 @@ fn client_thread() -> Vec<md5::Digest> {
 
             all_data[channel_id].extend_from_slice(&data);
 
-            client.send(data, channel_id, mode);
+            server_peer.send(data, channel_id, mode);
 
             println!("[client] sent packet {} on channel {}", packet_id, channel_id);
 
             *packet_id += 1;
         }
 
-        host.flush();
+        client.flush();
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
     println!("[client] disconnecting");
-    client.disconnect();
+    server_peer.disconnect();
 
     'outer: loop {
-        host.step();
+        client.step();
 
-        for event in client.poll_events() {
+        for event in server_peer.poll_events() {
             match event {
                 uflow::Event::Disconnect => {
                     println!("[client] server disconnected");

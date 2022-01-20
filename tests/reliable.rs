@@ -104,10 +104,10 @@ fn router_thread() {
 }
 
 fn server_thread() -> Vec<md5::Digest> {
-    let params = uflow::EndpointParams::new()
+    let cfg = uflow::EndpointCfg::new()
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = uflow::Host::bind("127.0.0.1:8888", 1, params).unwrap();
+    let mut server = uflow::Server::bind("127.0.0.1:8888", 1, cfg).unwrap();
     let mut peers = Vec::new();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
@@ -115,9 +115,9 @@ fn server_thread() -> Vec<md5::Digest> {
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     'outer: loop {
-        host.step();
+        server.step();
 
-        for peer in host.incoming() {
+        for peer in server.incoming() {
             peers.push(peer);
         }
 
@@ -150,7 +150,7 @@ fn server_thread() -> Vec<md5::Digest> {
             }
         }
 
-        host.flush();
+        server.flush();
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
@@ -161,12 +161,13 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let params = uflow::EndpointParams::new()
+    let mut client = uflow::Client::bind_any_ipv4().unwrap();
+
+    let cfg = uflow::EndpointCfg::new()
         .max_tx_bandwidth(10_000_000)
         .tx_channels(NUM_CHANNELS);
 
-    let mut host = uflow::Host::bind_any(1, params).unwrap();
-    let mut server_peer = host.connect("127.0.0.1:9001".parse().unwrap());
+    let mut server_peer = client.connect("127.0.0.1:9001", cfg).expect("Invalid address");
 
     // Send data at ~= 6 * 1500 B / 0.015 s = 600kB/s
     let num_steps = 200;
@@ -178,7 +179,7 @@ fn client_thread() -> Vec<md5::Digest> {
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     for _ in 0..num_steps {
-        host.step();
+        client.step();
 
         for event in server_peer.poll_events() {
             match event {
@@ -204,7 +205,7 @@ fn client_thread() -> Vec<md5::Digest> {
             *packet_id += 1;
         }
 
-        host.flush();
+        client.flush();
 
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
@@ -213,7 +214,7 @@ fn client_thread() -> Vec<md5::Digest> {
     server_peer.disconnect();
 
     'outer: loop {
-        host.step();
+        client.step();
 
         for event in server_peer.poll_events() {
             match event {
