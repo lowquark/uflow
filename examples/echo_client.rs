@@ -1,6 +1,6 @@
 
 fn main() {
-    // Create a client object, with a maximum of 1 concurrent connection
+    // Create a client object
     let mut client = uflow::Client::bind_any_ipv4().unwrap();
 
     // The client will send data on only one transmission channel
@@ -8,7 +8,7 @@ fn main() {
         .tx_channels(1);
 
     // Initiate the connection to the server
-    let mut server = client.connect("127.0.0.1:8888", cfg).expect("Invalid address");
+    let mut server_peer = client.connect("127.0.0.1:8888", cfg).expect("Invalid address");
 
     let mut send_counter = 0;
     let mut message_counter = 0;
@@ -18,7 +18,7 @@ fn main() {
         client.step();
 
         // Handle events
-        for event in server.poll_events() {
+        for event in server_peer.poll_events() {
             match event {
                 uflow::Event::Connect => {
                     println!("connected to server");
@@ -41,7 +41,8 @@ fn main() {
         send_counter += 1;
         if send_counter == 10 {
             let packet_data: Box<[u8]> = format!("Hello world {}!", message_counter).as_bytes().into();
-            server.send(packet_data, 0, uflow::SendMode::Reliable);
+
+            server_peer.send(packet_data, 0, uflow::SendMode::Reliable);
 
             send_counter = 0;
             message_counter += 1;
