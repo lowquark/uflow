@@ -20,14 +20,14 @@ pub trait FrameSink {
 }
 
 #[derive(Clone,Debug)]
-pub struct Cfg {
+pub struct Config {
     pub tx_channels: usize,
     pub max_rx_alloc: usize,
     pub max_tx_bandwidth: usize,
     pub max_rx_bandwidth: usize,
 }
 
-impl Cfg {
+impl Config {
     pub fn new() -> Self {
         Self {
             tx_channels: 1,
@@ -37,22 +37,22 @@ impl Cfg {
         }
     }
 
-    pub fn tx_channels(mut self, tx_channels: usize) -> Cfg {
+    pub fn tx_channels(mut self, tx_channels: usize) -> Config {
         self.tx_channels = tx_channels;
         self
     }
 
-    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Cfg {
+    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Config {
         self.max_rx_alloc = max_rx_alloc;
         self
     }
 
-    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Cfg {
+    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Config {
         self.max_tx_bandwidth = bandwidth;
         self
     }
 
-    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Cfg {
+    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Config {
         self.max_rx_bandwidth = bandwidth;
         self
     }
@@ -132,7 +132,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub fn new(cfg: Cfg) -> Self {
+    pub fn new(cfg: Config) -> Self {
         assert!(cfg.tx_channels > 0, "Must have at least one channel");
         assert!(cfg.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
 

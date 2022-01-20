@@ -21,7 +21,7 @@ mod udp_frame_sink;
 pub use server::Server;
 pub use client::Client;
 pub use peer::Peer;
-pub use endpoint::Cfg as EndpointCfg;
+pub use endpoint::Config as EndpointConfig;
 
 /// The current protocol version ID.
 pub const PROTOCOL_VERSION: u8 = 0;

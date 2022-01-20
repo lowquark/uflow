@@ -36,7 +36,7 @@ impl Client {
         Self::bind((net::Ipv6Addr::UNSPECIFIED, 0))
     }
 
-    pub fn connect<A: net::ToSocketAddrs>(&mut self, addr: A, cfg: endpoint::Cfg) -> Result<peer::Peer, std::io::Error> {
+    pub fn connect<A: net::ToSocketAddrs>(&mut self, addr: A, cfg: endpoint::Config) -> Result<peer::Peer, std::io::Error> {
         let endpoint = endpoint::Endpoint::new(cfg);
         let endpoint_ref = Rc::new(RefCell::new(endpoint));
 

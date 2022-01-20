@@ -15,7 +15,7 @@ pub struct Server {
     socket: net::UdpSocket,
 
     max_connections: usize,
-    incoming_cfg: endpoint::Cfg,
+    incoming_config: endpoint::Config,
 
     endpoints: HashMap<net::SocketAddr, Rc<RefCell<endpoint::Endpoint>>>,
     incoming_peers: Vec<peer::Peer>,
@@ -24,7 +24,7 @@ pub struct Server {
 impl Server {
     pub fn bind<A: net::ToSocketAddrs>(addr: A,
                                        max_connections: usize,
-                                       incoming_cfg: endpoint::Cfg) -> Result<Self, std::io::Error> {
+                                       incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
         let socket = net::UdpSocket::bind(addr)?;
 
         socket.set_nonblocking(true)?;
@@ -36,12 +36,12 @@ impl Server {
             incoming_peers: Vec::new(),
 
             max_connections,
-            incoming_cfg,
+            incoming_config,
         })
     }
 
-    pub fn bind_any(max_connections: usize, incoming_cfg: endpoint::Cfg) -> Result<Self, std::io::Error> {
-        Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_cfg)
+    pub fn bind_any(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_config)
     }
 
     pub fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
@@ -53,7 +53,7 @@ impl Server {
             if self.endpoints.len() < self.max_connections as usize {
                 let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
 
-                let mut endpoint = endpoint::Endpoint::new(self.incoming_cfg.clone());
+                let mut endpoint = endpoint::Endpoint::new(self.incoming_config.clone());
                 endpoint.handle_frame(frame, data_sink);
 
                 let endpoint_ref = Rc::new(RefCell::new(endpoint));

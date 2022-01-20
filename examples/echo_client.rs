@@ -4,7 +4,7 @@ fn main() {
     let mut client = uflow::Client::bind_any_ipv4().unwrap();
 
     // The client will send data on only one transmission channel
-    let cfg = uflow::EndpointCfg::new()
+    let cfg = uflow::EndpointConfig::new()
         .tx_channels(1);
 
     // Initiate the connection to the server
