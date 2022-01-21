@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::net;
 use std::rc::Rc;
 
+/// A polling-based socket object which manages inbound `uflow` connections.
 pub struct Server {
     socket: net::UdpSocket,
 
@@ -22,6 +23,13 @@ pub struct Server {
 }
 
 impl Server {
+    /// Opens a UDP socket and creates a corresponding [`Server`](Self) object. The UDP socket is
+    /// bound to the provided address, and configured to be non-blocking. Any errors resulting from
+    /// socket initialization are forwarded to the caller.
+    ///
+    /// The server will limit the number of concurrent, non-zombie connections to
+    /// `max_connections`, and will silently ignore connection requests which would exceed that
+    /// limit. Valid incoming connections will be initialized according to `incoming_config`.
     pub fn bind<A: net::ToSocketAddrs>(addr: A,
                                        max_connections: usize,
                                        incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
@@ -40,10 +48,32 @@ impl Server {
         })
     }
 
-    pub fn bind_any(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
+    /// Equivalent to calling [`bind()`](Self::bind) with address
+    /// `(`[`std::net::Ipv4Addr::UNSPECIFIED`](std::net::Ipv4Addr::UNSPECIFIED)`, 0)`.
+    pub fn bind_any_ipv4(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
         Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_config)
     }
 
+    /// Equivalent to calling [`bind()`](Self::bind) with address
+    /// `(`[`std::net::Ipv6Addr::UNSPECIFIED`](std::net::Ipv6Addr::UNSPECIFIED)`, 0)`.
+    pub fn bind_any_ipv6(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        Self::bind((net::Ipv6Addr::UNSPECIFIED, 0), max_connections, incoming_config)
+    }
+
+    /// Returns a number of [`Peer`](peer::Peer) objects representing new connections since the
+    /// last call to [`incoming()`](Self::incoming). Any connections which have since entered the
+    /// zombie state (timed out) will not be returned.
+    pub fn incoming(&mut self) -> impl Iterator<Item = peer::Peer> {
+        std::mem::take(&mut self.incoming_peers).into_iter()
+    }
+
+    /// Processes UDP frames received since the last call to [`step()`](Self::step), and
+    /// sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
+    ///
+    /// Current, non-zombie [`Peer`](peer::Peer) objects will be updated as relevant data is
+    /// received. Call [`Peer::poll_events()`](peer::Peer::poll_events) after calling
+    /// [`step()`](Self::step) to retrieve incoming packets and connection status updates for an
+    /// individual peer.
     pub fn step(&mut self) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
@@ -61,10 +91,7 @@ impl Server {
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
-    pub fn incoming(&mut self) -> impl Iterator<Item = peer::Peer> {
-        std::mem::take(&mut self.incoming_peers).into_iter()
-    }
-
+    /// Sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
     pub fn flush(&mut self) {
         for (&address, endpoint) in self.endpoints.iter_mut() {
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
@@ -73,8 +100,9 @@ impl Server {
         }
     }
 
-    pub fn address(&self) -> Option<net::SocketAddr> {
-        self.socket.local_addr().ok()
+    /// Returns the local address of the internal UDP socket.
+    pub fn address(&self) -> net::SocketAddr {
+        self.socket.local_addr().unwrap()
     }
 
     fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
