@@ -3,6 +3,8 @@ use crate::endpoint;
 
 use std::net;
 
+// TODO: A Result<usize, std::io::Error> stored here could be used to forward errors to
+// client/server step/flush after the FrameSink has been used.
 pub struct UdpFrameSink<'a> {
     socket: &'a net::UdpSocket,
     address: net::SocketAddr,

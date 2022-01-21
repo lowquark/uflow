@@ -44,25 +44,6 @@ impl Server {
         Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_config)
     }
 
-    pub fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
-        if let Some(endpoint) = self.endpoints.get_mut(&address) {
-            let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-
-            endpoint.borrow_mut().handle_frame(frame, data_sink);
-        } else {
-            if self.endpoints.len() < self.max_connections as usize {
-                let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-
-                let mut endpoint = endpoint::Endpoint::new(self.incoming_config.clone());
-                endpoint.handle_frame(frame, data_sink);
-
-                let endpoint_ref = Rc::new(RefCell::new(endpoint));
-                self.endpoints.insert(address, Rc::clone(&endpoint_ref));
-                self.incoming_peers.push(peer::Peer::new(address, endpoint_ref));
-            }
-        }
-    }
-
     pub fn step(&mut self) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
@@ -94,6 +75,25 @@ impl Server {
 
     pub fn address(&self) -> Option<net::SocketAddr> {
         self.socket.local_addr().ok()
+    }
+
+    fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
+        if let Some(endpoint) = self.endpoints.get_mut(&address) {
+            let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
+
+            endpoint.borrow_mut().handle_frame(frame, data_sink);
+        } else {
+            if self.endpoints.len() < self.max_connections as usize {
+                let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
+
+                let mut endpoint = endpoint::Endpoint::new(self.incoming_config.clone());
+                endpoint.handle_frame(frame, data_sink);
+
+                let endpoint_ref = Rc::new(RefCell::new(endpoint));
+                self.endpoints.insert(address, Rc::clone(&endpoint_ref));
+                self.incoming_peers.push(peer::Peer::new(address, endpoint_ref));
+            }
+        }
     }
 }
 
