@@ -48,32 +48,44 @@ pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGME
 const MAX_PACKET_TRANSFER_WINDOW_SIZE: u32 = 4096;
 const MAX_FRAME_TRANSFER_WINDOW_SIZE: u32 = 16384;
 
-/// An enum representing the mode with which a packet is sent.
+/// A mode with which a user packet is sent.
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SendMode {
-    ///   The packet will be sent at most once. If the packet cannot be sent immediately (i.e.
-    ///   during the next call to [`Client::flush`](Client::flush) or
-    ///   [`Server::flush`](Server::flush)), it will be discarded rather than remain in a send
-    ///   queue. If the packet is dropped, or a subsequent packet arrives on the same channel
-    ///   before it does, the receiver may skip this packet.
+    /// The packet will be sent at most once. If the packet cannot be sent immediately (i.e.
+    /// during the next call to [`Client::flush`](Client::flush) or
+    /// [`Server::flush`](Server::flush)), it will be discarded rather than remain in a send queue.
+    /// If the packet is dropped, or a subsequent packet arrives on the same channel before it
+    /// does, the receiver may skip this packet.
     TimeSensitive,
-    ///   The packet will be sent exactly once. If the packet is dropped, or a subsequent packet
-    ///   arrives on the same channel before it does, the receiver may skip this packet.
+    /// The packet will be sent exactly once. If the packet is dropped, or a subsequent packet
+    /// arrives on the same channel before it does, the receiver may skip this packet.
     Unreliable,
-    ///   The packet will be sent and resent until acknowledged by the receiver. If a subsequent
-    ///   packet arrives on the same channel before it does, the receiver may skip this packet. (In
-    ///   general, the packet will cease to be resent once the sender has detected a skip.)
+    /// The packet will be sent and resent until acknowledged by the receiver. If a subsequent
+    /// packet arrives on the same channel before it does, the receiver may skip this packet. (In
+    /// general, the packet will cease to be resent once the sender has detected a skip.)
     Resend,
-    ///   The packet will be sent until acknowledged by the receiver. The receiver will not deliver
-    ///   subsequent packets on the same channel until the packet has been received.
+    /// The packet will be sent until acknowledged by the receiver. The receiver will not deliver
+    /// subsequent packets on the same channel until the packet has been received.
     Reliable,
 }
 
+/// An event produced by a [`Peer`](peer::Peer) object.
 #[derive(Clone,Debug,PartialEq)]
 pub enum Event {
+    /// Indicates a successful connection to/from a remote host.
     Connect,
+    /// Indicates a disconnection from the remote host. A disconnection event is only produced if
+    /// the peer was previously connected, and either end explicitly terminates the connection.
     Disconnect,
-    Receive(Box<[u8]>, usize),
+    /// Indicates a packet has been received from the remote host.
+    Receive(
+        /// The received user packet.
+        Box<[u8]>,
+        /// The received user packet's channel ID.
+        usize,
+    ),
+    /// Indicates a connection has timed out (i.e. no packets have been received from the remote
+    /// host for some amount of time). No further events will be delivered.
     Timeout,
 }
 
