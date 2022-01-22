@@ -1,6 +1,7 @@
 
 mod daten_meister;
 
+use crate::MAX_PACKET_SIZE;
 use crate::MAX_CHANNELS;
 use crate::PROTOCOL_VERSION;
 use crate::frame;
@@ -95,6 +96,8 @@ pub struct Config {
     //pub min_receiver_alloc: usize,
     // or:
     //pub min_send_alloc: usize,
+    // better:
+    //pub max_packet_size: usize,
 }
 
 impl Default for Config {
@@ -249,6 +252,7 @@ impl Endpoint {
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
+        assert!(data.len() < MAX_PACKET_SIZE, "Packet size exceeds maximum");
         assert!(channel_id < self.channel_count, "Channel ID exceeds maximum");
 
         match self.state {
@@ -456,17 +460,10 @@ impl Endpoint {
 
     pub fn poll_events(&mut self) -> impl Iterator<Item = Event> {
         match self.state {
-            State::Connecting(_) => {
-            }
             State::Connected(ref mut state) => {
                 state.daten_meister.receive(&mut EventPacketSink::new(&mut self.event_queue));
             }
-            State::Disconnecting(_) => {
-            }
-            State::Disconnected => {
-            }
-            State::Zombie => {
-            }
+            _ => ()
         }
 
         std::mem::take(&mut self.event_queue).into_iter()
@@ -486,8 +483,11 @@ impl Endpoint {
         }
     }
 
-    pub fn rtt_ms(&self) -> f64 {
-        todo!()
+    pub fn rtt_s(&self) -> Option<f64> {
+        match self.state {
+            State::Connected(ref state) => state.daten_meister.rtt_s(),
+            _ => None
+        }
     }
 
     fn enter_connected(&mut self,

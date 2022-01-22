@@ -91,6 +91,10 @@ impl DatenMeister {
         }
     }
 
+    pub fn rtt_s(&self) -> Option<f64> {
+        self.send_rate_comp.rtt_s()
+    }
+
     pub fn is_send_pending(&self) -> bool {
         self.packet_sender.pending_count() != 0 || self.datagram_queue.len() != 0 || self.resend_queue.len() != 0
     }

@@ -158,11 +158,11 @@ impl PacketSender {
         self.next_id
     }
 
-    // Places a user packet on the send queue. Fails silently if the packet is impossible to send.
+    // Places a user packet on the send queue. Silently drops the packet if the packet exceeds the
+    // receiver's maximum receive allocation.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {
-        if data.len() > MAX_PACKET_SIZE {
-            return;
-        }
+        debug_assert!(data.len() <= MAX_PACKET_SIZE);
+
         if alloc_size(data.len()) > self.max_alloc {
             return;
         }

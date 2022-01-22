@@ -1,4 +1,6 @@
 
+#![warn(missing_docs)]
+
 //! `uflow` is a connection-based layer over UDP that provides a loss-tolerant packet streaming
 //! interface, designed primarily for use in real-time, multiplayer games. It manages connection
 //! state, congestion control, sequencing, and packet fragmentation to produce a simple and robust
