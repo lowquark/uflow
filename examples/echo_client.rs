@@ -4,8 +4,8 @@ fn main() {
     let mut client = uflow::Client::bind_any_ipv4().unwrap();
 
     // The client will send data on only one transmission channel
-    let cfg = uflow::EndpointConfig::new()
-        .tx_channels(1);
+    let cfg = uflow::EndpointConfig::default()
+        .channel_count(1);
 
     // Initiate the connection to the server
     let mut server_peer = client.connect("127.0.0.1:8888", cfg).expect("Invalid address");

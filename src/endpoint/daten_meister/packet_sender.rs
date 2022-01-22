@@ -129,6 +129,7 @@ pub struct PacketSender {
 
 impl PacketSender {
     pub fn new(channel_num: usize, max_alloc: usize, base_id: u32) -> Self {
+        debug_assert!(channel_num > 0);
         debug_assert!(channel_num <= MAX_CHANNELS);
 
         let window: Vec<Option<WindowEntry>> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| None).collect();
@@ -165,9 +166,8 @@ impl PacketSender {
         if alloc_size(data.len()) > self.max_alloc {
             return;
         }
-        if channel_id as usize >= self.channels.len() {
-            return;
-        }
+
+        debug_assert!((channel_id as usize) < self.channels.len());
 
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));
     }

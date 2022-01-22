@@ -1,8 +1,8 @@
 
 fn main() {
     // The server will send data on two transmission channels
-    let cfg = uflow::EndpointConfig::new()
-        .tx_channels(2);
+    let cfg = uflow::EndpointConfig::default()
+        .channel_count(2);
 
     // Create a server object bound locally on port 8888, with a maximum of 8 concurrent connections
     let mut server = uflow::Server::bind("127.0.0.1:8888", 8, cfg).unwrap();

@@ -19,41 +19,122 @@ pub trait FrameSink {
     fn send(&mut self, frame_data: &[u8]);
 }
 
+/// Parameters used to configure either endpoint of a `uflow` connection.
 #[derive(Clone,Debug)]
 pub struct Config {
-    pub tx_channels: usize,
-    pub max_rx_alloc: usize,
-    pub max_tx_bandwidth: usize,
-    pub max_rx_bandwidth: usize,
+    /// The number of channels used to send packets.
+    ///
+    /// Must be greater than 0, and less than or equal to [`MAX_CHANNELS`](MAX_CHANNELS).
+    ///
+    /// *Note*: The number of channels used by an endpoint may differ from the opposing endpoint.
+    pub channel_count: usize,
+
+    /// The maximum send rate, in bytes per second. The endpoint will ensure that its outgoing
+    /// bandwidth does not exceed this value.
+    ///
+    /// Must be greater than 0. Currently, rates larger than `2^32` are silently truncated.
+    pub max_send_rate: usize,
+
+    /// The maximum acceptable receive rate, in bytes per second. The opposing endpoint will ensure
+    /// that its outgoing bandwidth does not exceed this value.
+    ///
+    /// Must be greater than 0. Currently, rates larger than `2^32` are silently truncated.
+    pub max_receive_rate: usize,
+
+    /// The maximum allocation size of the endpoint's receive queue, in bytes.
+    ///
+    /// Must be greater than 0. This value is silently rounded up to the nearest multiple of
+    /// [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE).
+    // TODO: Actually do this ^
+    ///
+    /// Received packets contribute to the receive queue's allocation size according to their
+    /// allocation size. If the allocation size of a received packet would cause the receive queue
+    /// to exceed its maximum allocation size, that packet will be silently ignored. (This
+    /// mechanism prevents a memory allocation attack; a well-behaved sender will ensure that the
+    /// receiver's allocation limit is not exceeded.)
+    ///
+    /// A packet's allocation size is given by the packet's size if it is less than or equal to
+    /// [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE). Otherwise, the packet's allocation size is
+    /// the smallest multiple of [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE) which contains the
+    /// packet.
+    ///
+    /// *Note*: The maximum allocation size necessarily constrains the maximum deliverable packet
+    /// size. Currently, any packets which would exceed the receiver's maximum allocation size are
+    /// silently discarded!
+    pub max_receive_alloc: usize
+
+    // The dilemma above can be solved by forbidding connections for which:
+    //
+    //      receiver.max_receive_alloc < sender.min_receiver_alloc ,
+    //
+    // where min_receiver_alloc is some minimum expected receive allocation. If the sender adheres
+    // to its own size restriction, i.e.:
+    //
+    //      packet_size <= sender.min_receiver_alloc ,
+    //
+    // then it can be seen that:
+    //
+    //      packet_size <= receiver.max_receive_alloc ,
+    //
+    // and that all sent packets may be delivered. In addition, an immediate error can be generated
+    // when an application attempts to send a packet with a size beyond its own, self-imposed
+    // limitation. (If an error was generated based on the receiver's size limitation, crashing the
+    // remote endpoint would be trivial.)
+
+    // In the event that an initial packet is dropped, the transfer window will stall, preventing
+    // the sender's allocation counter from decreasing until that packet has been received or
+    // skipped. The larger the receiver's allocation limit is, the more packets may be sent and
+    // delivered in spite of such a stall. Thus, having a larger receiver allocation limit than is
+    // stricly necessary, i.e.
+    //
+    //      receiver.max_receive_alloc > sender.min_receiver_alloc ,
+    //
+    // still benefits the connection in a way that is adjustable to the receiver.
+
+    // So, TODO:
+    //pub min_receiver_alloc: usize,
+    // or:
+    //pub min_send_alloc: usize,
+}
+
+impl Default for Config {
+    /// Creates an endpoint configuration with the following parameters:
+    ///   * Number of channels: 1
+    ///   * Maximum outgoing bandwidth: 10MB/s
+    ///   * Maximum incoming bandwidth: 10MB/s
+    ///   * Maximum receive allocation: 1MB
+    fn default() -> Self {
+        Self {
+            channel_count: 1,
+            max_send_rate: 10_000_000,
+            max_receive_rate: 10_000_000,
+            max_receive_alloc: 1_000_000,
+        }
+    }
 }
 
 impl Config {
-    pub fn new() -> Self {
-        Self {
-            tx_channels: 1,
-            max_rx_alloc: 1_000_000,
-            max_tx_bandwidth: 10_000_000,
-            max_rx_bandwidth: 10_000_000,
-        }
-    }
-
-    pub fn tx_channels(mut self, tx_channels: usize) -> Config {
-        self.tx_channels = tx_channels;
+    /// Sets `channel_count` to the provided value.
+    pub fn channel_count(mut self, channel_count: usize) -> Config {
+        self.channel_count = channel_count;
         self
     }
 
-    pub fn max_rx_alloc(mut self, max_rx_alloc: usize) -> Config {
-        self.max_rx_alloc = max_rx_alloc;
+    /// Sets `max_send_rate` to the provided value.
+    pub fn max_send_rate(mut self, rate: usize) -> Config {
+        self.max_send_rate = rate;
         self
     }
 
-    pub fn max_tx_bandwidth(mut self, bandwidth: usize) -> Config {
-        self.max_tx_bandwidth = bandwidth;
+    /// Sets `max_receive_rate` to the provided value.
+    pub fn max_receive_rate(mut self, rate: usize) -> Config {
+        self.max_receive_rate = rate;
         self
     }
 
-    pub fn max_rx_bandwidth(mut self, bandwidth: usize) -> Config {
-        self.max_rx_bandwidth = bandwidth;
+    /// Sets `max_receive_alloc` to the provided value.
+    pub fn max_receive_alloc(mut self, max_receive_alloc: usize) -> Config {
+        self.max_receive_alloc = max_receive_alloc;
         self
     }
 }
@@ -73,7 +154,7 @@ struct ConnectingState {
     connect_frame_remote: Option<frame::ConnectFrame>,
 
     initial_sends: VecDeque<SendEntry>,
-    max_tx_bandwidth: u32,
+    max_send_rate: u32,
 }
 
 struct ConnectedState {
@@ -127,20 +208,20 @@ pub struct Endpoint {
 
     watchdog_time: time::Instant,
 
-    tx_channels: usize,
+    channel_count: usize,
     was_connected: bool,
 }
 
 impl Endpoint {
     pub fn new(cfg: Config) -> Self {
-        assert!(cfg.tx_channels > 0, "Must have at least one channel");
-        assert!(cfg.tx_channels <= MAX_CHANNELS, "Number of channels exceeds maximum");
+        assert!(cfg.channel_count > 0, "Must have at least one channel");
+        assert!(cfg.channel_count <= MAX_CHANNELS, "Number of channels exceeds maximum");
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
-            tx_channels_sup: (cfg.tx_channels - 1) as u8,
-            max_rx_alloc: cfg.max_rx_alloc.min(u32::MAX as usize) as u32,
-            max_rx_bandwidth: cfg.max_rx_bandwidth.min(u32::MAX as usize) as u32,
+            tx_channels_sup: (cfg.channel_count - 1) as u8,
+            max_rx_alloc: cfg.max_receive_alloc.min(u32::MAX as usize) as u32,
+            max_rx_bandwidth: cfg.max_receive_rate.min(u32::MAX as usize) as u32,
             nonce: rand::random::<u32>(),
         };
 
@@ -152,7 +233,7 @@ impl Endpoint {
             connect_frame_remote: None,
 
             initial_sends: VecDeque::new(),
-            max_tx_bandwidth: cfg.max_tx_bandwidth.min(u32::MAX as usize) as u32,
+            max_send_rate: cfg.max_send_rate.min(u32::MAX as usize) as u32,
         });
 
         Self {
@@ -162,13 +243,13 @@ impl Endpoint {
 
             watchdog_time: time::Instant::now(),
 
-            tx_channels: cfg.tx_channels,
+            channel_count: cfg.channel_count,
             was_connected: false,
         }
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
-        assert!(channel_id < self.tx_channels, "Channel ID exceeds maximum");
+        assert!(channel_id < self.channel_count, "Channel ID exceeds maximum");
 
         match self.state {
             State::Connecting(ref mut state) => {
@@ -235,8 +316,8 @@ impl Endpoint {
                             if let Some(connect_frame_remote) = state.connect_frame_remote.take() {
                                 let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                let max_tx_bandwidth = state.max_tx_bandwidth;
-                                self.enter_connected(connect_frame_local, connect_frame_remote, initial_sends, max_tx_bandwidth);
+                                let max_send_rate = state.max_send_rate;
+                                self.enter_connected(connect_frame_local, connect_frame_remote, initial_sends, max_send_rate);
                             }
                         } else {
                             // The acknowledgement doesn't match our connection request id, fail lol
@@ -251,8 +332,8 @@ impl Endpoint {
                             if state.connect_ack_received {
                                 let initial_sends = std::mem::take(&mut state.initial_sends);
                                 let connect_frame_local = state.connect_frame.clone();
-                                let max_tx_bandwidth = state.max_tx_bandwidth;
-                                self.enter_connected(connect_frame_local, frame, initial_sends, max_tx_bandwidth);
+                                let max_send_rate = state.max_send_rate;
+                                self.enter_connected(connect_frame_local, frame, initial_sends, max_send_rate);
                             } else {
                                 // Wait for ack
                                 state.connect_frame_remote = Some(frame);
@@ -413,14 +494,14 @@ impl Endpoint {
                        local: frame::ConnectFrame,
                        remote: frame::ConnectFrame,
                        initial_sends: VecDeque<SendEntry>,
-                       max_tx_bandwidth: u32) {
+                       max_send_rate: u32) {
         let tx_channels = local.tx_channels_sup as usize + 1;
         let rx_channels = remote.tx_channels_sup as usize + 1;
         let tx_alloc_limit = remote.max_rx_alloc as usize;
         let rx_alloc_limit = local.max_rx_alloc as usize;
         let tx_base_id = local.nonce;
         let rx_base_id = remote.nonce;
-        let tx_bandwidth_limit = max_tx_bandwidth.min(remote.max_rx_bandwidth);
+        let tx_bandwidth_limit = max_send_rate.min(remote.max_rx_bandwidth);
 
         let mut daten_meister = DatenMeister::new(tx_channels, rx_channels,
                                                   tx_alloc_limit, rx_alloc_limit,
