@@ -73,22 +73,22 @@ impl Peer {
         self.address
     }
 
-    /// Returns true if the underlying endpoint is in either the `Disconnected` or `Zombie` states.
-    pub fn is_disconnected(&self) -> bool {
-        let endpoint_ref = self.endpoint_ref.borrow();
-        return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();
-    }
-
-    /// Returns true if the underlying endpoint is in the `Zombie` state.
-    pub fn is_zombie(&self) -> bool {
-        self.endpoint_ref.borrow().is_zombie()
-    }
-
     /// Returns the current round-trip time estimate (RTT), in seconds.
     ///
     /// If an RTT estimate has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
         self.endpoint_ref.borrow().rtt_s()
+    }
+
+    /// Returns `true` if the connection has been terminated.
+    pub fn is_disconnected(&self) -> bool {
+        let endpoint_ref = self.endpoint_ref.borrow();
+        return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();
+    }
+
+    pub(super) fn is_zombie(&self) -> bool {
+        let endpoint_ref = self.endpoint_ref.borrow();
+        return endpoint_ref.is_zombie();
     }
 }
 
