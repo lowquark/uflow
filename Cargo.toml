@@ -3,6 +3,9 @@
 name = "uflow"
 version = "0.3.0"
 edition = "2018"
+description = "Provides real-time, mixed-reliability, and congestion-controlled data transfer over the User Datagram Protocol (UDP)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lowquark/uflow"
 
 [lib]
 name = "uflow"
