@@ -27,77 +27,38 @@ pub struct Config {
     ///
     /// Must be greater than 0, and less than or equal to [`MAX_CHANNELS`](MAX_CHANNELS).
     ///
-    /// *Note*: The number of channels used by an endpoint may differ from the opposing endpoint.
+    /// *Note*: The number of channels used by an endpoint to send data may differ from the
+    /// opposing endpoint.
     pub channel_count: usize,
 
     /// The maximum send rate, in bytes per second. The endpoint will ensure that its outgoing
     /// bandwidth does not exceed this value.
     ///
-    /// Must be greater than 0. Currently, rates larger than `2^32` are silently truncated.
+    /// Must be greater than 0. Values larger than `2^32` will be truncated.
     pub max_send_rate: usize,
 
     /// The maximum acceptable receive rate, in bytes per second. The opposing endpoint will ensure
     /// that its outgoing bandwidth does not exceed this value.
     ///
-    /// Must be greater than 0. Currently, rates larger than `2^32` are silently truncated.
+    /// Must be greater than 0. Values larger than `2^32` will be truncated.
     pub max_receive_rate: usize,
 
-    /// The maximum allocation size of the endpoint's receive queue, in bytes.
+    /// The maximum size of a sent packet, in bytes. The endpoint will ensure that it does not send
+    /// packets with a size exceeding this value.
     ///
-    /// Must be greater than 0. This value is silently rounded up to the nearest multiple of
-    /// [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE).
-    // TODO: Actually do this ^
-    ///
-    /// Received packets contribute to the receive queue's allocation size according to their
-    /// allocation size. If the allocation size of a received packet would cause the receive queue
-    /// to exceed its maximum allocation size, that packet will be silently ignored. (This
-    /// mechanism prevents a memory allocation attack; a well-behaved sender will ensure that the
-    /// receiver's allocation limit is not exceeded.)
-    ///
-    /// A packet's allocation size is given by the packet's size if it is less than or equal to
-    /// [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE). Otherwise, the packet's allocation size is
-    /// the smallest multiple of [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE) which contains the
-    /// packet.
-    ///
-    /// *Note*: The maximum allocation size necessarily constrains the maximum deliverable packet
-    /// size. Currently, any packets which would exceed the receiver's maximum allocation size are
-    /// silently discarded!
-    pub max_receive_alloc: usize
+    /// Must be greater than 0, and less than or equal to [`MAX_PACKET_SIZE`](MAX_PACKET_SIZE).
+    pub max_packet_size: usize,
 
-    // The dilemma above can be solved by forbidding connections for which:
-    //
-    //      receiver.max_receive_alloc < sender.min_receiver_alloc ,
-    //
-    // where min_receiver_alloc is some minimum expected receive allocation. If the sender adheres
-    // to its own size restriction, i.e.:
-    //
-    //      packet_size <= sender.min_receiver_alloc ,
-    //
-    // then it can be seen that:
-    //
-    //      packet_size <= receiver.max_receive_alloc ,
-    //
-    // and that all sent packets may be delivered. In addition, an immediate error can be generated
-    // when an application attempts to send a packet with a size beyond its own, self-imposed
-    // limitation. (If an error was generated based on the receiver's size limitation, crashing the
-    // remote endpoint would be trivial.)
-
-    // In the event that an initial packet is dropped, the transfer window will stall, preventing
-    // the sender's allocation counter from decreasing until that packet has been received or
-    // skipped. The larger the receiver's allocation limit is, the more packets may be sent and
-    // delivered in spite of such a stall. Thus, having a larger receiver allocation limit than is
-    // stricly necessary, i.e.
-    //
-    //      receiver.max_receive_alloc > sender.min_receiver_alloc ,
-    //
-    // still benefits the connection in a way that is adjustable to the receiver.
-
-    // So, TODO:
-    //pub min_receiver_alloc: usize,
-    // or:
-    //pub min_send_alloc: usize,
-    // better:
-    //pub max_packet_size: usize,
+    /// The maximum allocation size of the endpoint's receive queue, in bytes. The endpoint will
+    /// ensure that the total amount of memory it allocates to receive packet data does not exceed
+    /// this value.
+    ///
+    /// Must be greater than 0.
+    ///
+    /// *Note*: The maximum allocation size necessarily constrains the maximum receivable packet
+    /// size. A connection attempt will fail if the `max_packet_size` of the opposing endpoint
+    /// exceeds this value.
+    pub max_receive_alloc: usize,
 }
 
 impl Default for Config {
@@ -111,6 +72,7 @@ impl Default for Config {
             channel_count: 1,
             max_send_rate: 10_000_000,
             max_receive_rate: 10_000_000,
+            max_packet_size: 1_000_000,
             max_receive_alloc: 1_000_000,
         }
     }
@@ -139,6 +101,17 @@ impl Config {
     pub fn max_receive_alloc(mut self, max_receive_alloc: usize) -> Config {
         self.max_receive_alloc = max_receive_alloc;
         self
+    }
+
+    /// Returns `true` if each parameter has a valid value.
+    pub fn is_valid(&self) -> bool {
+        self.channel_count > 0 &&
+        self.channel_count <= MAX_CHANNELS &&
+        self.max_send_rate > 0 &&
+        self.max_receive_rate > 0 &&
+        self.max_packet_size > 0 &&
+        self.max_packet_size <= MAX_PACKET_SIZE &&
+        self.max_receive_alloc > 0
     }
 }
 
@@ -212,19 +185,20 @@ pub struct Endpoint {
     watchdog_time: time::Instant,
 
     channel_count: usize,
+    max_packet_size: usize,
     was_connected: bool,
 }
 
 impl Endpoint {
     pub fn new(cfg: Config) -> Self {
-        assert!(cfg.channel_count > 0, "Must have at least one channel");
-        assert!(cfg.channel_count <= MAX_CHANNELS, "Number of channels exceeds maximum");
+        debug_assert!(cfg.is_valid());
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
-            tx_channels_sup: (cfg.channel_count - 1) as u8,
-            max_rx_alloc: cfg.max_receive_alloc.min(u32::MAX as usize) as u32,
-            max_rx_bandwidth: cfg.max_receive_rate.min(u32::MAX as usize) as u32,
+            channel_count_sup: (cfg.channel_count - 1) as u8,
+            max_receive_rate: cfg.max_receive_rate.min(u32::MAX as usize) as u32,
+            max_packet_size: cfg.max_packet_size.min(u32::MAX as usize) as u32,
+            max_receive_alloc: cfg.max_receive_alloc.min(u32::MAX as usize) as u32,
             nonce: rand::random::<u32>(),
         };
 
@@ -247,13 +221,18 @@ impl Endpoint {
             watchdog_time: time::Instant::now(),
 
             channel_count: cfg.channel_count,
+            max_packet_size: cfg.max_packet_size,
             was_connected: false,
         }
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
-        assert!(data.len() < MAX_PACKET_SIZE, "Packet size exceeds maximum");
-        assert!(channel_id < self.channel_count, "Channel ID exceeds maximum");
+        assert!(data.len() <= self.max_packet_size,
+                "send failed: packet of size {} exceeds maximum size {}",
+                data.len(),
+                self.max_packet_size);
+
+        assert!(channel_id < self.channel_count, "send failed: invalid channel ID {}", channel_id);
 
         match self.state {
             State::Connecting(ref mut state) => {
@@ -301,9 +280,10 @@ impl Endpoint {
         }
     }
 
-    fn validate_handshake(remote_info: &frame::ConnectFrame) -> bool {
-        remote_info.tx_channels_sup as usize <= MAX_CHANNELS - 1 &&
-        remote_info.version == PROTOCOL_VERSION
+    fn validate_handshake(remote_info: &frame::ConnectFrame, max_packet_size: usize) -> bool {
+        remote_info.version == PROTOCOL_VERSION &&
+        remote_info.channel_count_sup as usize <= MAX_CHANNELS - 1 &&
+        remote_info.max_receive_alloc as usize >= max_packet_size
     }
 
     pub fn handle_frame(&mut self, frame: frame::Frame, sink: &mut impl FrameSink) {
@@ -329,7 +309,7 @@ impl Endpoint {
                         }
                     }
                     frame::Frame::ConnectFrame(frame) => {
-                        if Self::validate_handshake(&frame) {
+                        if Self::validate_handshake(&frame, self.max_packet_size) {
                             // Connection is possible, acknowledge request
                             sink.send(&frame::Frame::ConnectAckFrame(frame::ConnectAckFrame { nonce: frame.nonce }).write());
                             // Try to enter connected state
@@ -495,13 +475,13 @@ impl Endpoint {
                        remote: frame::ConnectFrame,
                        initial_sends: VecDeque<SendEntry>,
                        max_send_rate: u32) {
-        let tx_channels = local.tx_channels_sup as usize + 1;
-        let rx_channels = remote.tx_channels_sup as usize + 1;
-        let tx_alloc_limit = remote.max_rx_alloc as usize;
-        let rx_alloc_limit = local.max_rx_alloc as usize;
+        let tx_channels = local.channel_count_sup as usize + 1;
+        let rx_channels = remote.channel_count_sup as usize + 1;
+        let tx_alloc_limit = remote.max_receive_alloc as usize;
+        let rx_alloc_limit = local.max_receive_alloc as usize;
         let tx_base_id = local.nonce;
         let rx_base_id = remote.nonce;
-        let tx_bandwidth_limit = max_send_rate.min(remote.max_rx_bandwidth);
+        let tx_bandwidth_limit = max_send_rate.min(remote.max_receive_rate);
 
         let mut daten_meister = DatenMeister::new(tx_channels, rx_channels,
                                                   tx_alloc_limit, rx_alloc_limit,

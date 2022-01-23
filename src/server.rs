@@ -33,6 +33,8 @@ impl Server {
     pub fn bind<A: net::ToSocketAddrs>(addr: A,
                                        max_connections: usize,
                                        incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        assert!(incoming_config.is_valid(), "invalid endpoint config");
+
         let socket = net::UdpSocket::bind(addr)?;
 
         socket.set_nonblocking(true)?;

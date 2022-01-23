@@ -30,7 +30,8 @@ impl Peer {
     /// # Panics
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel, or if
-    /// `data.len()` exceeds `crate::MAX_PACKET_SIZE`.
+    /// `data.len()` exceeds the [maximum packet
+    /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
     }

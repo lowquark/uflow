@@ -19,7 +19,7 @@ const DATAGRAM_HEADER_SIZE_FULL: usize = 11;
 
 const FRAME_ACK_SIZE: usize = 9;
 
-const CONNECT_FRAME_PAYLOAD_SIZE: usize = 14;
+const CONNECT_FRAME_PAYLOAD_SIZE: usize = 18;
 const CONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
 
 const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
@@ -49,24 +49,30 @@ fn read_connect_payload(data: &[u8]) -> Option<Frame> {
                 ((data[3] as u32) <<  8) |
                 ((data[4] as u32)      );
 
-    let tx_channels_sup = data[5];
+    let channel_count_sup = data[5];
 
-    let max_rx_alloc = ((data[6] as u32) << 24) |
-                       ((data[7] as u32) << 16) |
-                       ((data[8] as u32) <<  8) |
-                       ((data[9] as u32)      );
+    let max_receive_rate = ((data[6] as u32) << 24) |
+                           ((data[7] as u32) << 16) |
+                           ((data[8] as u32) <<  8) |
+                           ((data[9] as u32)      );
 
-    let max_rx_bandwidth = ((data[10] as u32) << 24) |
-                           ((data[11] as u32) << 16) |
-                           ((data[12] as u32) <<  8) |
-                           ((data[13] as u32)      );
+    let max_packet_size = ((data[10] as u32) << 24) |
+                          ((data[11] as u32) << 16) |
+                          ((data[12] as u32) <<  8) |
+                          ((data[13] as u32)      );
+
+    let max_receive_alloc = ((data[14] as u32) << 24) |
+                            ((data[15] as u32) << 16) |
+                            ((data[16] as u32) <<  8) |
+                            ((data[17] as u32)      );
 
     Some(Frame::ConnectFrame(ConnectFrame {
         version,
         nonce,
-        tx_channels_sup,
-        max_rx_alloc,
-        max_rx_bandwidth,
+        channel_count_sup,
+        max_receive_rate,
+        max_packet_size,
+        max_receive_alloc,
     }))
 }
 
@@ -461,15 +467,19 @@ fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
         (frame.nonce >> 16) as u8,
         (frame.nonce >>  8) as u8,
         (frame.nonce      ) as u8,
-        frame.tx_channels_sup,
-        (frame.max_rx_alloc >> 24) as u8,
-        (frame.max_rx_alloc >> 16) as u8,
-        (frame.max_rx_alloc >>  8) as u8,
-        (frame.max_rx_alloc      ) as u8,
-        (frame.max_rx_bandwidth >> 24) as u8,
-        (frame.max_rx_bandwidth >> 16) as u8,
-        (frame.max_rx_bandwidth >>  8) as u8,
-        (frame.max_rx_bandwidth      ) as u8,
+        frame.channel_count_sup,
+        (frame.max_receive_rate >> 24) as u8,
+        (frame.max_receive_rate >> 16) as u8,
+        (frame.max_receive_rate >>  8) as u8,
+        (frame.max_receive_rate      ) as u8,
+        (frame.max_packet_size >> 24) as u8,
+        (frame.max_packet_size >> 16) as u8,
+        (frame.max_packet_size >>  8) as u8,
+        (frame.max_packet_size      ) as u8,
+        (frame.max_receive_alloc >> 24) as u8,
+        (frame.max_receive_alloc >> 16) as u8,
+        (frame.max_receive_alloc >>  8) as u8,
+        (frame.max_receive_alloc      ) as u8,
     ])
 }
 
@@ -607,10 +617,11 @@ mod tests {
     fn connect_basic() {
         let f = Frame::ConnectFrame(ConnectFrame {
             version: 0x7F,
-            nonce: 0x13371337,
-            tx_channels_sup: 3,
-            max_rx_alloc: 0xBEEFBEEF,
-            max_rx_bandwidth: 0xBEEFBEEF,
+            nonce: 0x18273645,
+            channel_count_sup: 3,
+            max_receive_rate: 0x98765432,
+            max_packet_size: 0x01234567,
+            max_receive_alloc: 0xABCDEF01,
         });
         verify_consistent(&f);
         verify_extra_bytes_fail(&f);
@@ -737,10 +748,11 @@ mod tests {
         for _ in 0..NUM_ROUNDS {
             let f = Frame::ConnectFrame(ConnectFrame {
                 version: rand::random::<u8>(),
-                nonce: 0x13371337,
-                tx_channels_sup: rand::random::<u8>(),
-                max_rx_alloc: rand::random::<u32>(),
-                max_rx_bandwidth: rand::random::<u32>(),
+                nonce: rand::random::<u32>(),
+                channel_count_sup: rand::random::<u8>(),
+                max_receive_rate: rand::random::<u32>(),
+                max_packet_size: rand::random::<u32>(),
+                max_receive_alloc: rand::random::<u32>(),
             });
             verify_consistent(&f);
             verify_extra_bytes_fail(&f);

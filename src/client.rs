@@ -48,10 +48,12 @@ impl Client {
     /// [`Peer`](peer::Peer) object representing the connection. Any errors resulting from address
     /// resolution are forwarded to the caller.
     pub fn connect<A: net::ToSocketAddrs>(&mut self, addr: A, cfg: endpoint::Config) -> Result<peer::Peer, std::io::Error> {
+        assert!(cfg.is_valid(), "invalid endpoint config");
+
         let endpoint = endpoint::Endpoint::new(cfg);
         let endpoint_ref = Rc::new(RefCell::new(endpoint));
 
-        let address = addr.to_socket_addrs()?.next().expect("No useful socket addresses");
+        let address = addr.to_socket_addrs()?.next().expect("no useful socket addresses");
 
         self.endpoints.insert(address, endpoint_ref.clone());
         return Ok(peer::Peer::new(address, endpoint_ref));

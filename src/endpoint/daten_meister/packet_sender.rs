@@ -132,6 +132,8 @@ impl PacketSender {
         debug_assert!(channel_num > 0);
         debug_assert!(channel_num <= MAX_CHANNELS);
 
+        let max_alloc_rounded = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
+
         let window: Vec<Option<WindowEntry>> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| None).collect();
         let channels: Vec<Channel> = (0..channel_num).map(|_| Channel::new()).collect();
 
@@ -142,7 +144,7 @@ impl PacketSender {
             next_id: base_id,
             window: window.into_boxed_slice(),
 
-            max_alloc: max_alloc,
+            max_alloc: max_alloc_rounded,
             alloc: 0,
 
             parent_id: None,
@@ -162,11 +164,7 @@ impl PacketSender {
     // receiver's maximum receive allocation.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {
         debug_assert!(data.len() <= MAX_PACKET_SIZE);
-
-        if alloc_size(data.len()) > self.max_alloc {
-            return;
-        }
-
+        debug_assert!(data.len() <= self.max_alloc);
         debug_assert!((channel_id as usize) < self.channels.len());
 
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));

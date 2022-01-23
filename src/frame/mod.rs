@@ -52,9 +52,10 @@ pub struct FrameAck {
 pub struct ConnectFrame {
     pub version: u8,
     pub nonce: u32,
-    pub tx_channels_sup: u8,
-    pub max_rx_alloc: u32,
-    pub max_rx_bandwidth: u32,
+    pub channel_count_sup: u8,
+    pub max_receive_rate: u32,
+    pub max_packet_size: u32,
+    pub max_receive_alloc: u32,
 }
 
 #[derive(Clone,Debug,PartialEq)]
