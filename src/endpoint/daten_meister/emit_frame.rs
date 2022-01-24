@@ -65,9 +65,7 @@ impl<'a> FrameEmitter<'a> {
         while let Some(entry) = self.resend_queue.peek() {
             let pmsg_ref = entry.persistent_datagram.borrow();
 
-            // TODO: Also drop if beyond packet transfer window
-
-            if pmsg_ref.acknowledged {
+            if pmsg_ref.acknowledged || !self.packet_sender.is_packet_pending(pmsg_ref.datagram.sequence_id) {
                 std::mem::drop(pmsg_ref);
                 self.resend_queue.pop();
                 continue;
@@ -219,7 +217,7 @@ impl<'a> FrameEmitter<'a> {
     }
 
     pub fn emit_sync_frame<F>(&mut self, now_ms: u64, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
-        // TODO: This check seems out of place
+        // TODO: It's a shame that this check needs to happen here (this check seems out of place)
         if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
             return (0, false);
         }
@@ -709,6 +707,50 @@ mod tests {
 
         test_data_frame(&frames[0], 5, vec![ dg0 ]);
         test_data_frame(&frames[1], 6, vec![ dg1 ]);
+    }
+
+    #[test]
+    fn no_resend_after_skip() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        let p0 = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p1 = vec![ 1; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p2 = vec![ 2; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+
+        ps.enqueue_packet(p0        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p1        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p2        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p3        , 0, SendMode::Resend, 0);
+        ps.enqueue_packet(p4.clone(), 0, SendMode::Resend, 0);
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 5);
+
+        ps.acknowledge(4);
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg4 = Datagram {
+            sequence_id: 4,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p4,
+        };
+
+        test_data_frame(&frames[0], 5, vec![ dg4 ]);
     }
 }
 

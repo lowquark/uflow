@@ -282,6 +282,13 @@ impl PacketSender {
             self.base_id = self.base_id.wrapping_add(1);
         }
     }
+
+    pub fn is_packet_pending(&mut self, sequence_id: u32) -> bool {
+        let window_size = self.next_id.wrapping_sub(self.base_id);
+        let delta = sequence_id.wrapping_sub(self.base_id);
+
+        return delta < window_size;
+    }
 }
 
 #[cfg(test)]
