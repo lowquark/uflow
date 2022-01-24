@@ -43,12 +43,17 @@ impl super::PacketSink for TestPacketSink {
     }
 }
 
-fn random_packet_data(id: u32, size: usize) -> Box<[u8]> {
+fn random_packet_data(size: usize) -> Box<[u8]> {
+    (0 .. size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
+}
+
+fn random_packet_data_with_id(id: u32, size: usize) -> Box<[u8]> {
     let mut data = (0 .. size.max(4)).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
     data[0..4].clone_from_slice(&id.to_be_bytes());
     return data;
 }
 
+/// Ensures that packets of various sizes can be fragmented and reassembled correctly.
 #[test]
 fn random_transfer() {
     use crate::MAX_CHANNELS;
@@ -72,7 +77,7 @@ fn random_transfer() {
 
         let size = rand::random::<usize>() % MAX_PACKET_SIZE;
 
-        sent_packets.push_back((random_packet_data(*packet_id, size), channel_id));
+        sent_packets.push_back((random_packet_data_with_id(*packet_id, size), channel_id));
         *packet_id += 1;
     }
 
@@ -109,14 +114,11 @@ fn random_transfer() {
     assert_eq!(packet_sink.packets, sent_packets);
 }
 
-#[test]
-fn min_max_packet_transfer() {
-    use crate::MAX_PACKET_SIZE;
+fn test_single_transfer(packet_size: usize, max_alloc: usize) {
+    let mut sender = packet_sender::PacketSender::new(1, max_alloc, 0);
+    let mut receiver = packet_receiver::PacketReceiver::new(1, max_alloc, 0);
 
-    let mut sender = packet_sender::PacketSender::new(1, MAX_PACKET_SIZE, 0);
-    let mut receiver = packet_receiver::PacketReceiver::new(1, MAX_PACKET_SIZE, 0);
-
-    let packet_data = random_packet_data(0, MAX_PACKET_SIZE);
+    let packet_data = random_packet_data(packet_size);
     sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
 
     let mut datagram_sink = TestDatagramSink::new();
@@ -133,25 +135,32 @@ fn min_max_packet_transfer() {
     assert_eq!(packet_sink.packets[0].0, packet_data);
 }
 
+/// Ensures a packet of size zero may be transferred.
 #[test]
 fn null_packet_transfer() {
-    let mut sender = packet_sender::PacketSender::new(1, 10000, 0);
-    let mut receiver = packet_receiver::PacketReceiver::new(1, 10000, 0);
+    test_single_transfer(0, 10_000);
+}
 
-    let packet_data = vec![].into_boxed_slice();
-    sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
+/// Ensures a packet of maximum size may be transferred.
+/// Uses the minimum possible allocation limit.
+#[test]
+fn max_packet_transfer() {
+    use crate::MAX_PACKET_SIZE;
 
-    let mut datagram_sink = TestDatagramSink::new();
-    sender.emit_packet_datagrams(0, &mut datagram_sink);
+    test_single_transfer(MAX_PACKET_SIZE, MAX_PACKET_SIZE);
+}
 
-    for (datagram, _) in datagram_sink.datagrams.into_iter() {
-        receiver.handle_datagram(datagram);
+/// Ensures PacketSender/PacketReceiver can transfer a packet with a size equal to the maximum
+/// allocation limit. (They must internally round the allocation limit up to the nearest multiple
+/// of MAX_FRAGMENT_SIZE for this to work.)
+#[test]
+fn single_packet_max_alloc() {
+    use crate::MAX_FRAGMENT_SIZE;
+
+    let sizes = MAX_FRAGMENT_SIZE/2 .. MAX_FRAGMENT_SIZE*2 + MAX_FRAGMENT_SIZE/2;
+
+    for size in sizes {
+        test_single_transfer(size, size);
     }
-
-    let mut packet_sink = TestPacketSink::new();
-    receiver.receive(&mut packet_sink);
-
-    assert_eq!(packet_sink.packets.len(), 1);
-    assert_eq!(packet_sink.packets[0].0, packet_data);
 }
 

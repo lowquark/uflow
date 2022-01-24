@@ -69,13 +69,15 @@ pub struct AssemblyWindow {
 
 impl AssemblyWindow {
     pub fn new(max_alloc: usize) -> Self {
+        let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
+
         let window: Vec<WindowEntry> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| WindowEntry::Open).collect();
 
         Self {
             window: window.into_boxed_slice(),
 
             alloc: 0,
-            max_alloc,
+            max_alloc: max_alloc_ceil,
         }
     }
 
