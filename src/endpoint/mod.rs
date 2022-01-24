@@ -151,11 +151,11 @@ enum State {
     Zombie,
 }
 
-static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
-static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(500);
+static CONNECT_INTERVAL: time::Duration = time::Duration::from_millis(1000);
+static DISCONNECT_INTERVAL: time::Duration = time::Duration::from_millis(1000);
 
 static CONNECTING_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
-static CONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
+static CONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(20000);
 static DISCONNECTING_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(3000);
 static DISCONNECTED_WATCHDOG_TIMEOUT: time::Duration = time::Duration::from_millis(10000);
 

@@ -10,17 +10,12 @@ use crate::frame::FrameAck;
 
 const MSS: usize = MAX_FRAME_SIZE;
 
-fn eval_rto_s(rtt_s: f64, send_rate: u32) -> f64 {
-    (4.0*rtt_s).max((2*MSS) as f64/send_rate as f64)
-}
-
 fn eval_tcp_throughput(rtt: f64, p: f64) -> u32 {
     let s = MSS as f64;
     let f_p = (p*2.0/3.0).sqrt() + 12.0*(p*3.0/8.0).sqrt()*p*(1.0 + 32.0*p*p);
     (s / (rtt * f_p)) as u32
 }
 
-// TODO: Test this one in particular
 fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
     let delta = (target_rate_bps as f64 * 0.05) as u32;
 
@@ -93,6 +88,9 @@ pub struct SendRateComp {
     // Round trip time estimate
     rtt_s: Option<f64>,
     rtt_ms: Option<u64>,
+
+    // Most recent RTO computation
+    rto_ms: Option<u64>,
 }
 
 impl SendRateComp {
@@ -120,6 +118,8 @@ impl SendRateComp {
 
             rtt_s: None,
             rtt_ms: None,
+
+            rto_ms: None,
         }
     }
 
@@ -193,6 +193,10 @@ impl SendRateComp {
         self.rtt_ms
     }
 
+    pub fn rto_ms(&self) -> Option<u64> {
+        self.rto_ms
+    }
+
     fn update_rtt(&mut self, rtt_sample_s: f64) -> f64 {
         const RTT_ALPHA: f64 = 0.1;
 
@@ -208,9 +212,17 @@ impl SendRateComp {
         return new_rtt;
     }
 
+    fn update_rto(&mut self, rtt_s: f64, send_rate: u32) -> f64 {
+        let rto_s = (4.0*rtt_s).max((2*MSS) as f64/send_rate as f64);
+
+        self.rto_ms = Some((rto_s * 1000.0).round().max(0.0) as u64);
+
+        return rto_s;
+    }
+
     fn handle_feedback(&mut self, now_ms: u64, rtt_sample_s: f64, recv_rate: u32, loss_rate: f64, rate_limited: bool) {
         let rtt_s = self.update_rtt(rtt_sample_s);
-        let rto_s = eval_rto_s(rtt_s, self.send_rate);
+        let rto_s = self.update_rto(rtt_s, self.send_rate);
 
         let send_rate_limit =
             if rate_limited {
@@ -319,7 +331,7 @@ impl SendRateComp {
         }
 
         // Compute RTO for the new send rate
-        let rto_s = eval_rto_s(self.rtt_s.unwrap_or(0.0), self.send_rate);
+        let rto_s = self.update_rto(self.rtt_s.unwrap_or(0.0), self.send_rate);
 
         self.nofeedback_exp_ms = Some(now_ms + (rto_s*1000.0) as u64);
         self.nofeedback_idle = true;

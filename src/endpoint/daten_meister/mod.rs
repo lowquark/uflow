@@ -25,6 +25,10 @@ mod emit_frame;
 #[cfg(test)]
 mod packet_tests;
 
+const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
+const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
+const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
+
 #[derive(Debug)]
 pub struct PersistentDatagram {
     datagram: frame::Datagram,
@@ -133,7 +137,7 @@ impl DatenMeister {
         let now = time::Instant::now();
         let now_ms = (now - self.time_base).as_millis() as u64;
 
-        let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(100);
+        let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(INITIAL_RTT_ESTIMATE_MS);
 
         // Forget old frame data
         self.frame_log.forget_frames(now_ms.saturating_sub(rtt_ms*4));
@@ -146,6 +150,7 @@ impl DatenMeister {
         self.fill_flush_alloc(now);
 
         // Send as many frames as possible
+        // TODO: Consider rto_ms/4 idea further
         self.emit_frames(now_ms, rtt_ms, sink);
     }
 
@@ -181,7 +186,7 @@ impl DatenMeister {
         let ref mut time_data_sent_ms = self.time_data_sent_ms;
 
         if let Some(time_data_sent_ms) = time_data_sent_ms {
-            let sync_timeout_ms = rtt_ms*4;
+            let sync_timeout_ms = send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
 
             if now_ms - *time_data_sent_ms >= sync_timeout_ms {
                 let (send_size, rate_limited) =
