@@ -1,7 +1,7 @@
 
 [package]
 name = "uflow"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2018"
 description = "Provides real-time, mixed-reliability, and congestion-controlled data transfer over the User Datagram Protocol (UDP)."
 license = "MIT"
