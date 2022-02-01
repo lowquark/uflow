@@ -81,7 +81,7 @@ impl Peer {
         self.endpoint_ref.borrow().rtt_s()
     }
 
-    /// Returns `true` if the connection has been terminated.
+    /// Returns `true` if the connection has been terminated or timed out.
     pub fn is_disconnected(&self) -> bool {
         let endpoint_ref = self.endpoint_ref.borrow();
         return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();

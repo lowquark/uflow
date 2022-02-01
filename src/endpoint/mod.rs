@@ -25,7 +25,7 @@ pub trait FrameSink {
 pub struct Config {
     /// The number of channels used to send packets.
     ///
-    /// Must be greater than 0, and less than or equal to [`MAX_CHANNELS`](MAX_CHANNELS).
+    /// Must be greater than 0, and less than or equal to [`MAX_CHANNELS`].
     ///
     /// *Note*: The number of channels used by an endpoint to send data may differ from the
     /// opposing endpoint.
@@ -46,12 +46,13 @@ pub struct Config {
     /// The maximum size of a sent packet, in bytes. The endpoint will ensure that it does not send
     /// packets with a size exceeding this value.
     ///
-    /// Must be greater than 0, and less than or equal to [`MAX_PACKET_SIZE`](MAX_PACKET_SIZE).
+    /// Must be greater than 0, and less than or equal to [`MAX_PACKET_SIZE`].
     pub max_packet_size: usize,
 
-    /// The maximum allocation size of the endpoint's receive queue, in bytes. The endpoint will
-    /// ensure that the total amount of memory it allocates to receive packet data does not exceed
-    /// this value.
+    /// The maximum allocation size of the endpoint's receive buffer, in bytes. The endpoint will
+    /// ensure that the total amount of memory allocated to receive packet data doesn't exceed this
+    /// value, rounded up to the nearest multiple of
+    /// [`MAX_FRAGMENT_SIZE`](crate::MAX_FRAGMENT_SIZE).
     ///
     /// Must be greater than 0.
     ///

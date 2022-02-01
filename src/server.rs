@@ -73,9 +73,8 @@ impl Server {
     /// sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
     ///
     /// Current, non-zombie [`Peer`](peer::Peer) objects will be updated as relevant data is
-    /// received. Call [`Peer::poll_events()`](peer::Peer::poll_events) after calling
-    /// [`step()`](Self::step) to retrieve incoming packets and connection status updates for an
-    /// individual peer.
+    /// received. Call [`Peer::poll_events()`](peer::Peer::poll_events) after calling this method
+    /// to retrieve incoming packets and connection status updates for an individual peer.
     pub fn step(&mut self) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
