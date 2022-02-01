@@ -29,10 +29,10 @@ fn main() {
                 uflow::Event::Timeout => {
                     println!("server connection timed out");
                 }
-                uflow::Event::Receive(packet_data, channel_id) => {
+                uflow::Event::Receive(packet_data) => {
                     let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
 
-                    println!("received \"{}\" on channel {}", packet_data_utf8, channel_id);
+                    println!("received \"{}\"", packet_data_utf8);
                 }
             }
         }

@@ -33,11 +33,11 @@ fn main() {
                     uflow::Event::Timeout => {
                         println!("[{:?}] timed out", client_peer.address());
                     }
-                    uflow::Event::Receive(packet_data, channel_id) => {
+                    uflow::Event::Receive(packet_data) => {
                         let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
                         let reversed_string: std::string::String = packet_data_utf8.chars().rev().collect();
 
-                        println!("[{:?}]: received \"{}\" on channel {}", client_peer.address(), packet_data_utf8, channel_id);
+                        println!("[{:?}]: received \"{}\"", client_peer.address(), packet_data_utf8);
 
                         // Echo the packet reliably on channel 0
                         client_peer.send(packet_data, 0, uflow::SendMode::Reliable);

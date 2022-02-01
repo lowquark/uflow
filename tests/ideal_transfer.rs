@@ -29,12 +29,13 @@ fn server_thread() -> Vec<md5::Digest> {
                     uflow::Event::Connect => {
                         println!("[server] client connected");
                     }
-                    uflow::Event::Receive(data, channel_id) => {
+                    uflow::Event::Receive(data) => {
                         //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
 
-                        let ref mut packet_id_expected = packet_ids[channel_id];
+                        let channel_id = data[0] as usize;
+                        let packet_id = u32::from_be_bytes(data[1..5].try_into().unwrap());
 
-                        let packet_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                        let ref mut packet_id_expected = packet_ids[channel_id];
 
                         if packet_id != *packet_id_expected {
                             panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
@@ -95,7 +96,8 @@ fn client_thread() -> Vec<md5::Digest> {
             let ref mut packet_id = packet_ids[channel_id];
 
             let mut data = (0..packet_size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
-            data[0..4].clone_from_slice(&packet_id.to_be_bytes());
+            data[0] = channel_id as u8;
+            data[1..5].clone_from_slice(&packet_id.to_be_bytes());
 
             // Our local loopback connection is assumed to be both ordered and lossless!
             let mode = match rand::random::<u32>() % 3 {

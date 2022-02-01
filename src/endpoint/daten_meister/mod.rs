@@ -48,7 +48,7 @@ pub type PersistentDatagramRc = Rc<RefCell<PersistentDatagram>>;
 pub type PersistentDatagramWeak = Weak<RefCell<PersistentDatagram>>;
 
 pub trait PacketSink {
-    fn send(&mut self, packet_data: Box<[u8]>, channel_id: u8);
+    fn send(&mut self, packet_data: Box<[u8]>);
 }
 
 pub struct DatenMeister {

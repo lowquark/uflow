@@ -187,7 +187,7 @@
 //!         }
 //!         uflow::Event::Timeout => {
 //!         }
-//!         uflow::Event::Receive(packet_data, channel_id) => {
+//!         uflow::Event::Receive(packet_data) => {
 //!         }
 //!     }
 //! }
@@ -316,8 +316,6 @@ pub enum Event {
     Receive(
         /// The received packet.
         Box<[u8]>,
-        /// The received packet's channel ID.
-        usize,
     ),
 }
 

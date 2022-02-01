@@ -26,7 +26,7 @@ impl packet_sender::DatagramSink for TestDatagramSink {
 }
 
 struct TestPacketSink {
-    pub packets: VecDeque<(Box<[u8]>, u8)>,
+    pub packets: VecDeque<Box<[u8]>>,
 }
 
 impl TestPacketSink {
@@ -38,8 +38,8 @@ impl TestPacketSink {
 }
 
 impl super::PacketSink for TestPacketSink {
-    fn send(&mut self, packet: Box<[u8]>, channel_id: u8) {
-        self.packets.push_back((packet, channel_id));
+    fn send(&mut self, packet: Box<[u8]>) {
+        self.packets.push_back(packet);
     }
 }
 
@@ -111,7 +111,7 @@ fn random_transfer() {
     let mut packet_sink = TestPacketSink::new();
     receiver.receive(&mut packet_sink);
 
-    assert_eq!(packet_sink.packets, sent_packets);
+    assert_eq!(packet_sink.packets, sent_packets.into_iter().map(|pair| pair.0).collect::<Vec<_>>());
 }
 
 fn test_single_transfer(packet_size: usize, max_alloc: usize) {
@@ -132,7 +132,7 @@ fn test_single_transfer(packet_size: usize, max_alloc: usize) {
     receiver.receive(&mut packet_sink);
 
     assert_eq!(packet_sink.packets.len(), 1);
-    assert_eq!(packet_sink.packets[0].0, packet_data);
+    assert_eq!(packet_sink.packets[0], packet_data);
 }
 
 /// Ensures a packet of size zero may be transferred.
