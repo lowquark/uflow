@@ -60,7 +60,7 @@
 //!     // Forget disconnected peers
 //!     peer_list.retain(|peer| !peer.is_disconnected());
 //!
-//!     // Sleep for 30ms (~33.3 steps/second)
+//!     // Sleep for 30ms (≈33.3 steps/second)
 //!     std::thread::sleep(std::time::Duration::from_millis(30));
 //! #   break;
 //! }
@@ -116,7 +116,7 @@
 //!     // Send new outbound data
 //!     client.flush();
 //!
-//!     // Sleep for 30ms (~33.3 steps/second)
+//!     // Sleep for 30ms (≈33.3 steps/second)
 //!     std::thread::sleep(std::time::Duration::from_millis(30));
 //! #   break;
 //! }
@@ -212,7 +212,7 @@
 //! A connection is explicitly closed by calling [`Peer::disconnect()`], which notifies the remote
 //! host of the disconnection, and sends all pending outbound packets before doing so. The sender
 //! can expect that any currently pending reliable packets will be delivered prior to
-//! disconnecting.
+//! disconnecting, provided that the remote host doesn't also disconnect in the meantime.
 //!
 //! ```
 //! # let mut client = uflow::Client::bind_any_ipv4()
