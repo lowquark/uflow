@@ -15,8 +15,8 @@ use std::rc::Rc;
 pub struct Server {
     socket: net::UdpSocket,
 
-    max_connections: usize,
-    incoming_config: endpoint::Config,
+    max_peer_count: usize,
+    peer_config: endpoint::Config,
 
     endpoints: HashMap<net::SocketAddr, Rc<RefCell<endpoint::Endpoint>>>,
     incoming_peers: Vec<peer::Peer>,
@@ -27,13 +27,13 @@ impl Server {
     /// bound to the provided address, and configured to be non-blocking. Any errors resulting from
     /// socket initialization are forwarded to the caller.
     ///
-    /// The server will limit the number of concurrent, non-zombie connections to
-    /// `max_connections`, and will silently ignore connection requests which would exceed that
-    /// limit. Valid incoming connections will be initialized according to `incoming_config`.
+    /// The server will limit the number of concurrent, non-zombie connections to `max_peer_count`,
+    /// and will silently ignore connection requests which would exceed that limit. Valid incoming
+    /// connections will be initialized according to `peer_config`.
     pub fn bind<A: net::ToSocketAddrs>(addr: A,
-                                       max_connections: usize,
-                                       incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
-        assert!(incoming_config.is_valid(), "invalid endpoint config");
+                                       max_peer_count: usize,
+                                       peer_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        assert!(peer_config.is_valid(), "invalid endpoint config");
 
         let socket = net::UdpSocket::bind(addr)?;
 
@@ -45,21 +45,21 @@ impl Server {
             endpoints: HashMap::new(),
             incoming_peers: Vec::new(),
 
-            max_connections,
-            incoming_config,
+            max_peer_count,
+            peer_config,
         })
     }
 
     /// Equivalent to calling [`bind()`](Self::bind) with address
     /// `(`[`std::net::Ipv4Addr::UNSPECIFIED`](std::net::Ipv4Addr::UNSPECIFIED)`, 0)`.
-    pub fn bind_any_ipv4(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
-        Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_connections, incoming_config)
+    pub fn bind_any_ipv4(max_peer_count: usize, peer_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), max_peer_count, peer_config)
     }
 
     /// Equivalent to calling [`bind()`](Self::bind) with address
     /// `(`[`std::net::Ipv6Addr::UNSPECIFIED`](std::net::Ipv6Addr::UNSPECIFIED)`, 0)`.
-    pub fn bind_any_ipv6(max_connections: usize, incoming_config: endpoint::Config) -> Result<Self, std::io::Error> {
-        Self::bind((net::Ipv6Addr::UNSPECIFIED, 0), max_connections, incoming_config)
+    pub fn bind_any_ipv6(max_peer_count: usize, peer_config: endpoint::Config) -> Result<Self, std::io::Error> {
+        Self::bind((net::Ipv6Addr::UNSPECIFIED, 0), max_peer_count, peer_config)
     }
 
     /// Returns a number of [`Peer`](peer::Peer) objects representing new connections since the
@@ -113,10 +113,10 @@ impl Server {
 
             endpoint.borrow_mut().handle_frame(frame, data_sink);
         } else {
-            if self.endpoints.len() < self.max_connections as usize {
+            if self.endpoints.len() < self.max_peer_count as usize {
                 let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
 
-                let mut endpoint = endpoint::Endpoint::new(self.incoming_config.clone());
+                let mut endpoint = endpoint::Endpoint::new(self.peer_config.clone());
                 endpoint.handle_frame(frame, data_sink);
 
                 let endpoint_ref = Rc::new(RefCell::new(endpoint));
