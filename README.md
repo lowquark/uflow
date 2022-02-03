@@ -19,5 +19,5 @@ The current version, 0.3, has the following improvements over 0.2:
 
 These and other features have proven to be functional, and the new design will
 be summarized in a subsequent whitepaper. Documentation can be found at
-[docs.rs](https://docs.rs/uflow/0.3.0/uflow/).
+[docs.rs](https://docs.rs/uflow/latest/uflow/).
 
