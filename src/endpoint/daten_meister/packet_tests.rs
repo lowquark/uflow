@@ -8,7 +8,7 @@ use crate::frame::Datagram;
 use std::collections::VecDeque;
 
 struct TestDatagramSink {
-    pub datagrams: VecDeque<(Datagram, bool)>,
+    pub datagrams: VecDeque<Datagram>,
 }
 
 impl TestDatagramSink {
@@ -17,11 +17,16 @@ impl TestDatagramSink {
             datagrams: VecDeque::new(),
         }
     }
-}
 
-impl packet_sender::DatagramSink for TestDatagramSink {
-    fn send(&mut self, datagram: Datagram, reliable: bool) {
-        self.datagrams.push_back((datagram, reliable));
+    pub fn pull(&mut self, sender: &mut packet_sender::PacketSender, flush_id: u32) {
+        while let Some((pending_packet_rc, _)) = sender.emit_packet(flush_id) {
+            let pending_packet_ref = std::cell::RefCell::borrow(&pending_packet_rc);
+            let last_fragment_id = pending_packet_ref.last_fragment_id();
+
+            for i in 0 ..= last_fragment_id {
+                self.datagrams.push_back(pending_packet_ref.datagram(i));
+            }
+        }
     }
 }
 
@@ -95,15 +100,15 @@ fn random_transfer() {
 
     let mut datagram_sink = TestDatagramSink::new();
     loop {
-        sender.emit_packet_datagrams(0, &mut datagram_sink);
-
-        if datagram_sink.datagrams.is_empty() {
-            break;
-        }
+        datagram_sink.pull(&mut sender, 0);
 
         let datagrams = std::mem::take(&mut datagram_sink.datagrams);
 
-        for (datagram, _) in datagrams.into_iter() {
+        if datagrams.is_empty() {
+            break;
+        }
+
+        for datagram in datagrams.into_iter() {
             receiver.handle_datagram(datagram);
         }
     }
@@ -122,9 +127,9 @@ fn test_single_transfer(packet_size: usize, max_alloc: usize) {
     sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
 
     let mut datagram_sink = TestDatagramSink::new();
-    sender.emit_packet_datagrams(0, &mut datagram_sink);
+    datagram_sink.pull(&mut sender, 0);
 
-    for (datagram, _) in datagram_sink.datagrams.into_iter() {
+    for datagram in datagram_sink.datagrams.into_iter() {
         receiver.handle_datagram(datagram);
     }
 

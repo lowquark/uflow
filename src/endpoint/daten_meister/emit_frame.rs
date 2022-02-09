@@ -17,12 +17,6 @@ use std::cell::RefCell;
 
 const MAX_SEND_COUNT: u8 = 2;
 
-impl packet_sender::DatagramSink for datagram_queue::DatagramQueue {
-    fn send(&mut self, datagram: frame::Datagram, resend: bool) {
-        self.push_back(datagram_queue::Entry::new(datagram, resend));
-    }
-}
-
 pub struct FrameEmitter<'a> {
     packet_sender: &'a mut packet_sender::PacketSender,
     datagram_queue: &'a mut datagram_queue::DatagramQueue,
@@ -136,8 +130,14 @@ impl<'a> FrameEmitter<'a> {
 
         'outer: loop {
             if self.datagram_queue.is_empty() {
-                self.packet_sender.emit_packet_datagrams(self.flush_id, self.datagram_queue);
-                if self.datagram_queue.is_empty() {
+                if let Some((pending_packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
+                    let pending_packet_ref = RefCell::borrow(&pending_packet_rc);
+
+                    let last_fragment_id = pending_packet_ref.last_fragment_id();
+                    for i in 0 ..= last_fragment_id {
+                        self.datagram_queue.push_back(datagram_queue::Entry::new(pending_packet_ref.datagram(i), resend));
+                    }
+                } else {
                     break 'outer;
                 }
             }

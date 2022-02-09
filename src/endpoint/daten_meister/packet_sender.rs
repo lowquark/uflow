@@ -8,6 +8,9 @@ use crate::frame::Datagram;
 use crate::frame::FragmentId;
 
 use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::rc::Weak;
 
 // Size of the buffer that the receiver will allocate for a packet in bytes
 fn alloc_size(packet_size: usize) -> usize {
@@ -19,6 +22,7 @@ fn alloc_size(packet_size: usize) -> usize {
 }
 
 struct WindowEntry {
+    packet: PendingPacketRc,
     // How many allocation points this packet is worth
     alloc_size: usize,
     // Channel this packet was sent on
@@ -36,6 +40,78 @@ impl Channel {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct PendingPacket {
+    data: Box<[u8]>,
+    channel_id: u8,
+
+    sequence_id: u32,
+    window_parent_lead: u16,
+    channel_parent_lead: u16,
+    last_fragment_id: u16,
+
+    ack_flags: Vec<bool>,
+}
+
+impl PendingPacket {
+    pub fn new(data: Box<[u8]>, channel_id: u8,
+               sequence_id: u32, window_parent_lead: u16, channel_parent_lead: u16) -> Self {
+        let num_fragments = (data.len() + MAX_FRAGMENT_SIZE - 1) / MAX_FRAGMENT_SIZE + (data.len() == 0) as usize;
+        debug_assert!(num_fragments != 0);
+
+        debug_assert!(num_fragments - 1 <= u16::MAX as usize);
+        let last_fragment_id = (num_fragments - 1) as u16;
+
+        Self {
+            data,
+            channel_id,
+
+            sequence_id,
+            window_parent_lead,
+            channel_parent_lead,
+            last_fragment_id,
+
+            ack_flags: vec![false; num_fragments],
+        }
+    }
+
+    pub fn last_fragment_id(&self) -> u16 {
+        self.last_fragment_id
+    }
+
+    pub fn fragment_acknowledged(&mut self, fragment_id: u16) -> bool {
+        self.ack_flags[fragment_id as usize]
+    }
+
+    pub fn acknowledge_fragment(&mut self, fragment_id: u16) {
+        self.ack_flags[fragment_id as usize] = true;
+    }
+
+    pub fn datagram(&self, fragment_id: u16) -> Datagram {
+        debug_assert!(fragment_id <= self.last_fragment_id);
+
+        // TODO: Eliminate copy
+        let i = fragment_id as usize;
+        let data = if fragment_id == self.last_fragment_id {
+            self.data[i * MAX_FRAGMENT_SIZE .. ].into()
+        } else {
+            self.data[i * MAX_FRAGMENT_SIZE .. (i + 1)*MAX_FRAGMENT_SIZE].into()
+        };
+
+        Datagram {
+            sequence_id: self.sequence_id,
+            channel_id: self.channel_id,
+            window_parent_lead: self.window_parent_lead,
+            channel_parent_lead: self.channel_parent_lead,
+            fragment_id: FragmentId { id: fragment_id, last: self.last_fragment_id },
+            data,
+        }
+    }
+}
+
+pub type PendingPacketRc = Rc<RefCell<PendingPacket>>;
+pub type PendingPacketWeak = Weak<RefCell<PendingPacket>>;
 
 #[derive(Debug)]
 struct PacketSendEntry {
@@ -56,6 +132,7 @@ impl PacketSendEntry {
     }
 }
 
+/*
 pub trait DatagramSink {
     fn send(&mut self, datagram: Datagram, resend: bool);
 }
@@ -112,6 +189,7 @@ fn emit_fragments(packet: PacketSendEntry, sequence_id: u32, window_parent_lead:
         sink.send(datagram, resend);
     }
 }
+*/
 
 pub struct PacketSender {
     packet_send_queue: VecDeque<PacketSendEntry>,
@@ -170,9 +248,9 @@ impl PacketSender {
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));
     }
 
-    // Sends as many packets from the send queue as possible, respecting both the maximum
-    // allocation limit, and the maximum transfer window.
-    pub fn emit_packet_datagrams(&mut self, flush_id: u32, sink: &mut impl DatagramSink) {
+    // Pulls a single packet from the send queue, respecting both the maximum allocation limit, and
+    // the maximum transfer window.
+    pub fn emit_packet(&mut self, flush_id: u32) -> Option<(PendingPacketRc, bool)> {
         while let Some(packet) = self.packet_send_queue.front() {
             match packet.mode {
                 SendMode::TimeSensitive => {
@@ -188,13 +266,13 @@ impl PacketSender {
 
         if let Some(packet) = self.packet_send_queue.front() {
             if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_TRANSFER_WINDOW_SIZE {
-                return;
+                return None;
             }
 
             let packet_alloc_size = alloc_size(packet.data.len());
 
             if self.alloc + packet_alloc_size > self.max_alloc {
-                return;
+                return None;
             }
 
             let packet = self.packet_send_queue.pop_front().unwrap();
@@ -231,15 +309,34 @@ impl PacketSender {
             self.next_id = self.next_id.wrapping_add(1);
             self.alloc += packet_alloc_size;
 
+            let pending_packet = Rc::new(RefCell::new(PendingPacket::new(packet.data,
+                                                                         packet.channel_id,
+                                                                         sequence_id,
+                                                                         window_parent_lead,
+                                                                         channel_parent_lead)));
+
+            let pending_packet_clone = Rc::clone(&pending_packet);
+
             let window_idx = (sequence_id % MAX_PACKET_TRANSFER_WINDOW_SIZE) as usize;
             debug_assert!(self.window[window_idx].is_none());
+
             self.window[window_idx] = Some(WindowEntry {
+                packet: pending_packet,
                 alloc_size: packet_alloc_size,
                 channel_id: packet.channel_id
             });
 
-            emit_fragments(packet, sequence_id, window_parent_lead, channel_parent_lead, sink);
+            let resend = match packet.mode {
+                SendMode::TimeSensitive => false,
+                SendMode::Unreliable => false,
+                SendMode::Resend => true,
+                SendMode::Reliable => true,
+            };
+
+            return Some((pending_packet_clone, resend));
         }
+
+        return None;
     }
 
     // Responds to a receive window acknowledgement. All packet data beyond the new receive window
@@ -299,41 +396,13 @@ mod tests {
         sequence_id.to_be_bytes().into()
     }
 
-    fn new_packet_datagram(sequence_id: u32, channel_id: u8, window_parent_lead: u16, channel_parent_lead: u16) -> Datagram {
-        Datagram {
-            sequence_id,
-            channel_id,
-            window_parent_lead,
-            channel_parent_lead,
-            fragment_id: FragmentId { id: 0, last: 0 },
-            data: new_packet_data(sequence_id),
-        }
-    }
-
-    struct TestDatagramSink {
-        datagrams: VecDeque<(Datagram, bool)>,
-    }
-
-    impl TestDatagramSink {
-        fn new() -> Self {
-            Self {
-                datagrams: VecDeque::new(),
-            }
-        }
-
-        fn pop(&mut self) -> (Datagram, bool) {
-            self.datagrams.pop_front().unwrap()
-        }
-
-        fn is_empty(&mut self) -> bool {
-            self.datagrams.is_empty()
-        }
-    }
-
-    impl super::DatagramSink for TestDatagramSink {
-        fn send(&mut self, datagram: Datagram, reliable: bool) {
-            self.datagrams.push_back((datagram, reliable));
-        }
+    fn packet_info(emit_result: (PendingPacketRc, bool)) -> (u32, u8, u16, u16, bool) {
+        let packet_ref = emit_result.0.borrow();
+        (packet_ref.sequence_id,
+         packet_ref.channel_id,
+         packet_ref.window_parent_lead,
+         packet_ref.channel_parent_lead,
+         emit_result.1)
     }
 
     #[test]
@@ -351,22 +420,18 @@ mod tests {
     #[test]
     fn basic() {
         let mut tx = PacketSender::new(1, 10000, 0);
-        let mut sink = TestDatagramSink::new();
 
         tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive, 0);
         tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable, 0);
         tx.enqueue_packet(new_packet_data(2), 0, SendMode::Resend, 0);
         tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable, 0);
 
-        for _ in 0..4 {
-            tx.emit_packet_datagrams(0, &mut sink);
-        }
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (0, 0, 0, 0, false));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (1, 0, 0, 0, false));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (2, 0, 0, 0, true));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (3, 0, 0, 0, true));
 
-        assert_eq!(sink.pop(), (new_packet_datagram(0, 0, 0, 0), false));
-        assert_eq!(sink.pop(), (new_packet_datagram(1, 0, 0, 0), false));
-        assert_eq!(sink.pop(), (new_packet_datagram(2, 0, 0, 0), true));
-        assert_eq!(sink.pop(), (new_packet_datagram(3, 0, 0, 0), true));
-        assert!(sink.is_empty());
+        assert!(tx.emit_packet(0).is_none());
     }
 
     #[test]
@@ -384,7 +449,6 @@ mod tests {
         */
 
         let mut tx = PacketSender::new(2, 10000, 0);
-        let mut sink = TestDatagramSink::new();
 
         tx.enqueue_packet(new_packet_data(0), 1, SendMode::Unreliable, 0);
         tx.enqueue_packet(new_packet_data(1), 1, SendMode::Reliable, 0);
@@ -397,22 +461,18 @@ mod tests {
 
         tx.enqueue_packet(new_packet_data(7), 1, SendMode::Reliable, 0);
 
-        for _ in 0..8 {
-            tx.emit_packet_datagrams(0, &mut sink);
-        }
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (0, 1, 0, 0, false));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (1, 1, 0, 0, true));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (2, 1, 1, 1, false));
+                                                                                 
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (3, 0, 2, 0, true));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (4, 0, 1, 1, false));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (5, 0, 2, 2, false));
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (6, 0, 3, 3, true));
+                                                                                 
+        assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (7, 1, 1, 6, true));
 
-        assert_eq!(sink.pop(), (new_packet_datagram(0, 1, 0, 0), false));
-        assert_eq!(sink.pop(), (new_packet_datagram(1, 1, 0, 0), true));
-        assert_eq!(sink.pop(), (new_packet_datagram(2, 1, 1, 1), false));
-
-        assert_eq!(sink.pop(), (new_packet_datagram(3, 0, 2, 0), true));
-        assert_eq!(sink.pop(), (new_packet_datagram(4, 0, 1, 1), false));
-        assert_eq!(sink.pop(), (new_packet_datagram(5, 0, 2, 2), false));
-        assert_eq!(sink.pop(), (new_packet_datagram(6, 0, 3, 3), true));
-
-        assert_eq!(sink.pop(), (new_packet_datagram(7, 1, 1, 6), true));
-
-        assert!(sink.is_empty());
+        assert!(tx.emit_packet(0).is_none());
     }
 
     #[test]
@@ -429,7 +489,6 @@ mod tests {
         */
 
         let mut tx = PacketSender::new(2, 10000, 0);
-        let mut sink = TestDatagramSink::new();
 
         let mut flush_id = 0;
 
@@ -448,26 +507,23 @@ mod tests {
 
             tx.enqueue_packet(new_packet_data(ref_id + 6), 1, SendMode::Reliable, flush_id);
 
-            for _ in 0 .. 7 {
-                tx.emit_packet_datagrams(flush_id, &mut sink);
-            }
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 0, 1, 0, 0, false));
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 1, 1, 0, 0, true));
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 2, 1, 1, 1, false));
+                                                                                    
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 3, 0, 2, 0, true));
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 4, 0, 1, 1, false));
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 5, 0, 2, 2, true));
+                                                                                    
+            assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (ref_id + 6, 1, 1, 5, true));
 
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 0, 1, 0, 0), false));
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 1, 1, 0, 0), true));
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 2, 1, 1, 1), false));
-
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 3, 0, 2, 0), true));
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 4, 0, 1, 1), false));
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 5, 0, 2, 2), true));
-
-            assert_eq!(sink.pop(), (new_packet_datagram(ref_id + 6, 1, 1, 5), true));
-
-            assert!(sink.is_empty());
+            assert!(tx.emit_packet(0).is_none());
 
             flush_id = flush_id.wrapping_add(1);
         }
     }
 
+    /*
     #[test]
     fn fragment_emission() {
         use super::emit_fragments;
@@ -527,6 +583,7 @@ mod tests {
 
         assert!(sink.is_empty());
     }
+    */
 
     // TODO: Test transfer window limit
     // TODO: Test allocation limit
