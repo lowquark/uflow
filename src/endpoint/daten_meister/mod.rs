@@ -42,25 +42,19 @@ impl FragmentRef {
         }
     }
 
-    fn datagram(&self) -> Option<frame::Datagram> {
+    /*
+    fn datagram<'a>(&'a self) -> Option<Ref<'a, frame::DatagramRef<'a>>> {
         if let Some(packet_rc) = Weak::upgrade(&self.packet) {
-            Some(packet_rc.borrow().datagram(self.fragment_id))
+            Some(Ref::<'a, packet_sender::PendingPacket>::map(packet_rc.borrow(), |v| &v.datagram(self.fragment_id)))
         } else {
             None
         }
     }
+    */
 
     fn acknowledge(&mut self) {
         if let Some(packet_rc) = Weak::upgrade(&self.packet) {
             packet_rc.borrow_mut().acknowledge_fragment(self.fragment_id)
-        }
-    }
-
-    fn acknowledged(&self) -> bool {
-        if let Some(packet_rc) = Weak::upgrade(&self.packet) {
-            packet_rc.borrow().fragment_acknowledged(self.fragment_id)
-        } else {
-            true
         }
     }
 

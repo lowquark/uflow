@@ -24,7 +24,7 @@ impl TestDatagramSink {
             let last_fragment_id = pending_packet_ref.last_fragment_id();
 
             for i in 0 ..= last_fragment_id {
-                self.datagrams.push_back(pending_packet_ref.datagram(i));
+                self.datagrams.push_back(pending_packet_ref.datagram(i).into());
             }
         }
     }

@@ -54,99 +54,21 @@ impl<'a> FrameEmitter<'a> {
         let mut fragment_refs = Vec::new();
 
         while let Some(entry) = self.resend_queue.peek() {
-            if entry.fragment_ref.acknowledged() {
-                self.resend_queue.pop();
-                continue;
-            }
+            if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
+                let packet_ref = packet_rc.borrow();
 
-            if entry.resend_time > now_ms {
-                break;
-            }
-
-            let datagram = entry.fragment_ref.datagram().unwrap();
-
-            let encoded_size = DataFrameBuilder::encoded_size(&datagram);
-            let potential_frame_size = fbuilder.size() + encoded_size;
-
-            if potential_frame_size > bytes_remaining {
-                if fbuilder.count() > 0 {
-                    let frame_data = fbuilder.build();
-                    bytes_remaining -= frame_data.len();
-
-                    self.frame_log.push(frame_id, frame_log::Entry {
-                        send_time_ms: now_ms,
-                        fragment_refs: fragment_refs.into_boxed_slice(),
-                    });
-
-                    f(frame_data, frame_id, nonce);
-                }
-
-                return (max_send_size - bytes_remaining, true);
-            }
-
-            if potential_frame_size > MAX_FRAME_SIZE {
-                debug_assert!(fbuilder.count() > 0);
-
-                let frame_data = fbuilder.build();
-                bytes_remaining -= frame_data.len();
-
-                self.frame_log.push(frame_id, frame_log::Entry {
-                    send_time_ms: now_ms,
-                    fragment_refs: fragment_refs.into_boxed_slice(),
-                });
-
-                f(frame_data, frame_id, nonce);
-
-                if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                    return (max_send_size - bytes_remaining, false);
-                }
-
-                frame_id = self.frame_log.next_id();
-                nonce = rand::random();
-
-                fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                fragment_refs = Vec::new();
-                continue;
-            }
-
-            fbuilder.add(&datagram);
-
-            let entry = self.resend_queue.pop().unwrap();
-
-            fragment_refs.push(entry.fragment_ref.clone());
-
-            self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref,
-                                                            now_ms + rtt_ms*(1 << entry.send_count),
-                                                            (entry.send_count + 1).min(MAX_SEND_COUNT)));
-        }
-
-        'outer: loop {
-            if self.datagram_queue.is_empty() {
-                if let Some((pending_packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
-                    let pending_packet_ref = pending_packet_rc.borrow();
-
-                    let last_fragment_id = pending_packet_ref.last_fragment_id();
-                    for i in 0 ..= last_fragment_id {
-                        let fragment_ref = FragmentRef::new(&pending_packet_rc, i);
-                        let entry = datagram_queue::Entry::new(fragment_ref, resend);
-                        self.datagram_queue.push_back(entry);
-                    }
-                } else {
-                    break 'outer;
-                }
-            }
-
-            while let Some(entry) = self.datagram_queue.front() {
-                let datagram_opt = entry.fragment_ref.datagram();
-
-                if datagram_opt.is_none() {
-                    self.datagram_queue.pop_front();
+                if packet_ref.fragment_acknowledged(entry.fragment_ref.fragment_id) {
+                    self.resend_queue.pop();
                     continue;
                 }
 
-                let datagram = datagram_opt.unwrap();
+                if entry.resend_time > now_ms {
+                    break;
+                }
 
-                let encoded_size = DataFrameBuilder::encoded_size(&datagram);
+                let datagram = packet_ref.datagram(entry.fragment_ref.fragment_id);
+
+                let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
                 let potential_frame_size = fbuilder.size() + encoded_size;
 
                 if potential_frame_size > bytes_remaining {
@@ -190,14 +112,104 @@ impl<'a> FrameEmitter<'a> {
                     continue;
                 }
 
-                fbuilder.add(&datagram);
+                fbuilder.add_ref(&datagram);
 
-                let entry = self.datagram_queue.pop_front().unwrap();
+                let entry = self.resend_queue.pop().unwrap();
 
-                if entry.resend {
-                    fragment_refs.push(entry.fragment_ref.clone());
+                fragment_refs.push(entry.fragment_ref.clone());
 
-                    self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
+                self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref,
+                                                                now_ms + rtt_ms*(1 << entry.send_count),
+                                                                (entry.send_count + 1).min(MAX_SEND_COUNT)));
+            } else {
+                self.resend_queue.pop();
+                continue;
+            }
+        }
+
+        'outer: loop {
+            if self.datagram_queue.is_empty() {
+                if let Some((pending_packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
+                    let pending_packet_ref = pending_packet_rc.borrow();
+
+                    let last_fragment_id = pending_packet_ref.last_fragment_id();
+                    for i in 0 ..= last_fragment_id {
+                        let fragment_ref = FragmentRef::new(&pending_packet_rc, i);
+                        let entry = datagram_queue::Entry::new(fragment_ref, resend);
+                        self.datagram_queue.push_back(entry);
+                    }
+                } else {
+                    break 'outer;
+                }
+            }
+
+            while let Some(entry) = self.datagram_queue.front() {
+                if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
+                    let packet_ref = packet_rc.borrow();
+
+                    if packet_ref.fragment_acknowledged(entry.fragment_ref.fragment_id) {
+                        self.resend_queue.pop();
+                        continue;
+                    }
+
+                    let datagram = packet_ref.datagram(entry.fragment_ref.fragment_id);
+
+                    let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
+                    let potential_frame_size = fbuilder.size() + encoded_size;
+
+                    if potential_frame_size > bytes_remaining {
+                        if fbuilder.count() > 0 {
+                            let frame_data = fbuilder.build();
+                            bytes_remaining -= frame_data.len();
+
+                            self.frame_log.push(frame_id, frame_log::Entry {
+                                send_time_ms: now_ms,
+                                fragment_refs: fragment_refs.into_boxed_slice(),
+                            });
+
+                            f(frame_data, frame_id, nonce);
+                        }
+
+                        return (max_send_size - bytes_remaining, true);
+                    }
+
+                    if potential_frame_size > MAX_FRAME_SIZE {
+                        debug_assert!(fbuilder.count() > 0);
+
+                        let frame_data = fbuilder.build();
+                        bytes_remaining -= frame_data.len();
+
+                        self.frame_log.push(frame_id, frame_log::Entry {
+                            send_time_ms: now_ms,
+                            fragment_refs: fragment_refs.into_boxed_slice(),
+                        });
+
+                        f(frame_data, frame_id, nonce);
+
+                        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
+                            return (max_send_size - bytes_remaining, false);
+                        }
+
+                        frame_id = self.frame_log.next_id();
+                        nonce = rand::random();
+
+                        fbuilder = DataFrameBuilder::new(frame_id, nonce);
+                        fragment_refs = Vec::new();
+                        continue;
+                    }
+
+                    fbuilder.add_ref(&datagram);
+
+                    let entry = self.datagram_queue.pop_front().unwrap();
+
+                    if entry.resend {
+                        fragment_refs.push(entry.fragment_ref.clone());
+
+                        self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
+                    }
+                } else {
+                    self.resend_queue.pop();
+                    continue;
                 }
             }
         }

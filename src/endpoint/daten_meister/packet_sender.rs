@@ -4,8 +4,7 @@ use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_SIZE;
 use crate::MAX_PACKET_TRANSFER_WINDOW_SIZE;
 use crate::SendMode;
-use crate::frame::Datagram;
-use crate::frame::FragmentId;
+use crate::frame;
 
 use std::collections::VecDeque;
 use std::cell::RefCell;
@@ -91,23 +90,22 @@ impl PendingPacket {
         self.ack_flags[fragment_id as usize] = true;
     }
 
-    pub fn datagram(&self, fragment_id: u16) -> Datagram {
+    pub fn datagram<'a>(&'a self, fragment_id: u16) -> frame::DatagramRef<'a> {
         debug_assert!(fragment_id <= self.last_fragment_id);
 
-        // TODO: Eliminate copy
         let i = fragment_id as usize;
         let data = if fragment_id == self.last_fragment_id {
-            self.data[i * MAX_FRAGMENT_SIZE .. ].into()
+            &self.data[i * MAX_FRAGMENT_SIZE .. ]
         } else {
-            self.data[i * MAX_FRAGMENT_SIZE .. (i + 1)*MAX_FRAGMENT_SIZE].into()
+            &self.data[i * MAX_FRAGMENT_SIZE .. (i + 1)*MAX_FRAGMENT_SIZE]
         };
 
-        Datagram {
+        frame::DatagramRef {
             sequence_id: self.sequence_id,
             channel_id: self.channel_id,
             window_parent_lead: self.window_parent_lead,
             channel_parent_lead: self.channel_parent_lead,
-            fragment_id: FragmentId { id: fragment_id, last: self.last_fragment_id },
+            fragment_id: frame::FragmentId { id: fragment_id, last: self.last_fragment_id },
             data,
         }
     }
@@ -134,65 +132,6 @@ impl PacketSendEntry {
         }
     }
 }
-
-/*
-pub trait DatagramSink {
-    fn send(&mut self, datagram: Datagram, resend: bool);
-}
-
-fn emit_fragments(packet: PacketSendEntry, sequence_id: u32, window_parent_lead: u16, channel_parent_lead: u16, sink: &mut impl DatagramSink) {
-    let num_fragments = (packet.data.len() + MAX_FRAGMENT_SIZE - 1) / MAX_FRAGMENT_SIZE + (packet.data.len() == 0) as usize;
-
-    let resend = match packet.mode {
-        SendMode::TimeSensitive => false,
-        SendMode::Unreliable => false,
-        SendMode::Resend => true,
-        SendMode::Reliable => true,
-    };
-
-    debug_assert!(num_fragments != 0);
-
-    if num_fragments == 1 {
-        let datagram = Datagram {
-            sequence_id,
-            channel_id: packet.channel_id,
-            window_parent_lead,
-            channel_parent_lead,
-            fragment_id: FragmentId { id: 0, last: 0 },
-            data: packet.data,
-        };
-
-        sink.send(datagram, resend);
-    } else {
-        debug_assert!(num_fragments - 1 <= u16::MAX as usize);
-        let last_fragment_id = num_fragments - 1;
-
-        for i in 0 .. last_fragment_id {
-            let datagram = Datagram {
-                sequence_id,
-                channel_id: packet.channel_id,
-                window_parent_lead,
-                channel_parent_lead,
-                fragment_id: FragmentId { id: i as u16, last: last_fragment_id as u16 },
-                data: packet.data[i * MAX_FRAGMENT_SIZE .. (i + 1)*MAX_FRAGMENT_SIZE].into(),
-            };
-
-            sink.send(datagram, resend);
-        }
-
-        let datagram = Datagram {
-            sequence_id,
-            channel_id: packet.channel_id,
-            window_parent_lead,
-            channel_parent_lead,
-            fragment_id: FragmentId { id: last_fragment_id as u16, last: last_fragment_id as u16 },
-            data: packet.data[last_fragment_id * MAX_FRAGMENT_SIZE .. ].into(),
-        };
-
-        sink.send(datagram, resend);
-    }
-}
-*/
 
 pub struct PacketSender {
     packet_send_queue: VecDeque<PacketSendEntry>,
@@ -529,12 +468,12 @@ mod tests {
 
         emit_fragments(PacketSendEntry::new(Box::new([]), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
-        assert_eq!(sink.pop(), (Datagram {
+        assert_eq!(sink.pop(), (frame::Datagram {
             sequence_id: 0,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: frame::FragmentId { id: 0, last: 0 },
             data: Box::new([]),
         }, false));
 
@@ -544,12 +483,12 @@ mod tests {
 
         emit_fragments(PacketSendEntry::new(packet_data.clone(), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
-        assert_eq!(sink.pop(), (Datagram {
+        assert_eq!(sink.pop(), (frame::Datagram {
             sequence_id: 0,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: frame::FragmentId { id: 0, last: 0 },
             data: packet_data,
         }, false));
 
@@ -559,21 +498,21 @@ mod tests {
 
         emit_fragments(PacketSendEntry::new(packet_data.clone(), 0, SendMode::Unreliable, 0), 0, 0, 0, &mut sink);
 
-        assert_eq!(sink.pop(), (Datagram {
+        assert_eq!(sink.pop(), (frame::Datagram {
             sequence_id: 0,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: frame::FragmentId { id: 0, last: 1 },
             data: packet_data[0..MAX_FRAGMENT_SIZE].into(),
         }, false));
 
-        assert_eq!(sink.pop(), (Datagram {
+        assert_eq!(sink.pop(), (frame::Datagram {
             sequence_id: 0,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: frame::FragmentId { id: 1, last: 1 },
             data: packet_data[MAX_FRAGMENT_SIZE..MAX_FRAGMENT_SIZE+1].into(),
         }, false));
 

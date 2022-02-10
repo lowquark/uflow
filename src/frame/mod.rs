@@ -17,8 +17,31 @@ pub struct Datagram {
     pub data: Box<[u8]>,
 }
 
+#[derive(Debug,PartialEq)]
+pub struct DatagramRef<'a> {
+    pub sequence_id: u32,
+    pub channel_id: u8,
+    pub window_parent_lead: u16,
+    pub channel_parent_lead: u16,
+    pub fragment_id: FragmentId,
+    pub data: &'a [u8],
+}
+
+impl<'a> From<DatagramRef<'a>> for Datagram {
+    fn from(obj: DatagramRef<'a>) -> Self {
+        Self {
+            sequence_id: obj.sequence_id,
+            channel_id: obj.channel_id,
+            window_parent_lead: obj.window_parent_lead,
+            channel_parent_lead: obj.channel_parent_lead,
+            fragment_id: obj.fragment_id,
+            data: obj.data.into(),
+        }
+    }
+}
+
 impl Datagram {
-    // TODO: Does validity concern this layer?
+    // TODO: Does validity concern this layer? (No.)
     pub fn is_valid(&self) -> bool {
         use super::MAX_FRAGMENT_SIZE;
 
