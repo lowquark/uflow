@@ -22,6 +22,8 @@ fn alloc_size(packet_size: usize) -> usize {
 }
 
 struct WindowEntry {
+    // The packet to be sent in this slot (never read, only deleted once window advances)
+    #[allow(dead_code)]
     packet: PendingPacketRc,
     // How many allocation points this packet is worth
     alloc_size: usize,
@@ -51,6 +53,7 @@ pub struct PendingPacket {
     channel_parent_lead: u16,
     last_fragment_id: u16,
 
+    // TODO: Use a bitfield
     ack_flags: Vec<bool>,
 }
 
@@ -80,7 +83,7 @@ impl PendingPacket {
         self.last_fragment_id
     }
 
-    pub fn fragment_acknowledged(&mut self, fragment_id: u16) -> bool {
+    pub fn fragment_acknowledged(&self, fragment_id: u16) -> bool {
         self.ack_flags[fragment_id as usize]
     }
 
@@ -378,13 +381,6 @@ impl PacketSender {
 
             self.base_id = self.base_id.wrapping_add(1);
         }
-    }
-
-    pub fn is_packet_pending(&mut self, sequence_id: u32) -> bool {
-        let window_size = self.next_id.wrapping_sub(self.base_id);
-        let delta = sequence_id.wrapping_sub(self.base_id);
-
-        return delta < window_size;
     }
 }
 

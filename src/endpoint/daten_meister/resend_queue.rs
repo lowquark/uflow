@@ -1,19 +1,19 @@
 
-use super::PersistentDatagramRc;
+use super::FragmentRef;
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 #[derive(Debug)]
 pub struct Entry {
-    pub persistent_datagram: PersistentDatagramRc,
+    pub fragment_ref: FragmentRef,
     pub resend_time: u64,
     pub send_count: u8,
 }
 
 impl Entry {
-    pub fn new(persistent_datagram: PersistentDatagramRc, resend_time: u64, send_count: u8) -> Self {
-        Self { persistent_datagram, resend_time, send_count }
+    pub fn new(fragment_ref: FragmentRef, resend_time: u64, send_count: u8) -> Self {
+        Self { fragment_ref, resend_time, send_count }
     }
 }
 

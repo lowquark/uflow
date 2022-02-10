@@ -10,10 +10,7 @@ use super::datagram_queue;
 use super::resend_queue;
 use super::frame_log;
 use super::frame_ack_queue;
-use super::PersistentDatagram;
-
-use std::rc::Rc;
-use std::cell::RefCell;
+use super::FragmentRef;
 
 const MAX_SEND_COUNT: u8 = 2;
 
@@ -54,13 +51,10 @@ impl<'a> FrameEmitter<'a> {
         let mut nonce = rand::random();
 
         let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
-        let mut persistent_datagrams = Vec::new();
+        let mut fragment_refs = Vec::new();
 
         while let Some(entry) = self.resend_queue.peek() {
-            let pmsg_ref = entry.persistent_datagram.borrow();
-
-            if pmsg_ref.acknowledged || !self.packet_sender.is_packet_pending(pmsg_ref.datagram.sequence_id) {
-                std::mem::drop(pmsg_ref);
+            if entry.fragment_ref.acknowledged() {
                 self.resend_queue.pop();
                 continue;
             }
@@ -69,19 +63,19 @@ impl<'a> FrameEmitter<'a> {
                 break;
             }
 
-            let encoded_size = DataFrameBuilder::encoded_size(&pmsg_ref.datagram);
+            let datagram = entry.fragment_ref.datagram().unwrap();
+
+            let encoded_size = DataFrameBuilder::encoded_size(&datagram);
             let potential_frame_size = fbuilder.size() + encoded_size;
 
             if potential_frame_size > bytes_remaining {
-                std::mem::drop(pmsg_ref);
-
                 if fbuilder.count() > 0 {
                     let frame_data = fbuilder.build();
                     bytes_remaining -= frame_data.len();
 
                     self.frame_log.push(frame_id, frame_log::Entry {
                         send_time_ms: now_ms,
-                        persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+                        fragment_refs: fragment_refs.into_boxed_slice(),
                     });
 
                     f(frame_data, frame_id, nonce);
@@ -91,7 +85,6 @@ impl<'a> FrameEmitter<'a> {
             }
 
             if potential_frame_size > MAX_FRAME_SIZE {
-                std::mem::drop(pmsg_ref);
                 debug_assert!(fbuilder.count() > 0);
 
                 let frame_data = fbuilder.build();
@@ -99,7 +92,7 @@ impl<'a> FrameEmitter<'a> {
 
                 self.frame_log.push(frame_id, frame_log::Entry {
                     send_time_ms: now_ms,
-                    persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+                    fragment_refs: fragment_refs.into_boxed_slice(),
                 });
 
                 f(frame_data, frame_id, nonce);
@@ -112,18 +105,17 @@ impl<'a> FrameEmitter<'a> {
                 nonce = rand::random();
 
                 fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                persistent_datagrams = Vec::new();
+                fragment_refs = Vec::new();
                 continue;
             }
 
-            fbuilder.add(&pmsg_ref.datagram);
+            fbuilder.add(&datagram);
 
-            std::mem::drop(pmsg_ref);
             let entry = self.resend_queue.pop().unwrap();
 
-            persistent_datagrams.push(Rc::downgrade(&entry.persistent_datagram));
+            fragment_refs.push(entry.fragment_ref.clone());
 
-            self.resend_queue.push(resend_queue::Entry::new(entry.persistent_datagram,
+            self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref,
                                                             now_ms + rtt_ms*(1 << entry.send_count),
                                                             (entry.send_count + 1).min(MAX_SEND_COUNT)));
         }
@@ -131,11 +123,13 @@ impl<'a> FrameEmitter<'a> {
         'outer: loop {
             if self.datagram_queue.is_empty() {
                 if let Some((pending_packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
-                    let pending_packet_ref = RefCell::borrow(&pending_packet_rc);
+                    let pending_packet_ref = pending_packet_rc.borrow();
 
                     let last_fragment_id = pending_packet_ref.last_fragment_id();
                     for i in 0 ..= last_fragment_id {
-                        self.datagram_queue.push_back(datagram_queue::Entry::new(pending_packet_ref.datagram(i), resend));
+                        let fragment_ref = FragmentRef::new(&pending_packet_rc, i);
+                        let entry = datagram_queue::Entry::new(fragment_ref, resend);
+                        self.datagram_queue.push_back(entry);
                     }
                 } else {
                     break 'outer;
@@ -143,7 +137,16 @@ impl<'a> FrameEmitter<'a> {
             }
 
             while let Some(entry) = self.datagram_queue.front() {
-                let encoded_size = DataFrameBuilder::encoded_size(&entry.datagram);
+                let datagram_opt = entry.fragment_ref.datagram();
+
+                if datagram_opt.is_none() {
+                    self.datagram_queue.pop_front();
+                    continue;
+                }
+
+                let datagram = datagram_opt.unwrap();
+
+                let encoded_size = DataFrameBuilder::encoded_size(&datagram);
                 let potential_frame_size = fbuilder.size() + encoded_size;
 
                 if potential_frame_size > bytes_remaining {
@@ -153,7 +156,7 @@ impl<'a> FrameEmitter<'a> {
 
                         self.frame_log.push(frame_id, frame_log::Entry {
                             send_time_ms: now_ms,
-                            persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+                            fragment_refs: fragment_refs.into_boxed_slice(),
                         });
 
                         f(frame_data, frame_id, nonce);
@@ -170,7 +173,7 @@ impl<'a> FrameEmitter<'a> {
 
                     self.frame_log.push(frame_id, frame_log::Entry {
                         send_time_ms: now_ms,
-                        persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+                        fragment_refs: fragment_refs.into_boxed_slice(),
                     });
 
                     f(frame_data, frame_id, nonce);
@@ -183,20 +186,18 @@ impl<'a> FrameEmitter<'a> {
                     nonce = rand::random();
 
                     fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                    persistent_datagrams = Vec::new();
+                    fragment_refs = Vec::new();
                     continue;
                 }
 
-                fbuilder.add(&entry.datagram);
+                fbuilder.add(&datagram);
 
                 let entry = self.datagram_queue.pop_front().unwrap();
 
                 if entry.resend {
-                    let persistent_datagram = Rc::new(RefCell::new(PersistentDatagram::new(entry.datagram)));
+                    fragment_refs.push(entry.fragment_ref.clone());
 
-                    persistent_datagrams.push(Rc::downgrade(&persistent_datagram));
-
-                    self.resend_queue.push(resend_queue::Entry::new(persistent_datagram, now_ms + rtt_ms, 1));
+                    self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
                 }
             }
         }
@@ -207,7 +208,7 @@ impl<'a> FrameEmitter<'a> {
 
             self.frame_log.push(frame_id, frame_log::Entry {
                 send_time_ms: now_ms,
-                persistent_datagrams: persistent_datagrams.into_boxed_slice(),
+                fragment_refs: fragment_refs.into_boxed_slice(),
             });
 
             f(frame_data, frame_id, nonce);
@@ -242,7 +243,7 @@ impl<'a> FrameEmitter<'a> {
 
         self.frame_log.push(frame_id, frame_log::Entry {
             send_time_ms: now_ms,
-            persistent_datagrams: Box::new([]),
+            fragment_refs: Box::new([]),
         });
 
         return (frame::serial::SYNC_FRAME_SIZE, false);

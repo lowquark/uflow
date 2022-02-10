@@ -1,18 +1,18 @@
 
-use crate::frame::Datagram;
+use super::FragmentRef;
 
 use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub struct Entry {
-    pub datagram: Datagram,
+    pub fragment_ref: FragmentRef,
     pub resend: bool,
 }
 
 impl Entry {
-    pub fn new(datagram: Datagram, resend: bool) -> Self {
+    pub fn new(fragment_ref: FragmentRef, resend: bool) -> Self {
         Self {
-            datagram,
+            fragment_ref,
             resend,
         }
     }
