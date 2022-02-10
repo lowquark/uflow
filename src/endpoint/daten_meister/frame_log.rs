@@ -1,7 +1,7 @@
 
-use crate::frame::FrameAck;
+use super::pending_packet::FragmentRef;
 
-use super::FragmentRef;
+use crate::frame::FrameAck;
 
 use std::collections::VecDeque;
 
@@ -57,7 +57,10 @@ impl FrameLog {
                     let mut fragment_refs = std::mem::take(&mut sent_frame.fragment_refs);
 
                     for fragment_ref in fragment_refs.as_mut().into_iter() {
-                        fragment_ref.acknowledge();
+                        if let Some(packet_rc) = fragment_ref.packet.upgrade() {
+                            let mut packet_ref = packet_rc.borrow_mut();
+                            packet_ref.acknowledge_fragment(fragment_ref.fragment_id);
+                        }
                     }
                 }
             }

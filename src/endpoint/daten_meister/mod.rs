@@ -6,8 +6,8 @@ use crate::frame;
 use super::FrameSink;
 
 use std::time;
-use std::rc::Rc;
-use std::rc::Weak;
+
+mod pending_packet;
 
 mod packet_sender;
 mod packet_receiver;
@@ -27,44 +27,6 @@ mod packet_tests;
 const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
 const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
 const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
-
-#[derive(Debug)]
-pub struct FragmentRef {
-    packet: packet_sender::PendingPacketWeak,
-    fragment_id: u16,
-}
-
-impl FragmentRef {
-    fn new(source: &packet_sender::PendingPacketRc, fragment_id: u16) -> Self {
-        Self {
-            packet: Rc::downgrade(source),
-            fragment_id,
-        }
-    }
-
-    /*
-    fn datagram<'a>(&'a self) -> Option<Ref<'a, frame::DatagramRef<'a>>> {
-        if let Some(packet_rc) = Weak::upgrade(&self.packet) {
-            Some(Ref::<'a, packet_sender::PendingPacket>::map(packet_rc.borrow(), |v| &v.datagram(self.fragment_id)))
-        } else {
-            None
-        }
-    }
-    */
-
-    fn acknowledge(&mut self) {
-        if let Some(packet_rc) = Weak::upgrade(&self.packet) {
-            packet_rc.borrow_mut().acknowledge_fragment(self.fragment_id)
-        }
-    }
-
-    fn clone(&self) -> Self {
-        Self {
-            packet: Weak::clone(&self.packet),
-            fragment_id: self.fragment_id,
-        }
-    }
-}
 
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);

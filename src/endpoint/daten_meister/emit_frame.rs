@@ -10,7 +10,7 @@ use super::datagram_queue;
 use super::resend_queue;
 use super::frame_log;
 use super::frame_ack_queue;
-use super::FragmentRef;
+use super::pending_packet;
 
 const MAX_SEND_COUNT: u8 = 2;
 
@@ -134,7 +134,7 @@ impl<'a> FrameEmitter<'a> {
 
                     let last_fragment_id = pending_packet_ref.last_fragment_id();
                     for i in 0 ..= last_fragment_id {
-                        let fragment_ref = FragmentRef::new(&pending_packet_rc, i);
+                        let fragment_ref = pending_packet::FragmentRef::new(&pending_packet_rc, i);
                         let entry = datagram_queue::Entry::new(fragment_ref, resend);
                         self.datagram_queue.push_back(entry);
                     }

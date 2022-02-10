@@ -1,5 +1,5 @@
 
-use super::FragmentRef;
+use super::pending_packet::FragmentRef;
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
