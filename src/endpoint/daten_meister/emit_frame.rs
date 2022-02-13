@@ -14,6 +14,147 @@ use super::pending_packet;
 
 const MAX_SEND_COUNT: u8 = 2;
 
+enum EmitError {
+    SizeLimited,
+    WindowLimited,
+}
+
+struct InProgressDataFrame {
+    frame_id: u32,
+    nonce: bool,
+    fbuilder: frame::serial::DataFrameBuilder,
+    fragment_refs: Vec<pending_packet::FragmentRef>,
+}
+
+struct BuiltDataFrame {
+    id: u32,
+    nonce: bool,
+    frame_data: Box<[u8]>,
+    fragment_refs: Box<[pending_packet::FragmentRef]>,
+}
+
+impl InProgressDataFrame {
+    fn finalize(self) -> BuiltDataFrame {
+        BuiltDataFrame {
+            id: self.frame_id,
+            nonce: self.nonce,
+            frame_data: self.fbuilder.build(),
+            fragment_refs: self.fragment_refs.into_boxed_slice(),
+        }
+    }
+}
+
+struct DataFrameEmitter<F> {
+    in_progress_frame: Option<InProgressDataFrame>,
+
+    next_frame_id: u32,
+    frames_remaining: u32,
+
+    max_send_size: usize,
+    bytes_remaining: usize,
+
+    callback: F,
+}
+
+impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
+    pub fn new(next_frame_id: u32, frames_remaining: u32, max_send_size: usize, callback: F) -> Self {
+        Self {
+            in_progress_frame: None,
+
+            next_frame_id,
+            frames_remaining,
+
+            max_send_size,
+            bytes_remaining: max_send_size,
+
+            callback,
+        }
+    }
+
+    fn push_initial(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), EmitError> {
+        debug_assert!(self.in_progress_frame.is_none());
+
+        if self.frames_remaining == 0 {
+            return Err(EmitError::WindowLimited);
+        }
+
+        let packet_ref = packet_rc.borrow();
+        let datagram = packet_ref.datagram(fragment_id);
+
+        let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
+        let potential_frame_size = frame::serial::DATA_FRAME_OVERHEAD + encoded_size;
+
+        debug_assert!(potential_frame_size <= MAX_FRAME_SIZE);
+        if potential_frame_size > self.bytes_remaining {
+            return Err(EmitError::SizeLimited);
+        }
+
+        let frame_id = self.next_frame_id;
+        self.next_frame_id = self.next_frame_id.wrapping_add(1);
+        self.frames_remaining -= 1;
+
+        let nonce = rand::random();
+
+        let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
+        fbuilder.add_ref(&datagram);
+        debug_assert!(fbuilder.size() == potential_frame_size);
+
+        let mut fragment_refs = Vec::new();
+        if persistent {
+            fragment_refs.push(pending_packet::FragmentRef::new(packet_rc, fragment_id));
+        }
+
+        self.in_progress_frame = Some(InProgressDataFrame {
+            frame_id,
+            nonce,
+            fbuilder,
+            fragment_refs,
+        });
+
+        return Ok(());
+    }
+
+    pub fn push(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), EmitError> {
+        let packet_ref = packet_rc.borrow();
+        let datagram = packet_ref.datagram(fragment_id);
+
+        if let Some(ref mut next_frame) = self.in_progress_frame {
+            // Try to add to in-progress frame
+            let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
+            let potential_frame_size = next_frame.fbuilder.size() + encoded_size;
+
+            if potential_frame_size > MAX_FRAME_SIZE {
+                self.flush();
+                return self.push_initial(packet_rc, fragment_id, persistent);
+            } else if potential_frame_size > self.bytes_remaining {
+                self.flush();
+                return Err(EmitError::SizeLimited);
+            } else {
+                next_frame.fbuilder.add_ref(&datagram);
+                if persistent {
+                    next_frame.fragment_refs.push(pending_packet::FragmentRef::new(packet_rc, fragment_id));
+                }
+                return Ok(());
+            }
+        } else {
+            // No in-progress frame
+            return self.push_initial(packet_rc, fragment_id, persistent);
+        }
+    }
+
+    pub fn flush(&mut self) {
+        if let Some(next_frame) = self.in_progress_frame.take() {
+            let result = next_frame.finalize();
+            self.bytes_remaining -= result.frame_data.len();
+            (self.callback)(result);
+        }
+    }
+
+    pub fn total_size(&self) -> usize {
+        self.max_send_size - self.bytes_remaining
+    }
+}
+
 pub struct FrameEmitter<'a> {
     packet_sender: &'a mut packet_sender::PacketSender,
     datagram_queue: &'a mut datagram_queue::DatagramQueue,
@@ -41,17 +182,21 @@ impl<'a> FrameEmitter<'a> {
     }
 
     pub fn emit_data_frames<F>(&mut self, now_ms: u64, rtt_ms: u64, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
-        let mut bytes_remaining = max_send_size;
+        let next_frame_id = self.frame_log.next_id();
+        let max_frames = MAX_FRAME_TRANSFER_WINDOW_SIZE - self.frame_log.len();
 
-        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-            return (max_send_size - bytes_remaining, false);
-        }
+        let ref mut frame_log = self.frame_log;
 
-        let mut frame_id = self.frame_log.next_id();
-        let mut nonce = rand::random();
+        let emit_cb = |frame_info: BuiltDataFrame| {
+            frame_log.push(frame_info.id, frame_log::Entry {
+                send_time_ms: now_ms,
+                fragment_refs: frame_info.fragment_refs,
+            });
 
-        let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
-        let mut fragment_refs = Vec::new();
+            f(frame_info.frame_data, frame_info.id, frame_info.nonce);
+        };
+
+        let mut dfe = DataFrameEmitter::new(next_frame_id, max_frames, max_send_size, emit_cb);
 
         while let Some(entry) = self.resend_queue.peek() {
             if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
@@ -66,57 +211,13 @@ impl<'a> FrameEmitter<'a> {
                     break;
                 }
 
-                let datagram = packet_ref.datagram(entry.fragment_ref.fragment_id);
-
-                let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
-                let potential_frame_size = fbuilder.size() + encoded_size;
-
-                if potential_frame_size > bytes_remaining {
-                    if fbuilder.count() > 0 {
-                        let frame_data = fbuilder.build();
-                        bytes_remaining -= frame_data.len();
-
-                        self.frame_log.push(frame_id, frame_log::Entry {
-                            send_time_ms: now_ms,
-                            fragment_refs: fragment_refs.into_boxed_slice(),
-                        });
-
-                        f(frame_data, frame_id, nonce);
-                    }
-
-                    return (max_send_size - bytes_remaining, true);
+                match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, true) {
+                    Err(EmitError::SizeLimited) => return (dfe.total_size(), true),
+                    Err(EmitError::WindowLimited) => return (dfe.total_size(), false),
+                    Ok(_) => (),
                 }
-
-                if potential_frame_size > MAX_FRAME_SIZE {
-                    debug_assert!(fbuilder.count() > 0);
-
-                    let frame_data = fbuilder.build();
-                    bytes_remaining -= frame_data.len();
-
-                    self.frame_log.push(frame_id, frame_log::Entry {
-                        send_time_ms: now_ms,
-                        fragment_refs: fragment_refs.into_boxed_slice(),
-                    });
-
-                    f(frame_data, frame_id, nonce);
-
-                    if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                        return (max_send_size - bytes_remaining, false);
-                    }
-
-                    frame_id = self.frame_log.next_id();
-                    nonce = rand::random();
-
-                    fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                    fragment_refs = Vec::new();
-                    continue;
-                }
-
-                fbuilder.add_ref(&datagram);
 
                 let entry = self.resend_queue.pop().unwrap();
-
-                fragment_refs.push(entry.fragment_ref.clone());
 
                 self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref,
                                                                 now_ms + rtt_ms*(1 << entry.send_count),
@@ -127,19 +228,19 @@ impl<'a> FrameEmitter<'a> {
             }
         }
 
-        'outer: loop {
+        loop {
             if self.datagram_queue.is_empty() {
-                if let Some((pending_packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
-                    let pending_packet_ref = pending_packet_rc.borrow();
+                if let Some((packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
+                    let pending_packet_ref = packet_rc.borrow();
 
                     let last_fragment_id = pending_packet_ref.last_fragment_id();
                     for i in 0 ..= last_fragment_id {
-                        let fragment_ref = pending_packet::FragmentRef::new(&pending_packet_rc, i);
+                        let fragment_ref = pending_packet::FragmentRef::new(&packet_rc, i);
                         let entry = datagram_queue::Entry::new(fragment_ref, resend);
                         self.datagram_queue.push_back(entry);
                     }
                 } else {
-                    break 'outer;
+                    break;
                 }
             }
 
@@ -152,59 +253,15 @@ impl<'a> FrameEmitter<'a> {
                         continue;
                     }
 
-                    let datagram = packet_ref.datagram(entry.fragment_ref.fragment_id);
-
-                    let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
-                    let potential_frame_size = fbuilder.size() + encoded_size;
-
-                    if potential_frame_size > bytes_remaining {
-                        if fbuilder.count() > 0 {
-                            let frame_data = fbuilder.build();
-                            bytes_remaining -= frame_data.len();
-
-                            self.frame_log.push(frame_id, frame_log::Entry {
-                                send_time_ms: now_ms,
-                                fragment_refs: fragment_refs.into_boxed_slice(),
-                            });
-
-                            f(frame_data, frame_id, nonce);
-                        }
-
-                        return (max_send_size - bytes_remaining, true);
+                    match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, entry.resend) {
+                        Err(EmitError::SizeLimited) => return (dfe.total_size(), true),
+                        Err(EmitError::WindowLimited) => return (dfe.total_size(), false),
+                        Ok(_) => (),
                     }
-
-                    if potential_frame_size > MAX_FRAME_SIZE {
-                        debug_assert!(fbuilder.count() > 0);
-
-                        let frame_data = fbuilder.build();
-                        bytes_remaining -= frame_data.len();
-
-                        self.frame_log.push(frame_id, frame_log::Entry {
-                            send_time_ms: now_ms,
-                            fragment_refs: fragment_refs.into_boxed_slice(),
-                        });
-
-                        f(frame_data, frame_id, nonce);
-
-                        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-                            return (max_send_size - bytes_remaining, false);
-                        }
-
-                        frame_id = self.frame_log.next_id();
-                        nonce = rand::random();
-
-                        fbuilder = DataFrameBuilder::new(frame_id, nonce);
-                        fragment_refs = Vec::new();
-                        continue;
-                    }
-
-                    fbuilder.add_ref(&datagram);
 
                     let entry = self.datagram_queue.pop_front().unwrap();
 
                     if entry.resend {
-                        fragment_refs.push(entry.fragment_ref.clone());
-
                         self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
                     }
                 } else {
@@ -214,19 +271,8 @@ impl<'a> FrameEmitter<'a> {
             }
         }
 
-        if fbuilder.count() > 0 {
-            let frame_data = fbuilder.build();
-            bytes_remaining -= frame_data.len();
-
-            self.frame_log.push(frame_id, frame_log::Entry {
-                send_time_ms: now_ms,
-                fragment_refs: fragment_refs.into_boxed_slice(),
-            });
-
-            f(frame_data, frame_id, nonce);
-        }
-
-        return (max_send_size - bytes_remaining, false);
+        dfe.flush();
+        return (dfe.total_size(), false);
     }
 
     pub fn emit_sync_frame<F>(&mut self, now_ms: u64, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {

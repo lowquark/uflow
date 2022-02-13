@@ -147,10 +147,6 @@ impl DataFrameBuilder {
         self.buffer.len()
     }
 
-    pub fn count(&self) -> u16 {
-        self.count
-    }
-
     pub fn encoded_size_ref(datagram: &DatagramRef) -> usize {
         if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
             DATAGRAM_HEADER_SIZE_FULL + datagram.data.len()

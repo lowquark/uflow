@@ -261,10 +261,10 @@ mod tests {
 
     fn packet_info(emit_result: (PendingPacketRc, bool)) -> (u32, u8, u16, u16, bool) {
         let packet_ref = emit_result.0.borrow();
-        (packet_ref.sequence_id,
-         packet_ref.channel_id,
-         packet_ref.window_parent_lead,
-         packet_ref.channel_parent_lead,
+        (packet_ref.sequence_id(),
+         packet_ref.channel_id(),
+         packet_ref.window_parent_lead(),
+         packet_ref.channel_parent_lead(),
          emit_result.1)
     }
 

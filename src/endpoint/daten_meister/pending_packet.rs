@@ -42,6 +42,26 @@ impl PendingPacket {
         }
     }
 
+    #[cfg(test)]
+    pub fn sequence_id(&self) -> u32 {
+        self.sequence_id
+    }
+
+    #[cfg(test)]
+    pub fn channel_id(&self) -> u8 {
+        self.channel_id
+    }
+
+    #[cfg(test)]
+    pub fn window_parent_lead(&self) -> u16 {
+        self.window_parent_lead
+    }
+
+    #[cfg(test)]
+    pub fn channel_parent_lead(&self) -> u16 {
+        self.channel_parent_lead
+    }
+
     pub fn last_fragment_id(&self) -> u16 {
         self.last_fragment_id
     }
