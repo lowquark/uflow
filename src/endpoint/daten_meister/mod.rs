@@ -17,6 +17,10 @@ mod resend_queue;
 mod frame_log;
 mod frame_ack_queue;
 
+mod recv_rate_set;
+mod reorder_buffer;
+mod ack_frames;
+
 mod tfrc;
 
 mod emit_frame;
