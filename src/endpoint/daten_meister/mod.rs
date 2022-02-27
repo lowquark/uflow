@@ -19,6 +19,10 @@ mod frame_ack_queue;
 
 mod recv_rate_set;
 mod reorder_buffer;
+mod send_rate;
+mod loss_rate;
+mod feedback;
+mod frame_log_2;
 mod ack_frames;
 
 mod tfrc;
@@ -31,6 +35,21 @@ mod packet_tests;
 const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
 const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
 const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
+
+pub struct TransferWindow {
+    size: u32,
+    base_id: u32,
+}
+
+impl TransferWindow {
+    pub fn new(size: u32, base_id: u32) -> Self {
+        Self { size, base_id }
+    }
+
+    pub fn contains(&self, next_id: u32) -> bool {
+        return next_id.wrapping_sub(self.base_id) < self.size;
+    }
+}
 
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);
