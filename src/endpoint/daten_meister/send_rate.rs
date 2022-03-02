@@ -2,6 +2,7 @@
 // See RFC 5348: "TCP Friendly Rate Control (TFRC): Protocol Specification"
 
 use super::recv_rate_set;
+
 use crate::MAX_FRAME_SIZE;
 
 // Segment size in bytes (s), see section 
@@ -57,6 +58,7 @@ fn eval_tcp_throughput_inv(rtt: f64, target_rate_bps: u32) -> f64 {
     }
 }
 
+#[derive(Debug,PartialEq)]
 pub struct FeedbackData {
     pub rtt_ms: u64,
     pub receive_rate: u32,
@@ -372,5 +374,10 @@ impl SendRateComp {
         self.rto_ms = Some(s_to_ms(rto_s));
         return rto_s;
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }
 

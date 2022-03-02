@@ -21,9 +21,7 @@ mod recv_rate_set;
 mod reorder_buffer;
 mod send_rate;
 mod loss_rate;
-mod feedback;
-mod frame_log_2;
-mod ack_frames;
+mod frame_queue;
 
 mod tfrc;
 

@@ -1,4 +1,12 @@
 
+// See RFC 5348: "TCP Friendly Rate Control (TFRC): Protocol Specification"
+
+// This is a constant-time overhead implementation of the loss rate computation, where only the
+// most recent loss interval is updated each time a new frame is acked or nacked. Currently, no
+// attempt is made to fill holes in the loss history as acks are received for previous nacks. In
+// the future, an approximation to hole-filling will be performed which does not require iteration
+// over the loss history.
+
 use std::collections::VecDeque;
 
 #[derive(Debug)]
@@ -13,6 +21,7 @@ pub struct LossIntervalQueue {
 }
 
 impl LossIntervalQueue {
+    // See section 5.4
     const WEIGHTS: [f64; 8] = [ 1.0, 1.0, 1.0, 1.0, 0.8, 0.6, 0.4, 0.2 ];
 
     pub fn new() -> Self {
@@ -48,14 +57,14 @@ impl LossIntervalQueue {
         });
     }
 
-    pub fn put_ack(&mut self) {
+    pub fn push_ack(&mut self) {
         if let Some(last_interval) = self.entries.front_mut() {
             // Acks always contribute to previous loss interval
             last_interval.length = last_interval.length.saturating_add(1);
         }
     }
 
-    pub fn put_nack(&mut self, send_time_ms: u64, rtt_ms: u64) {
+    pub fn push_nack(&mut self, send_time_ms: u64, rtt_ms: u64) {
         if let Some(last_interval) = self.entries.front_mut() {
             if send_time_ms >= last_interval.end_time_ms {
                 // This nack marks a new loss interval
@@ -69,10 +78,17 @@ impl LossIntervalQueue {
                 // This nack falls under previous loss interval
                 last_interval.length = last_interval.length.saturating_add(1);
             }
+        } else {
+            // This nack marks a new loss interval
+            self.entries.push_front(LossInterval {
+                end_time_ms: send_time_ms + rtt_ms,
+                length: 1,
+            });
         }
     }
 
     pub fn compute_loss_rate(&self) -> f64 {
+        // See section 5.4
         if self.entries.len() > 0 {
             let mut i_total_0 = 0.0;
             let mut i_total_1 = 0.0;
@@ -95,5 +111,10 @@ impl LossIntervalQueue {
             return 0.0;
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }
 
