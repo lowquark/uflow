@@ -167,7 +167,7 @@ impl SendRateComp {
         self.nofeedback_idle = false;
     }
 
-    pub fn step<F>(&mut self, now_ms: u64, feedback: Option<FeedbackData>, reset_loss_rate: F) where F: FnOnce(f64, u64) {
+    pub fn step<F>(&mut self, now_ms: u64, feedback: Option<FeedbackData>, reset_loss_rate: F) where F: FnOnce(f64) {
         match self.mode {
             SendRateMode::AwaitSend => {
                 return;
@@ -184,7 +184,7 @@ impl SendRateComp {
         }
     }
 
-    fn handle_feedback<F>(&mut self, now_ms: u64, feedback: FeedbackData, reset_loss_rate: F) where F: FnOnce(f64, u64) {
+    fn handle_feedback<F>(&mut self, now_ms: u64, feedback: FeedbackData, reset_loss_rate: F) where F: FnOnce(f64) {
         let rtt_sample_s = ms_to_s(feedback.rtt_ms);
         let recv_rate = feedback.receive_rate;
         let loss_rate = feedback.loss_rate;
@@ -230,7 +230,7 @@ impl SendRateComp {
 
                     let initial_p = eval_tcp_throughput_inv(rtt_s, send_rate_target);
 
-                    reset_loss_rate(initial_p, now_ms + rtt_ms);
+                    reset_loss_rate(initial_p);
 
                     // Apply target send rate as if computed loss rate had been received
                     self.send_rate = send_rate_target.min(send_rate_limit).max(MINIMUM_RATE);

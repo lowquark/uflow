@@ -30,9 +30,9 @@ impl LossIntervalQueue {
         }
     }
 
-    pub fn reset(&mut self, initial_p: f64, end_time_ms: u64) {
-        // Because the loss interval queue is reset here, the particular loss pattern of the first
-        // feedback message is ignored. That is, if frames were acked/nacked as follows:
+    pub fn reset(&mut self, initial_p: f64) {
+        // Because the loss interval queue is truncated here, the particular loss pattern of the
+        // first feedback message is ignored. That is, if frames were acked/nacked as follows:
         //
         //                  first nack
         //                       v
@@ -49,12 +49,8 @@ impl LossIntervalQueue {
         // improved response to initial packet drops, but any difference in behavior relative to
         // standard TFRC should be marginal.
 
-        self.entries.clear();
-
-        self.entries.push_front(LossInterval {
-            end_time_ms,
-            length: (Self::WEIGHTS[0] / initial_p).clamp(0.0, u32::MAX as f64).round() as u32,
-        });
+        self.entries.truncate(1);
+        self.entries[0].length = (Self::WEIGHTS[0] / initial_p).clamp(0.0, u32::MAX as f64).round() as u32;
     }
 
     pub fn push_ack(&mut self) {

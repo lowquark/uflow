@@ -1,8 +1,6 @@
 
 use crate::frame;
 
-use super::TransferWindow;
-
 use super::reorder_buffer;
 use super::loss_rate;
 
@@ -11,8 +9,6 @@ use super::send_rate;
 use super::pending_packet::FragmentRef;
 
 use std::collections::VecDeque;
-
-use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 
 #[derive(Debug)]
 pub struct Entry {
@@ -112,20 +108,22 @@ pub struct FeedbackGen {
 }
 
 impl FeedbackGen {
-    fn new(base_id: u32) -> Self {
+    const INITIAL_RTT_MS: u64 = 100;
+
+    fn new(base_id: u32, max_span: u32) -> Self {
         Self {
             last_feedback_ms: None,
             ack_data: None,
-            reorder_buffer: reorder_buffer::ReorderBuffer::new(base_id),
+            reorder_buffer: reorder_buffer::ReorderBuffer::new(base_id, max_span),
             loss_intervals: loss_rate::LossIntervalQueue::new(),
         }
     }
 
-    pub fn reset_loss_rate(&mut self, new_loss_rate: f64, end_time_ms: u64) {
-        self.loss_intervals.reset(new_loss_rate, end_time_ms);
+    fn reset_loss_rate(&mut self, new_loss_rate: f64) {
+        self.loss_intervals.reset(new_loss_rate);
     }
 
-    pub fn get_feedback(&mut self, now_ms: u64) -> Option<send_rate::FeedbackData> {
+    fn get_feedback(&mut self, now_ms: u64) -> Option<send_rate::FeedbackData> {
         if let Some(ack_data) = self.ack_data.take() {
             let rtt_ms = now_ms - ack_data.last_send_time_ms;
 
@@ -158,7 +156,7 @@ impl FeedbackGen {
         }
     }
 
-    fn notify_ack(&mut self, frame_id: u32, frame_log: &FrameLog) {
+    fn notify_ack(&mut self, frame_id: u32, frame_log: &FrameLog, rtt_ms: Option<u64>) {
         let ref mut loss_intervals = self.loss_intervals;
 
         if self.reorder_buffer.can_put(frame_id) {
@@ -169,7 +167,7 @@ impl FeedbackGen {
                 if was_seen {
                     loss_intervals.push_ack();
                 } else {
-                    loss_intervals.push_nack(sent_frame.send_time_ms, 100);
+                    loss_intervals.push_nack(sent_frame.send_time_ms, rtt_ms.unwrap_or(Self::INITIAL_RTT_MS));
                 }
             });
         } else {
@@ -178,7 +176,7 @@ impl FeedbackGen {
         }
     }
 
-    fn notify_advancement(&mut self, new_base_id: u32, frame_log: &FrameLog) {
+    fn notify_advancement(&mut self, new_base_id: u32, frame_log: &FrameLog, rtt_ms: Option<u64>) {
         let ref mut loss_intervals = self.loss_intervals;
 
         if self.reorder_buffer.can_advance(new_base_id) {
@@ -189,10 +187,22 @@ impl FeedbackGen {
                 if was_seen {
                     loss_intervals.push_ack();
                 } else {
-                    loss_intervals.push_nack(sent_frame.send_time_ms, 100);
+                    loss_intervals.push_nack(sent_frame.send_time_ms, rtt_ms.unwrap_or(Self::INITIAL_RTT_MS));
                 }
             });
         }
+    }
+}
+
+struct TransferWindow {
+    base_id: u32,
+    size: u32,
+    tail_size: u32,
+}
+
+impl TransferWindow {
+    fn new(base_id: u32, size: u32, tail_size: u32) -> Self {
+        Self { base_id, size, tail_size }
     }
 }
 
@@ -203,41 +213,56 @@ struct FrameQueue {
 }
 
 impl FrameQueue {
-    pub fn new(base_id: u32) -> Self {
+    pub fn new(base_id: u32, size: u32, tail_size: u32) -> Self {
         Self {
             frame_log: FrameLog::new(base_id),
-            feedback_gen: FeedbackGen::new(base_id),
-            window: TransferWindow::new(MAX_FRAME_TRANSFER_WINDOW_SIZE, base_id),
+            feedback_gen: FeedbackGen::new(base_id, size + tail_size),
+            window: TransferWindow::new(base_id, size, tail_size),
         }
     }
 
     pub fn can_push(&self) -> bool {
-        return self.window.contains(self.frame_log.next_id());
+        return self.next_id().wrapping_sub(self.window.base_id) < self.window.size;
+    }
+
+    pub fn next_id(&self) -> u32 {
+        self.frame_log.next_id()
     }
 
     pub fn push(&mut self, size: usize, now_ms: u64, fragment_refs: Box<[FragmentRef]>, nonce: bool, rate_limited: bool) {
-        debug_assert!(self.can_push());
         debug_assert!(size <= u32::MAX as usize);
 
-        self.frame_log.push(Entry {
-            size: size as u32,
-            send_time_ms: now_ms,
-            fragment_refs,
-            nonce,
-            rate_limited,
-            acked: false,
-        })
+        if self.can_push() {
+            self.frame_log.push(Entry {
+                size: size as u32,
+                send_time_ms: now_ms,
+                fragment_refs,
+                nonce,
+                rate_limited,
+                acked: false,
+            })
+        }
     }
 
-    pub fn forget_frames(&mut self, thresh_ms: u64) {
-        self.remove_expired_entries(thresh_ms);
+    pub fn forget_frames(&mut self, thresh_ms: u64, rtt_ms: Option<u64>) {
+        let max_base_id = self.frame_log.find_expiration_cutoff(thresh_ms);
+
+        let delta = max_base_id.wrapping_sub(self.frame_log.base_id());
+
+        if delta != 0 {
+            self.cull_log_entries(max_base_id, rtt_ms);
+        }
     }
 
-    pub fn feedback_gen_mut(&mut self) -> &mut FeedbackGen {
-        &mut self.feedback_gen
+    pub fn get_feedback(&mut self, now_ms: u64) -> Option<send_rate::FeedbackData> {
+        self.feedback_gen.get_feedback(now_ms)
     }
 
-    pub fn acknowledge_group(&mut self, ack: frame::FrameAck) {
+    pub fn reset_loss_rate(&mut self, new_loss_rate: f64) {
+        self.feedback_gen.reset_loss_rate(new_loss_rate);
+    }
+
+    pub fn acknowledge_group(&mut self, ack: frame::FrameAck, rtt_ms: Option<u64>) {
         let mut true_nonce = false;
 
         let mut last_send_time_ms = 0;
@@ -306,7 +331,7 @@ impl FrameQueue {
                     total_ack_size += sent_frame.size as usize;
 
                     // Detect nacks
-                    self.feedback_gen.notify_ack(frame_id, &mut self.frame_log);
+                    self.feedback_gen.notify_ack(frame_id, &mut self.frame_log, rtt_ms);
                 }
             }
         }
@@ -326,46 +351,33 @@ impl FrameQueue {
         delta != 0 && delta <= next_delta
     }
 
-    pub fn advance_transfer_window(&mut self, new_base_id: u32) {
+    pub fn advance_transfer_window(&mut self, new_base_id: u32, rtt_ms: Option<u64>) {
         if self.can_advance_transfer_window(new_base_id) {
             self.window.base_id = new_base_id;
-            self.remove_old_entries_beyond_window();
+
+            let max_base_id = self.window.base_id.wrapping_sub(self.window.tail_size);
+
+            let delta = max_base_id.wrapping_sub(self.frame_log.base_id());
+
+            if delta != 0 && delta <= self.frame_log.len() {
+                self.cull_log_entries(max_base_id, rtt_ms);
+            }
         }
     }
 
-    fn remove_expired_entries(&mut self, thresh_ms: u64) {
-        let max_base_id = self.frame_log.find_expiration_cutoff(thresh_ms);
+    fn cull_log_entries(&mut self, new_log_base_id: u32, rtt_ms: Option<u64>) {
+        debug_assert!(new_log_base_id.wrapping_sub(self.frame_log.base_id()) <= self.frame_log.len());
 
-        let delta = max_base_id.wrapping_sub(self.frame_log.base_id());
-
-        if delta != 0 {
-            debug_assert!(delta <= self.frame_log.len());
-            self.feedback_gen.notify_advancement(max_base_id, &self.frame_log);
-
-            self.frame_log.drain(max_base_id);
-            debug_assert!(self.frame_log.base_id() == max_base_id);
-        }
-    }
-
-    fn remove_old_entries_beyond_window(&mut self) {
-        let max_base_id = self.window.base_id.wrapping_sub(self.window.size);
-
-        let delta = max_base_id.wrapping_sub(self.frame_log.base_id());
-
-        if delta != 0 && delta <= self.frame_log.len() {
-            self.feedback_gen.notify_advancement(max_base_id, &self.frame_log);
-
-            self.frame_log.drain(max_base_id);
-            debug_assert!(self.frame_log.base_id() == max_base_id);
-        }
+        self.feedback_gen.notify_advancement(new_log_base_id, &self.frame_log, rtt_ms);
+        self.frame_log.drain(new_log_base_id);
     }
 }
 
     /*
     pub fn step(&mut self, now_ms: u64) {
-        self.send_rate_comp.step(now_ms, self.feedback_gen.get_feedback(now_ms),
-            |new_loss_rate: f64, end_time_ms: u64| {
-                self.feedback_gen.reset_loss_rate(new_loss_rate, end_time_ms);
+        self.send_rate_comp.step(now_ms, self.frame_queue.get_feedback(now_ms),
+            |new_loss_rate: f64| {
+                self.frame_queue.reset_loss_rate(new_loss_rate);
             }
         );
     }
@@ -379,9 +391,14 @@ mod tests {
     use std::rc::Rc;
     use std::cell::RefCell;
 
+    // TODO: Rename
+    use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE as MAX_FRAME_WINDOW_SIZE;
+    // TODO:
+    //use crate::MAX_FRAME_WINDOW_TAIL_SIZE;
+
     #[test]
     fn feedback_generation() {
-        let mut fq = FrameQueue::new(0);
+        let mut fq = FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
 
         let packet_rc = Rc::new(RefCell::new(
             PendingPacket::new(vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(), 0, 0, 0, 0)
@@ -402,30 +419,30 @@ mod tests {
         fq.push( 32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n5, false);
 
         // No feedback until an ack frame has been received
-        assert_eq!(fq.feedback_gen_mut().get_feedback(1000), None);
+        assert_eq!(fq.get_feedback(1000), None);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b101, nonce: n0 ^ n2 });
+        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b101, nonce: n0 ^ n2 }, None);
 
-        assert_eq!(fq.feedback_gen_mut().get_feedback(1000), Some(send_rate::FeedbackData {
+        assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
             loss_rate: 0.0,
             receive_rate: 0, // First receive_rate is always zero
             rate_limited: false,
             rtt_ms: 1000,
         }));
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 2, bitfield: 0b11, nonce: n2 ^ n3 });
+        fq.acknowledge_group(frame::FrameAck { base_id: 2, bitfield: 0b11, nonce: n2 ^ n3 }, None);
 
-        assert_eq!(fq.feedback_gen_mut().get_feedback(2000), Some(send_rate::FeedbackData {
+        assert_eq!(fq.get_feedback(2000), Some(send_rate::FeedbackData {
             loss_rate: 0.0,
             receive_rate: 8,
             rate_limited: false,
             rtt_ms: 2000,
         }));
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 4, bitfield: 0b1, nonce: n4 });
-        fq.acknowledge_group(frame::FrameAck { base_id: 5, bitfield: 0b1, nonce: n5 });
+        fq.acknowledge_group(frame::FrameAck { base_id: 4, bitfield: 0b1, nonce: n4 }, None);
+        fq.acknowledge_group(frame::FrameAck { base_id: 5, bitfield: 0b1, nonce: n5 }, None);
 
-        assert_eq!(fq.feedback_gen_mut().get_feedback(3000), Some(send_rate::FeedbackData {
+        assert_eq!(fq.get_feedback(3000), Some(send_rate::FeedbackData {
             loss_rate: 0.2, // Frame 2 was dropped, current loss interval is 5 sequence IDs long
             receive_rate: 48,
             rate_limited: true, // Frame 4 was marked rate limited
@@ -433,11 +450,159 @@ mod tests {
         }));
 
         // No feedback until an ack frame has been received
-        assert_eq!(fq.feedback_gen_mut().get_feedback(3000), None);
+        assert_eq!(fq.get_feedback(3000), None);
     }
 
     #[test]
     fn window_advancement() {
+        let mut fq = FrameQueue::new(0, 5, 3);
+
+        let packet_rc = Rc::new(RefCell::new(
+            PendingPacket::new(vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(), 0, 0, 0, 0)
+        ));
+
+        let n0 = rand::random();
+        let n1 = rand::random();
+        let n2 = rand::random();
+        let n3 = rand::random();
+        let n4 = rand::random();
+
+        assert_eq!(fq.can_push(), true);
+
+        fq.push(  1, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n0, false);
+        fq.push(  2, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n1, false);
+        fq.push(  4, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n2, false);
+        fq.push(  8, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n3, false);
+        fq.push( 16, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n4, false);
+
+        assert_eq!(fq.can_push(), false);
+
+        assert_eq!(fq.can_advance_transfer_window(5), true);
+
+        fq.advance_transfer_window(5, None);
+
+        // A tail size of 3 means the first two frame entries should have been removed
+        assert_eq!(fq.feedback_gen.reorder_buffer.base_id(), 2);
+        assert_eq!(fq.frame_log.base_id(), 2);
+
+        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b111, nonce: n0 ^ n1 ^ n2 }, None);
+
+        // Including those frames in an acknowledgement should have no effect
+        assert_eq!(fq.get_feedback(1000), None);
+
+        fq.acknowledge_group(frame::FrameAck { base_id: 2, bitfield: 0b111, nonce: n2 ^ n3 ^ n4 }, None);
+
+        assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
+            loss_rate: 0.2, // Frames 0-1 were dropped, current loss interval is 5 sequence IDs long
+            receive_rate: 0, // First receive_rate is always zero
+            rate_limited: false,
+            rtt_ms: 1000,
+        }));
+    }
+
+    fn new_full_queue(size: u32) -> (FrameQueue, Vec<bool>) {
+        let mut fq = FrameQueue::new(0, size, size);
+
+        let mut nonces = Vec::new();
+
+        for _ in 0 .. size {
+            let nonce = rand::random();
+            let packet_rc = Rc::new(RefCell::new(
+                PendingPacket::new(vec![].into_boxed_slice(), 0, 0, 0, 0)
+            ));
+
+            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce, false);
+            nonces.push(nonce);
+        }
+
+        fq.advance_transfer_window(size, None);
+
+        for _ in 0 .. size {
+            let nonce = rand::random();
+            let packet_rc = Rc::new(RefCell::new(
+                PendingPacket::new(vec![].into_boxed_slice(), 0, 0, 0, 0)
+            ));
+
+            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce, false);
+            nonces.push(nonce);
+        }
+
+        return (fq, nonces);
+    }
+
+    #[test]
+    fn max_loss() {
+        let size = MAX_FRAME_WINDOW_SIZE;
+        let (mut fq, nonces) = new_full_queue(size);
+
+        // Ack the last three frames, producing feedback and nacking all other frames
+        let ne3 = nonces[nonces.len() - 3];
+        let ne2 = nonces[nonces.len() - 2];
+        let ne1 = nonces[nonces.len() - 1];
+        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 3, bitfield: 0b111, nonce: ne3 ^ ne2 ^ ne1 }, None);
+
+        assert_eq!(fq.frame_log.base_id(), 0);
+        assert_eq!(fq.frame_log.next_id(), 2*size);
+        assert_eq!(fq.feedback_gen.reorder_buffer.base_id(), 2*size);
+
+        // Current loss interval is the whole span of the window (as well as the maximum span of
+        // the reorder buffer).
+        assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
+            loss_rate: 1.0/((2*size) as f64),
+            receive_rate: 0,
+            rate_limited: false,
+            rtt_ms: 1000,
+        }));
+    }
+
+    #[test]
+    fn max_window_advance_cull() {
+        let size = MAX_FRAME_WINDOW_SIZE;
+        let (mut fq, nonces) = new_full_queue(size);
+
+        // This ack won't produce any nacks, but will produce feedback
+        let ne1 = nonces[nonces.len() - 1];
+        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
+
+        // Advance to maximum possible extent, culling maximum number of entries
+        fq.advance_transfer_window(2*size, None);
+
+        assert_eq!(fq.frame_log.base_id(), size);
+        assert_eq!(fq.frame_log.next_id(), 2*size);
+        assert_eq!(fq.feedback_gen.reorder_buffer.base_id(), size);
+
+        // All frames beyond window have been nacked
+        assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
+            loss_rate: 1.0/(size as f64),
+            receive_rate: 0,
+            rate_limited: false,
+            rtt_ms: 1000,
+        }));
+    }
+
+    #[test]
+    fn max_forget_cull() {
+        let size = MAX_FRAME_WINDOW_SIZE;
+        let (mut fq, nonces) = new_full_queue(size);
+
+        // This ack won't produce any nacks, but will produce feedback
+        let ne1 = nonces[nonces.len() - 1];
+        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
+
+        // Forget all frames, culling maximum number of entries
+        fq.forget_frames(500, None);
+
+        assert_eq!(fq.frame_log.base_id(), 2*size);
+        assert_eq!(fq.frame_log.next_id(), 2*size);
+        assert_eq!(fq.feedback_gen.reorder_buffer.base_id(), 2*size);
+
+        // All frames have been nacked
+        assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
+            loss_rate: 1.0/((2*size) as f64),
+            receive_rate: 0,
+            rate_limited: false,
+            rtt_ms: 1000,
+        }));
     }
 }
 

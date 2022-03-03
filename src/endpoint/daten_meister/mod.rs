@@ -34,21 +34,6 @@ const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
 const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
 const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
 
-pub struct TransferWindow {
-    size: u32,
-    base_id: u32,
-}
-
-impl TransferWindow {
-    pub fn new(size: u32, base_id: u32) -> Self {
-        Self { size, base_id }
-    }
-
-    pub fn contains(&self, next_id: u32) -> bool {
-        return next_id.wrapping_sub(self.base_id) < self.size;
-    }
-}
-
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);
 }

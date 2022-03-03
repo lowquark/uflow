@@ -1,23 +1,28 @@
 
-use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
-
 pub struct ReorderBuffer {
     frames: [u32; 2],
     frame_count: u32,
     base_id: u32,
+    max_span: u32,
 }
 
 impl ReorderBuffer {
-    pub fn new(base_id: u32) -> Self {
+    pub fn new(base_id: u32, max_span: u32) -> Self {
         Self {
             frames: [0, 0],
             frame_count: 0,
             base_id,
+            max_span,
         }
     }
 
+    #[cfg(test)]
+    pub fn base_id(&self) -> u32 {
+        self.base_id
+    }
+
     pub fn can_put(&self, new_frame_id: u32) -> bool {
-        new_frame_id.wrapping_sub(self.base_id) < MAX_FRAME_TRANSFER_WINDOW_SIZE
+        new_frame_id.wrapping_sub(self.base_id) < self.max_span
     }
 
     pub fn put<F>(&mut self, new_frame_id: u32, mut callback: F) where F: FnMut(u32, bool) {
@@ -111,7 +116,7 @@ impl ReorderBuffer {
 
     pub fn can_advance(&self, new_base_id: u32) -> bool {
         let delta = new_base_id.wrapping_sub(self.base_id);
-        delta >= 1 && delta <= MAX_FRAME_TRANSFER_WINDOW_SIZE
+        delta >= 1 && delta <= self.max_span
     }
 
     pub fn advance<F>(&mut self, new_base_id: u32, mut callback: F) where F: FnMut(u32, bool) {
@@ -198,59 +203,59 @@ mod tests {
     #[test]
     fn ack_1_ack() {
         // Ack 0
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 0, vec![(0, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true)]);
         assert_eq!(rb.frame_count, 2);
 
         // Nack 0, 1, Ack 2
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 4, vec![(0, false), (1, false), (2, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 4, vec![(0, false), (1, false), (2, true)]);
         assert_eq!(rb.frame_count, 2);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true)]);
@@ -260,55 +265,55 @@ mod tests {
     #[test]
     fn ack_2_acks() {
         // Ack 0, 1
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true), (1, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true), (1, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true), (1, true)]);
         assert_eq!(rb.frame_count, 1);
 
         // Nack 0, 1, Ack 2, 3
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, true), (3, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 3, vec![(0, false), (1, false), (2, true), (3, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, true), (3, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true), (3, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 3, vec![(0, false), (1, false), (2, true), (3, true)]);
         assert_eq!(rb.frame_count, 1);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true), (3, true)]);
@@ -318,50 +323,50 @@ mod tests {
     #[test]
     fn ack_3_acks() {
         // Ack 0, 1, 2
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true), (1, true), (2, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 0, vec![(0, true), (1, true), (2, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // Nack 0, 1, ack 2, 3, 4
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 4, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 3, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 4, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_put_callbacks(&mut rb, 3, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_put_callbacks(&mut rb, 2, vec![(0, false), (1, false), (2, true), (3, true), (4, true)]);
@@ -371,18 +376,18 @@ mod tests {
     #[test]
     fn advance_0_acks() {
         // 0x beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false)]);
         assert_eq!(rb.frame_count, 0);
 
         // 1x beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 6, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false)]);
         assert_eq!(rb.frame_count, 1);
 
         // 2x beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 6, vec![]);
         test_put_callbacks(&mut rb, 7, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false)]);
@@ -392,39 +397,39 @@ mod tests {
     #[test]
     fn advance_1_ack() {
         // ~space, ~beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_advance_callbacks(&mut rb, 2, vec![(0, false), (1, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // ~space, beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 6, vec![]);
         test_advance_callbacks(&mut rb, 2, vec![(0, false), (1, true)]);
         assert_eq!(rb.frame_count, 1);
 
         // space, ~beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, false), (3, false), (4, false)]);
         assert_eq!(rb.frame_count, 0);
 
         // space, beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 6, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, false), (3, false), (4, false)]);
         assert_eq!(rb.frame_count, 1);
 
         // past-end, ~beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false), (5, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // past-end, beyond
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 7, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false), (5, true)]);
@@ -434,53 +439,71 @@ mod tests {
     #[test]
     fn advance_2_acks() {
         // ~space, ~space
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_advance_callbacks(&mut rb, 3, vec![(0, false), (1, true), (2, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // ~space, space
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 2, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, true), (3, false), (4, false)]);
         assert_eq!(rb.frame_count, 0);
 
         // space, ~space
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, false), (3, false), (4, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // space, space
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 3, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, false), (3, true), (4, false)]);
         assert_eq!(rb.frame_count, 0);
 
         // ~space, past-end
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 4, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, true), (5, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // space, past-end
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 1, vec![]);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, true), (2, false), (3, false), (4, false), (5, true)]);
         assert_eq!(rb.frame_count, 0);
 
         // 2x past-end
-        let mut rb = ReorderBuffer::new(0);
+        let mut rb = ReorderBuffer::new(0, 100);
         test_put_callbacks(&mut rb, 5, vec![]);
         test_put_callbacks(&mut rb, 6, vec![]);
         test_advance_callbacks(&mut rb, 5, vec![(0, false), (1, false), (2, false), (3, false), (4, false), (5, true), (6, true)]);
         assert_eq!(rb.frame_count, 0);
+    }
+
+    #[test]
+    fn max_span() {
+        let rb = ReorderBuffer::new(1, 100);
+        assert_eq!(rb.can_put(0), false);
+        assert_eq!(rb.can_put(1), true);
+
+        assert_eq!(rb.can_put(100), true);
+        assert_eq!(rb.can_put(101), false);
+
+        assert_eq!(rb.can_advance(0), false);
+        assert_eq!(rb.can_advance(1), false);
+        assert_eq!(rb.can_advance(2), true);
+
+        assert_eq!(rb.can_advance(100), true);
+        assert_eq!(rb.can_advance(101), true);
+        assert_eq!(rb.can_advance(102), false);
     }
 }
 
