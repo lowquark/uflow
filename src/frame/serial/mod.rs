@@ -29,7 +29,7 @@ const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
 
 const SYNC_FRAME_PAYLOAD_SIZE: usize = 9;
 
-const ACK_FRAME_PAYLOAD_HEADER_SIZE: usize = 6;
+const ACK_FRAME_PAYLOAD_HEADER_SIZE: usize = 10;
 
 pub use build::MAX_CHANNELS;
 pub const MAX_FRAGMENTS: usize = 1 << 16;
@@ -285,13 +285,18 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
         return None;
     }
 
-    let receiver_base_id = ((data[0] as u32) << 24) |
-                           ((data[1] as u32) << 16) |
-                           ((data[2] as u32) <<  8) |
-                           ((data[3] as u32)      );
+    let frame_window_base_id = ((data[0] as u32) << 24) |
+                               ((data[1] as u32) << 16) |
+                               ((data[2] as u32) <<  8) |
+                               ((data[3] as u32)      );
 
-    let frame_ack_num = ((data[4] as u16) << 8) |
-                        ((data[5] as u16)     );
+    let packet_window_base_id = ((data[4] as u32) << 24) |
+                                ((data[5] as u32) << 16) |
+                                ((data[6] as u32) <<  8) |
+                                ((data[7] as u32)      );
+
+    let frame_ack_num = ((data[8] as u16) << 8) |
+                        ((data[9] as u16)     );
 
     let mut data_slice = &data[ACK_FRAME_PAYLOAD_HEADER_SIZE..];
     let mut frame_acks = Vec::new();
@@ -309,7 +314,7 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
         return None;
     }
 
-    Some(Frame::AckFrame(AckFrame { receiver_base_id, frame_acks }))
+    Some(Frame::AckFrame(AckFrame { frame_window_base_id, packet_window_base_id, frame_acks }))
 }
 
 
@@ -363,7 +368,7 @@ fn write_data(frame: &DataFrame) -> Box<[u8]> {
     let mut builder = build::DataFrameBuilder::new(frame.sequence_id, frame.nonce);
 
     for datagram in frame.datagrams.iter() {
-        builder.add(datagram);
+        builder.add(&datagram.into());
     }
 
     builder.build()
@@ -385,7 +390,7 @@ fn write_sync(frame: &SyncFrame) -> Box<[u8]> {
 }
 
 fn write_ack(frame: &AckFrame) -> Box<[u8]> {
-    let mut builder = build::AckFrameBuilder::new(frame.receiver_base_id);
+    let mut builder = build::AckFrameBuilder::new(frame.frame_window_base_id, frame.packet_window_base_id);
 
     for frame_ack in frame.frame_acks.iter() {
         builder.add(frame_ack);
@@ -558,7 +563,8 @@ mod tests {
     #[test]
     fn ack_basic() {
         let f = Frame::AckFrame(AckFrame {
-            receiver_base_id: 0x010203,
+            frame_window_base_id: 0x010203,
+            packet_window_base_id: 0x040506,
             frame_acks: vec![
                 FrameAck {
                     base_id: 0x28475809,
@@ -587,7 +593,8 @@ mod tests {
     #[test]
     fn ack_empty() {
         let f = Frame::AckFrame(AckFrame {
-            receiver_base_id: 0x010203,
+            frame_window_base_id: 0x010203,
+            packet_window_base_id: 0x040506,
             frame_acks: Vec::new(),
         });
         verify_consistent(&f);
@@ -631,70 +638,6 @@ mod tests {
     fn random_data(size: usize) -> Box<[u8]> {
         (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
     }
-
-    /*
-    #[test]
-    fn message_random() {
-        const NUM_ROUNDS: usize = 100;
-        const MAX_MESSAGES: usize = 100;
-        const MAX_DATA_SIZE: usize = 100;
-
-        for _ in 0..NUM_ROUNDS {
-            let mut messages = Vec::new();
-
-            for _ in 0 .. rand::random::<usize>() % MAX_MESSAGES {
-                let message = match rand::random::<u32>() % 4 {
-                    0 => Message::Datagram(Datagram {
-                        sequence_id: rand::random::<u32>(),
-                        channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
-                        window_parent_lead: rand::random::<u16>(),
-                        channel_parent_lead: rand::random::<u16>(),
-                        fragment_id: FragmentId {
-                            id: rand::random::<u16>(),
-                            last: rand::random::<u16>(),
-                        },
-                        data: random_data(MAX_DATA_SIZE),
-                    }),
-                    1 => Message::Datagram(Datagram {
-                        sequence_id: rand::random::<u32>(),
-                        channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
-                        window_parent_lead: rand::random::<u16>(),
-                        channel_parent_lead: rand::random::<u16>(),
-                        fragment_id: FragmentId {
-                            id: 0,
-                            last: 0,
-                        },
-                        data: random_data(MAX_DATA_SIZE),
-                    }),
-                    2 => Message::Ack(Ack {
-                        frames: FrameAck {
-                            base_id: rand::random::<u32>(),
-                            bitfield: rand::random::<u32>(),
-                            nonce: rand::random::<bool>(),
-                        },
-                        receiver_base_id: rand::random::<u32>(),
-                    }),
-                    3 => Message::Resync(Resync {
-                        sender_next_id: rand::random::<u32>(),
-                    }),
-                    _ => panic!()
-                };
-
-                messages.push(message);
-            }
-
-            let f = Frame::MessageFrame(MessageFrame {
-                sequence_id: rand::random::<u32>(),
-                nonce: rand::random::<bool>(),
-                messages: messages,
-            });
-
-            verify_consistent(&f);
-            verify_extra_bytes_fail(&f);
-            verify_truncation_fails(&f);
-        }
-    }
-    */
 
     #[test]
     fn data_random() {
@@ -782,7 +725,8 @@ mod tests {
             }
 
             let f = Frame::AckFrame(AckFrame {
-                receiver_base_id: rand::random::<u32>(),
+                frame_window_base_id: rand::random::<u32>(),
+                packet_window_base_id: rand::random::<u32>(),
                 frame_acks: frame_acks,
             });
 

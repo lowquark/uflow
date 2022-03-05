@@ -14,13 +14,14 @@ mod packet_receiver;
 
 mod datagram_queue;
 mod resend_queue;
-mod frame_ack_queue;
 
 mod recv_rate_set;
 mod reorder_buffer;
 mod send_rate;
 mod loss_rate;
 mod frame_queue;
+
+mod frame_ack_queue;
 
 mod emit_frame;
 
@@ -118,10 +119,8 @@ impl DatenMeister {
             self.frame_queue.acknowledge_group(frame_ack.clone(), rtt_ms);
         }
 
-        // XXX TODO:
-        //self.frame_queue.advance_transfer_window(frame.frame_base_id, rtt_ms);
-
-        self.packet_sender.acknowledge(frame.receiver_base_id);
+        self.frame_queue.advance_transfer_window(frame.frame_window_base_id, rtt_ms);
+        self.packet_sender.acknowledge(frame.packet_window_base_id);
     }
 
     pub fn flush(&mut self, sink: &mut impl FrameSink) {
@@ -168,7 +167,8 @@ impl DatenMeister {
         self.flush_id = self.flush_id.wrapping_add(1);
 
         let sender_next_id = self.packet_sender.next_id();
-        let receiver_base_id = self.packet_receiver.base_id();
+        let frame_window_base_id = 0; // XXX TODO!
+        let packet_window_base_id = self.packet_receiver.base_id();
 
         let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
                                                    &mut self.datagram_queue,
@@ -194,7 +194,7 @@ impl DatenMeister {
         }
 
         let bytes_sent =
-            fe.emit_ack_frames(receiver_base_id, self.flush_alloc, |data| {
+            fe.emit_ack_frames(frame_window_base_id, packet_window_base_id, self.flush_alloc, |data| {
                 sink.send(&data);
             });
 

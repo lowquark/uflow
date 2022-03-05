@@ -1,5 +1,4 @@
 
-use super::Datagram;
 use super::DatagramRef;
 use super::FrameAck;
 
@@ -37,56 +36,7 @@ impl DataFrameBuilder {
         }
     }
 
-    pub fn add(&mut self, datagram: &Datagram) {
-        let data_len = datagram.data.len();
-        let data_len_u16 = data_len as u32;
-
-        debug_assert!(data_len <= u32::MAX as usize);
-        debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
-
-        if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
-            let header = [
-                datagram.channel_id,
-                (datagram.sequence_id >> 24) as u8,
-                (datagram.sequence_id >> 16) as u8,
-                (datagram.sequence_id >>  8) as u8,
-                (datagram.sequence_id      ) as u8,
-                (datagram.window_parent_lead >> 8) as u8,
-                (datagram.window_parent_lead     ) as u8,
-                (datagram.channel_parent_lead >> 8) as u8,
-                (datagram.channel_parent_lead     ) as u8,
-                (data_len_u16 >> 8) as u8,
-                (data_len_u16     ) as u8,
-            ];
-
-            self.buffer.extend_from_slice(&header);
-        } else {
-            let header = [
-                datagram.channel_id | 0x80,
-                (datagram.sequence_id >> 24) as u8,
-                (datagram.sequence_id >> 16) as u8,
-                (datagram.sequence_id >>  8) as u8,
-                (datagram.sequence_id      ) as u8,
-                (datagram.window_parent_lead >> 8) as u8,
-                (datagram.window_parent_lead     ) as u8,
-                (datagram.channel_parent_lead >> 8) as u8,
-                (datagram.channel_parent_lead     ) as u8,
-                (datagram.fragment_id.last >> 8) as u8,
-                (datagram.fragment_id.last     ) as u8,
-                (datagram.fragment_id.id >> 8) as u8,
-                (datagram.fragment_id.id     ) as u8,
-                (data_len_u16 >> 8) as u8,
-                (data_len_u16     ) as u8,
-            ];
-
-            self.buffer.extend_from_slice(&header);
-        }
-
-        self.buffer.extend_from_slice(&datagram.data);
-        self.count += 1;
-    }
-
-    pub fn add_ref(&mut self, datagram: &DatagramRef) {
+    pub fn add(&mut self, datagram: &DatagramRef) {
         let data_len = datagram.data.len();
         let data_len_u16 = data_len as u32;
 
@@ -162,13 +112,17 @@ pub struct AckFrameBuilder {
 }
 
 impl AckFrameBuilder {
-    pub fn new(receiver_base_id: u32) -> Self {
+    pub fn new(frame_window_base_id: u32, packet_window_base_id: u32) -> Self {
         let header = vec![
             ACK_FRAME_ID,
-            (receiver_base_id >> 24) as u8,
-            (receiver_base_id >> 16) as u8,
-            (receiver_base_id >>  8) as u8,
-            (receiver_base_id      ) as u8,
+            (frame_window_base_id >> 24) as u8,
+            (frame_window_base_id >> 16) as u8,
+            (frame_window_base_id >>  8) as u8,
+            (frame_window_base_id      ) as u8,
+            (packet_window_base_id >> 24) as u8,
+            (packet_window_base_id >> 16) as u8,
+            (packet_window_base_id >>  8) as u8,
+            (packet_window_base_id      ) as u8,
             0,
             0
         ];
@@ -197,8 +151,8 @@ impl AckFrameBuilder {
     }
 
     pub fn build(mut self) -> Box<[u8]> {
-        let count_offset_0 = 5;
-        let count_offset_1 = 6;
+        let count_offset_0 = 9;
+        let count_offset_1 = 10;
         self.buffer[count_offset_0] = (self.count >> 8) as u8;
         self.buffer[count_offset_1] = (self.count     ) as u8;
         self.buffer.into_boxed_slice()

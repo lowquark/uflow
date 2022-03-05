@@ -27,6 +27,19 @@ pub struct DatagramRef<'a> {
     pub data: &'a [u8],
 }
 
+impl<'a> From<&'a Datagram> for DatagramRef<'a> {
+    fn from(obj: &'a Datagram) -> Self {
+        Self {
+            sequence_id: obj.sequence_id,
+            channel_id: obj.channel_id,
+            window_parent_lead: obj.window_parent_lead,
+            channel_parent_lead: obj.channel_parent_lead,
+            fragment_id: obj.fragment_id.clone(),
+            data: &obj.data,
+        }
+    }
+}
+
 impl<'a> From<DatagramRef<'a>> for Datagram {
     fn from(obj: DatagramRef<'a>) -> Self {
         Self {
@@ -110,7 +123,8 @@ pub struct SyncFrame {
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct AckFrame {
-    pub receiver_base_id: u32,
+    pub frame_window_base_id: u32,
+    pub packet_window_base_id: u32,
     pub frame_acks: Vec<FrameAck>,
 }
 
