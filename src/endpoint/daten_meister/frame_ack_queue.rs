@@ -2,7 +2,7 @@
 use crate::frame;
 
 pub struct FrameAckQueue {
-    entries: std::collections::VecDeque<frame::FrameAck>,
+    entries: std::collections::VecDeque<frame::AckGroup>,
 }
 
 impl FrameAckQueue {
@@ -21,14 +21,14 @@ impl FrameAckQueue {
                     last_entry.nonce ^= nonce;
                 }
             } else {
-                self.entries.push_back(frame::FrameAck {
+                self.entries.push_back(frame::AckGroup {
                     base_id: frame_id,
                     bitfield: 0x00000001,
                     nonce: nonce,
                 });
             }
         } else {
-            self.entries.push_back(frame::FrameAck {
+            self.entries.push_back(frame::AckGroup {
                 base_id: frame_id,
                 bitfield: 0x00000001,
                 nonce: nonce,
@@ -36,7 +36,7 @@ impl FrameAckQueue {
         }
     }
 
-    pub fn pop(&mut self) -> Option<frame::FrameAck> {
+    pub fn pop(&mut self) -> Option<frame::AckGroup> {
         if let Some(first_entry) = self.entries.pop_front() {
             debug_assert!(first_entry.bitfield & 0x00000001 != 0);
 
@@ -46,7 +46,7 @@ impl FrameAckQueue {
         return None;
     }
 
-    pub fn peek(&self) -> Option<&frame::FrameAck> {
+    pub fn peek(&self) -> Option<&frame::AckGroup> {
         self.entries.front()
     }
 }

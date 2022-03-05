@@ -595,7 +595,7 @@ mod tests {
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b11101, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0b11101, nonce: false });
 
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
@@ -632,7 +632,7 @@ mod tests {
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 32);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
 
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 0);
@@ -658,8 +658,8 @@ mod tests {
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 32);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
-        fq.acknowledge_group(frame::FrameAck { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
 
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 0);
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(frames.len(), 1);
 
         fq.forget_frames(10);
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b11111, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0b11111, nonce: false });
 
         let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 2*rtt_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 2);

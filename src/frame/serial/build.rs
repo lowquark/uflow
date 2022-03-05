@@ -1,6 +1,6 @@
 
 use super::DatagramRef;
-use super::FrameAck;
+use super::AckGroup;
 
 use super::DATA_FRAME_ID;
 use super::ACK_FRAME_ID;
@@ -133,7 +133,7 @@ impl AckFrameBuilder {
         }
     }
 
-    pub fn add(&mut self, frame_ack: &FrameAck) {
+    pub fn add(&mut self, frame_ack: &AckGroup) {
         let header = [
             (frame_ack.base_id >> 24) as u8,
             (frame_ack.base_id >> 16) as u8,
@@ -166,7 +166,7 @@ impl AckFrameBuilder {
         self.count
     }
 
-    pub fn encoded_size(_frame_ack: &FrameAck) -> usize {
+    pub fn encoded_size(_frame_ack: &AckGroup) -> usize {
         FRAME_ACK_SIZE
     }
 }

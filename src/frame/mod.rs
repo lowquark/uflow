@@ -78,7 +78,7 @@ impl Datagram {
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct FrameAck {
+pub struct AckGroup {
     pub base_id: u32,
     pub bitfield: u32,
     pub nonce: bool,
@@ -125,7 +125,7 @@ pub struct SyncFrame {
 pub struct AckFrame {
     pub frame_window_base_id: u32,
     pub packet_window_base_id: u32,
-    pub frame_acks: Vec<FrameAck>,
+    pub frame_acks: Vec<AckGroup>,
 }
 
 #[derive(Clone,Debug,PartialEq)]

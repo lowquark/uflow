@@ -262,7 +262,7 @@ impl FrameQueue {
         self.feedback_gen.reset_loss_rate(new_loss_rate);
     }
 
-    pub fn acknowledge_group(&mut self, ack: frame::FrameAck, rtt_ms: Option<u64>) {
+    pub fn acknowledge_group(&mut self, ack: frame::AckGroup, rtt_ms: Option<u64>) {
         let mut true_nonce = false;
 
         let mut last_send_time_ms = 0;
@@ -421,7 +421,7 @@ mod tests {
         // No feedback until an ack frame has been received
         assert_eq!(fq.get_feedback(1000), None);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b101, nonce: n0 ^ n2 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0b101, nonce: n0 ^ n2 }, None);
 
         assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
             loss_rate: 0.0,
@@ -430,7 +430,7 @@ mod tests {
             rtt_ms: 1000,
         }));
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 2, bitfield: 0b11, nonce: n2 ^ n3 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 2, bitfield: 0b11, nonce: n2 ^ n3 }, None);
 
         assert_eq!(fq.get_feedback(2000), Some(send_rate::FeedbackData {
             loss_rate: 0.0,
@@ -439,8 +439,8 @@ mod tests {
             rtt_ms: 2000,
         }));
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 4, bitfield: 0b1, nonce: n4 }, None);
-        fq.acknowledge_group(frame::FrameAck { base_id: 5, bitfield: 0b1, nonce: n5 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 4, bitfield: 0b1, nonce: n4 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 5, bitfield: 0b1, nonce: n5 }, None);
 
         assert_eq!(fq.get_feedback(3000), Some(send_rate::FeedbackData {
             loss_rate: 0.2, // Frame 2 was dropped, current loss interval is 5 sequence IDs long
@@ -485,12 +485,12 @@ mod tests {
         assert_eq!(fq.feedback_gen.reorder_buffer.base_id(), 2);
         assert_eq!(fq.frame_log.base_id(), 2);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b111, nonce: n0 ^ n1 ^ n2 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0b111, nonce: n0 ^ n1 ^ n2 }, None);
 
         // Including those frames in an acknowledgement should have no effect
         assert_eq!(fq.get_feedback(1000), None);
 
-        fq.acknowledge_group(frame::FrameAck { base_id: 2, bitfield: 0b111, nonce: n2 ^ n3 ^ n4 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 2, bitfield: 0b111, nonce: n2 ^ n3 ^ n4 }, None);
 
         assert_eq!(fq.get_feedback(1000), Some(send_rate::FeedbackData {
             loss_rate: 0.2, // Frames 0-1 were dropped, current loss interval is 5 sequence IDs long
@@ -539,7 +539,7 @@ mod tests {
         let ne3 = nonces[nonces.len() - 3];
         let ne2 = nonces[nonces.len() - 2];
         let ne1 = nonces[nonces.len() - 1];
-        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 3, bitfield: 0b111, nonce: ne3 ^ ne2 ^ ne1 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 2*size - 3, bitfield: 0b111, nonce: ne3 ^ ne2 ^ ne1 }, None);
 
         assert_eq!(fq.frame_log.base_id(), 0);
         assert_eq!(fq.frame_log.next_id(), 2*size);
@@ -562,7 +562,7 @@ mod tests {
 
         // This ack won't produce any nacks, but will produce feedback
         let ne1 = nonces[nonces.len() - 1];
-        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
 
         // Advance to maximum possible extent, culling maximum number of entries
         fq.advance_transfer_window(2*size, None);
@@ -587,7 +587,7 @@ mod tests {
 
         // This ack won't produce any nacks, but will produce feedback
         let ne1 = nonces[nonces.len() - 1];
-        fq.acknowledge_group(frame::FrameAck { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
+        fq.acknowledge_group(frame::AckGroup { base_id: 2*size - 1, bitfield: 0b1, nonce: ne1 }, None);
 
         // Forget all frames, culling maximum number of entries
         fq.forget_frames(500, None);

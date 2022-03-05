@@ -255,7 +255,7 @@ fn read_sync_payload(data: &[u8]) -> Option<Frame> {
     Some(Frame::SyncFrame(SyncFrame { sequence_id, nonce, sender_next_id }))
 }
 
-fn read_frame_ack(data: &[u8]) -> Option<(FrameAck, usize)> {
+fn read_frame_ack(data: &[u8]) -> Option<(AckGroup, usize)> {
     // Ack
     if data.len() < FRAME_ACK_SIZE {
         return None;
@@ -273,7 +273,7 @@ fn read_frame_ack(data: &[u8]) -> Option<(FrameAck, usize)> {
 
     let nonce = data[8] != 0;
 
-    return Some((FrameAck {
+    return Some((AckGroup {
         base_id,
         bitfield,
         nonce,
@@ -566,7 +566,7 @@ mod tests {
             frame_window_base_id: 0x010203,
             packet_window_base_id: 0x040506,
             frame_acks: vec![
-                FrameAck {
+                AckGroup {
                     base_id: 0x28475809,
                     bitfield: 0b01000100111101110110100110101u32,
                     nonce: true,
@@ -715,7 +715,7 @@ mod tests {
             let mut frame_acks = Vec::new();
 
             for _ in 0 .. rand::random::<usize>() % MAX_FRAME_ACKS {
-                let frame_ack = FrameAck {
+                let frame_ack = AckGroup {
                     base_id: rand::random::<u32>(),
                     bitfield: rand::random::<u32>(),
                     nonce: rand::random(),
