@@ -345,9 +345,9 @@ impl SendRateComp {
         }
 
         // Compute RTO for the new send rate, see section 4.4 step 2
-        // No default RTT to use is given, but when no feedback has yet been received, using RTT = 0
-        // will cause the RTO to begin at 2s, and double each time send_rate is halved above. This may
-        // or may not be the intended behavior.
+        // No default RTT is specified by TFRC, but using RTT = 0 when no feedback has been
+        // received will cause RTO to begin at 2s, and double each time send_rate is halved above.
+        // This may or may not be the intended behavior.
         let rto_s = self.update_rto(self.rtt_s.unwrap_or(0.0), self.send_rate);
 
         self.nofeedback_exp_ms = Some(now_ms + s_to_ms(rto_s));
