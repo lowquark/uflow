@@ -14,7 +14,6 @@ mod packet_receiver;
 
 mod datagram_queue;
 mod resend_queue;
-mod frame_log;
 mod frame_ack_queue;
 
 mod recv_rate_set;
@@ -22,8 +21,6 @@ mod reorder_buffer;
 mod send_rate;
 mod loss_rate;
 mod frame_queue;
-
-mod tfrc;
 
 mod emit_frame;
 
@@ -42,9 +39,9 @@ pub struct DatenMeister {
     packet_sender: packet_sender::PacketSender,
     datagram_queue: datagram_queue::DatagramQueue,
     resend_queue: resend_queue::ResendQueue,
-    frame_log: frame_log::FrameLog,
+    frame_queue: frame_queue::FrameQueue,
 
-    send_rate_comp: tfrc::SendRateComp,
+    send_rate_comp: send_rate::SendRateComp,
 
     packet_receiver: packet_receiver::PacketReceiver,
     frame_ack_queue: frame_ack_queue::FrameAckQueue,
@@ -57,6 +54,9 @@ pub struct DatenMeister {
     flush_id: u32,
 }
 
+// TODO: Rename
+use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE as MAX_FRAME_WINDOW_SIZE;
+
 impl DatenMeister {
     pub fn new(tx_channels: usize, rx_channels: usize,
                tx_alloc_limit: usize, rx_alloc_limit: usize,
@@ -66,9 +66,9 @@ impl DatenMeister {
             packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
             datagram_queue: datagram_queue::DatagramQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
-            frame_log: frame_log::FrameLog::new(tx_base_id),
+            frame_queue: frame_queue::FrameQueue::new(tx_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
 
-            send_rate_comp: tfrc::SendRateComp::new(tx_base_id, tx_bandwidth_limit),
+            send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
 
             packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
             frame_ack_queue: frame_ack_queue::FrameAckQueue::new(),
@@ -112,12 +112,16 @@ impl DatenMeister {
     }
 
     pub fn handle_ack_frame(&mut self, frame: frame::AckFrame) {
-        self.packet_sender.acknowledge(frame.receiver_base_id);
+        let rtt_ms = self.send_rate_comp.rtt_ms();
 
         for frame_ack in frame.frame_acks.into_iter() {
-            self.frame_log.acknowledge_frames(frame_ack.clone());
-            self.send_rate_comp.acknowledge_frames(frame_ack);
+            self.frame_queue.acknowledge_group(frame_ack.clone(), rtt_ms);
         }
+
+        // XXX TODO:
+        //self.frame_queue.advance_transfer_window(frame.frame_base_id, rtt_ms);
+
+        self.packet_sender.acknowledge(frame.receiver_base_id);
     }
 
     pub fn flush(&mut self, sink: &mut impl FrameSink) {
@@ -127,11 +131,15 @@ impl DatenMeister {
         let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(INITIAL_RTT_ESTIMATE_MS);
 
         // Forget old frame data
-        self.frame_log.forget_frames(now_ms.saturating_sub(rtt_ms*4));
-        self.send_rate_comp.forget_frames(now_ms.saturating_sub(rtt_ms*4));
+        self.frame_queue.forget_frames(now_ms.saturating_sub(rtt_ms*4), self.send_rate_comp.rtt_ms());
 
         // Update send rate value
-        self.send_rate_comp.step(now_ms);
+        let ref mut frame_queue = self.frame_queue;
+        self.send_rate_comp.step(now_ms, frame_queue.get_feedback(now_ms),
+            |new_loss_rate: f64| {
+                frame_queue.reset_loss_rate(new_loss_rate);
+            }
+        );
 
         // Fill flush allocation according to send rate
         self.fill_flush_alloc(now);
@@ -165,55 +173,41 @@ impl DatenMeister {
         let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
                                                    &mut self.datagram_queue,
                                                    &mut self.resend_queue,
-                                                   &mut self.frame_log,
+                                                   &mut self.frame_queue,
                                                    &mut self.frame_ack_queue,
                                                    flush_id);
 
-        let ref mut send_rate_comp = self.send_rate_comp;
         let ref mut time_data_sent_ms = self.time_data_sent_ms;
+        let ref mut send_rate_comp = self.send_rate_comp;
 
         if let Some(time_data_sent_ms) = time_data_sent_ms {
             let sync_timeout_ms = send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
 
             if now_ms - *time_data_sent_ms >= sync_timeout_ms {
-                let (send_size, rate_limited) =
-                    fe.emit_sync_frame(now_ms, sender_next_id, self.flush_alloc, |data, id, nonce| {
-                        send_rate_comp.log_frame(id, nonce, data.len(), now_ms);
-                        *time_data_sent_ms = now_ms;
-                        sink.send(&data);
+                let bytes_sent =
+                    fe.emit_sync_frame(sender_next_id, self.flush_alloc, |frame_data| {
+                        sink.send(&frame_data);
                     });
 
-                self.flush_alloc -= send_size;
-                if rate_limited {
-                    self.send_rate_comp.log_rate_limited();
-                    return;
-                }
+                self.flush_alloc -= bytes_sent;
             }
         }
 
-        let (send_size, rate_limited) =
+        let bytes_sent =
             fe.emit_ack_frames(receiver_base_id, self.flush_alloc, |data| {
                 sink.send(&data);
             });
 
-        self.flush_alloc -= send_size;
-        if rate_limited {
-            self.send_rate_comp.log_rate_limited();
-            return;
-        }
+        self.flush_alloc -= bytes_sent;
 
-        let (send_size, rate_limited) =
-            fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |data, id, nonce| {
-                send_rate_comp.log_frame(id, nonce, data.len(), now_ms);
+        let bytes_sent =
+            fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |frame_data| {
                 *time_data_sent_ms = Some(now_ms);
-                sink.send(&data);
+                sink.send(&frame_data);
+                send_rate_comp.notify_frame_sent(now_ms);
             });
 
-        self.flush_alloc -= send_size;
-        if rate_limited {
-            self.send_rate_comp.log_rate_limited();
-            return;
-        }
+        self.flush_alloc -= bytes_sent;
     }
 }
 

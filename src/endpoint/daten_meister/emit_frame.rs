@@ -1,16 +1,15 @@
 
-use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE;
 use crate::MAX_FRAME_SIZE;
 use crate::frame;
 use crate::frame::serial::DataFrameBuilder;
 use crate::frame::serial::AckFrameBuilder;
 
 use super::packet_sender;
+use super::pending_packet;
 use super::datagram_queue;
 use super::resend_queue;
-use super::frame_log;
+use super::frame_queue;
 use super::frame_ack_queue;
-use super::pending_packet;
 
 const MAX_SEND_COUNT: u8 = 2;
 
@@ -20,35 +19,16 @@ enum EmitError {
 }
 
 struct InProgressDataFrame {
-    frame_id: u32,
     nonce: bool,
     fbuilder: frame::serial::DataFrameBuilder,
     fragment_refs: Vec<pending_packet::FragmentRef>,
 }
 
-struct BuiltDataFrame {
-    id: u32,
-    nonce: bool,
-    frame_data: Box<[u8]>,
-    fragment_refs: Box<[pending_packet::FragmentRef]>,
-}
+struct DataFrameEmitter<'a, F> {
+    now_ms: u64,
+    frame_queue: &'a mut frame_queue::FrameQueue,
 
-impl InProgressDataFrame {
-    fn finalize(self) -> BuiltDataFrame {
-        BuiltDataFrame {
-            id: self.frame_id,
-            nonce: self.nonce,
-            frame_data: self.fbuilder.build(),
-            fragment_refs: self.fragment_refs.into_boxed_slice(),
-        }
-    }
-}
-
-struct DataFrameEmitter<F> {
     in_progress_frame: Option<InProgressDataFrame>,
-
-    next_frame_id: u32,
-    frames_remaining: u32,
 
     max_send_size: usize,
     bytes_remaining: usize,
@@ -56,13 +36,13 @@ struct DataFrameEmitter<F> {
     callback: F,
 }
 
-impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
-    pub fn new(next_frame_id: u32, frames_remaining: u32, max_send_size: usize, callback: F) -> Self {
+impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
+    pub fn new(now_ms: u64, frame_queue: &'a mut frame_queue::FrameQueue, max_send_size: usize, callback: F) -> Self {
         Self {
-            in_progress_frame: None,
+            now_ms,
+            frame_queue,
 
-            next_frame_id,
-            frames_remaining,
+            in_progress_frame: None,
 
             max_send_size,
             bytes_remaining: max_send_size,
@@ -74,7 +54,7 @@ impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
     fn push_initial(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), EmitError> {
         debug_assert!(self.in_progress_frame.is_none());
 
-        if self.frames_remaining == 0 {
+        if !self.frame_queue.can_push() {
             return Err(EmitError::WindowLimited);
         }
 
@@ -89,10 +69,7 @@ impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
             return Err(EmitError::SizeLimited);
         }
 
-        let frame_id = self.next_frame_id;
-        self.next_frame_id = self.next_frame_id.wrapping_add(1);
-        self.frames_remaining -= 1;
-
+        let frame_id = self.frame_queue.next_id();
         let nonce = rand::random();
 
         let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
@@ -105,7 +82,6 @@ impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
         }
 
         self.in_progress_frame = Some(InProgressDataFrame {
-            frame_id,
             nonce,
             fbuilder,
             fragment_refs,
@@ -124,10 +100,10 @@ impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
             let potential_frame_size = next_frame.fbuilder.size() + encoded_size;
 
             if potential_frame_size > MAX_FRAME_SIZE {
-                self.flush();
+                self.flush_internal(false);
                 return self.push_initial(packet_rc, fragment_id, persistent);
             } else if potential_frame_size > self.bytes_remaining {
-                self.flush();
+                self.flush_internal(true);
                 return Err(EmitError::SizeLimited);
             } else {
                 next_frame.fbuilder.add_ref(&datagram);
@@ -142,12 +118,21 @@ impl<F> DataFrameEmitter<F> where F: FnMut(BuiltDataFrame) {
         }
     }
 
-    pub fn flush(&mut self) {
+    fn flush_internal(&mut self, rate_limited: bool) {
         if let Some(next_frame) = self.in_progress_frame.take() {
-            let result = next_frame.finalize();
-            self.bytes_remaining -= result.frame_data.len();
-            (self.callback)(result);
+            let frame_data = next_frame.fbuilder.build();
+            let fragment_refs = next_frame.fragment_refs.into_boxed_slice();
+
+            debug_assert!(self.frame_queue.can_push());
+            self.frame_queue.push(frame_data.len(), self.now_ms, fragment_refs, next_frame.nonce, rate_limited);
+
+            self.bytes_remaining -= frame_data.len();
+            (self.callback)(frame_data);
         }
+    }
+
+    pub fn flush(&mut self) {
+        self.flush_internal(false);
     }
 
     pub fn total_size(&self) -> usize {
@@ -159,7 +144,7 @@ pub struct FrameEmitter<'a> {
     packet_sender: &'a mut packet_sender::PacketSender,
     datagram_queue: &'a mut datagram_queue::DatagramQueue,
     resend_queue: &'a mut resend_queue::ResendQueue,
-    frame_log: &'a mut frame_log::FrameLog,
+    frame_queue: &'a mut frame_queue::FrameQueue,
     frame_ack_queue: &'a mut frame_ack_queue::FrameAckQueue,
     flush_id: u32,
 }
@@ -168,35 +153,21 @@ impl<'a> FrameEmitter<'a> {
     pub fn new(packet_sender: &'a mut packet_sender::PacketSender,
                datagram_queue: &'a mut datagram_queue::DatagramQueue,
                resend_queue: &'a mut resend_queue::ResendQueue,
-               frame_log: &'a mut frame_log::FrameLog,
+               frame_queue: &'a mut frame_queue::FrameQueue,
                frame_ack_queue: &'a mut frame_ack_queue::FrameAckQueue,
                flush_id: u32) -> Self {
         Self {
             packet_sender,
             datagram_queue,
             resend_queue,
-            frame_log,
+            frame_queue,
             frame_ack_queue,
             flush_id,
         }
     }
 
-    pub fn emit_data_frames<F>(&mut self, now_ms: u64, rtt_ms: u64, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
-        let next_frame_id = self.frame_log.next_id();
-        let max_frames = MAX_FRAME_TRANSFER_WINDOW_SIZE - self.frame_log.len();
-
-        let ref mut frame_log = self.frame_log;
-
-        let emit_cb = |frame_info: BuiltDataFrame| {
-            frame_log.push(frame_info.id, frame_log::Entry {
-                send_time_ms: now_ms,
-                fragment_refs: frame_info.fragment_refs,
-            });
-
-            f(frame_info.frame_data, frame_info.id, frame_info.nonce);
-        };
-
-        let mut dfe = DataFrameEmitter::new(next_frame_id, max_frames, max_send_size, emit_cb);
+    pub fn emit_data_frames<F>(&mut self, now_ms: u64, rtt_ms: u64, max_send_size: usize, emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
+        let mut dfe = DataFrameEmitter::new(now_ms, self.frame_queue, max_send_size, emit_cb);
 
         while let Some(entry) = self.resend_queue.peek() {
             if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
@@ -212,8 +183,7 @@ impl<'a> FrameEmitter<'a> {
                 }
 
                 match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, true) {
-                    Err(EmitError::SizeLimited) => return (dfe.total_size(), true),
-                    Err(EmitError::WindowLimited) => return (dfe.total_size(), false),
+                    Err(_) => return dfe.total_size(),
                     Ok(_) => (),
                 }
 
@@ -254,8 +224,7 @@ impl<'a> FrameEmitter<'a> {
                     }
 
                     match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, entry.resend) {
-                        Err(EmitError::SizeLimited) => return (dfe.total_size(), true),
-                        Err(EmitError::WindowLimited) => return (dfe.total_size(), false),
+                        Err(_) => return dfe.total_size(),
                         Ok(_) => (),
                     }
 
@@ -272,42 +241,30 @@ impl<'a> FrameEmitter<'a> {
         }
 
         dfe.flush();
-        return (dfe.total_size(), false);
+        return dfe.total_size();
     }
 
-    pub fn emit_sync_frame<F>(&mut self, now_ms: u64, sender_next_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>, u32, bool) {
+    pub fn emit_sync_frame<F>(&mut self, sender_next_id: u32, max_send_size: usize, mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
         // TODO: It's a shame that this check needs to happen here (this check seems out of place)
         if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
-            return (0, false);
-        }
-
-        if self.frame_log.len() == MAX_FRAME_TRANSFER_WINDOW_SIZE {
-            return (0, false);
+            return 0;
         }
 
         if frame::serial::SYNC_FRAME_SIZE > max_send_size {
-            return (0, true);
+            return 0;
         }
 
-        let frame_id = self.frame_log.next_id();
-        let nonce = rand::random();
-
-        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id: frame_id, nonce, sender_next_id });
+        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id: 0, nonce: false, sender_next_id });
 
         use frame::serial::Serialize;
         let frame_data = frame.write();
 
-        f(frame_data, frame_id, nonce);
+        emit_cb(frame_data);
 
-        self.frame_log.push(frame_id, frame_log::Entry {
-            send_time_ms: now_ms,
-            fragment_refs: Box::new([]),
-        });
-
-        return (frame::serial::SYNC_FRAME_SIZE, false);
+        return frame::serial::SYNC_FRAME_SIZE;
     }
 
-    pub fn emit_ack_frames<F>(&mut self, receiver_base_id: u32, max_send_size: usize, mut f: F) -> (usize, bool) where F: FnMut(Box<[u8]>) {
+    pub fn emit_ack_frames<F>(&mut self, receiver_base_id: u32, max_send_size: usize, mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
         let mut bytes_remaining = max_send_size;
 
         let mut fbuilder = AckFrameBuilder::new(receiver_base_id);
@@ -320,10 +277,10 @@ impl<'a> FrameEmitter<'a> {
                 if fbuilder.count() > 0 {
                     let frame_data = fbuilder.build();
                     bytes_remaining -= frame_data.len();
-                    f(frame_data);
+                    emit_cb(frame_data);
                 }
 
-                return (max_send_size - bytes_remaining, true);
+                return max_send_size - bytes_remaining;
             }
 
             if potential_frame_size > MAX_FRAME_SIZE {
@@ -331,7 +288,7 @@ impl<'a> FrameEmitter<'a> {
 
                 let frame_data = fbuilder.build();
                 bytes_remaining -= frame_data.len();
-                f(frame_data);
+                emit_cb(frame_data);
 
                 fbuilder = AckFrameBuilder::new(receiver_base_id);
                 continue;
@@ -345,10 +302,10 @@ impl<'a> FrameEmitter<'a> {
         if fbuilder.count() > 0 {
             let frame_data = fbuilder.build();
             bytes_remaining -= frame_data.len();
-            f(frame_data);
+            emit_cb(frame_data);
         }
 
-        return (max_send_size - bytes_remaining, false);
+        return max_send_size - bytes_remaining;
     }
 }
 
@@ -373,13 +330,13 @@ mod tests {
     fn test_emit_data_frames(ps: &mut packet_sender::PacketSender,
                              dq: &mut datagram_queue::DatagramQueue,
                              rq: &mut resend_queue::ResendQueue,
-                             fl: &mut frame_log::FrameLog,
+                             fq: &mut frame_queue::FrameQueue,
                              faq: &mut frame_ack_queue::FrameAckQueue,
                              fid: u32,
                              now_ms: u64,
                              rtt_ms: u64,
                              max_send_size: usize) -> (VecDeque<DataFrame>, usize, bool) {
-        let mut dfe = FrameEmitter::new(ps, dq, rq, fl, faq, fid);
+        let mut dfe = FrameEmitter::new(ps, dq, rq, fq, faq, fid);
         let mut emitted = VecDeque::new();
         let (total_size, send_size_limited) =
             dfe.emit_data_frames(now_ms, rtt_ms, max_send_size, |data, id, _nonce| {
@@ -410,13 +367,13 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
         ps.enqueue_packet(vec![ 0, 0, 0 ].into_boxed_slice(), 0, SendMode::Unreliable, fid);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         let dg0 = Datagram {
@@ -439,14 +396,14 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
         let packet_data = (0 .. 2*MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
         ps.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, fid);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 2);
 
         let dg0 = Datagram {
@@ -482,17 +439,17 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
         // No data
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 0);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 0);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
@@ -501,43 +458,43 @@ mod tests {
         ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
 
         // Send path
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE-1);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
         assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
         assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
 
         // Resend path
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE-1);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
         assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, true);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
         assert_eq!(size, MAX_FRAME_SIZE);
         assert_eq!(size_limit, false);
 
-        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
         assert_eq!(size, 0);
         assert_eq!(size_limit, false);
@@ -550,29 +507,29 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
         let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
         ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 0, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 0, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 1, rtt_ms, MAX_FRAME_SIZE);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 1, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 0);
 
         let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
 
         for time_ms in resend_times.iter() {
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms - 1, rtt_ms, MAX_FRAME_SIZE);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, *time_ms - 1, rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 0);
 
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms    , rtt_ms, MAX_FRAME_SIZE);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, *time_ms    , rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 1);
 
-            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, *time_ms + 1, rtt_ms, MAX_FRAME_SIZE);
+            let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, *time_ms + 1, rtt_ms, MAX_FRAME_SIZE);
             assert_eq!(frames.len(), 0);
         }
     }
@@ -585,13 +542,13 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
 
         ps.enqueue_packet(vec![ 0, 0, 0 ].into_boxed_slice(), 0, SendMode::TimeSensitive, 0);
         ps.enqueue_packet(vec![ 1, 1, 1 ].into_boxed_slice(), 0, SendMode::Unreliable, 0);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, 1, now_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, 1, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         let dg0 = Datagram {
@@ -614,7 +571,7 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
@@ -630,12 +587,12 @@ mod tests {
         ps.enqueue_packet(p3        , 0, SendMode::Resend, 0);
         ps.enqueue_packet(p4        , 0, SendMode::Resend, 0);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
 
-        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11101, nonce: false });
+        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b11101, nonce: false });
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         let dg1 = Datagram {
@@ -658,7 +615,7 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
@@ -667,12 +624,12 @@ mod tests {
             ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
         }
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 48000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 32);
 
-        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
+        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 0);
     }
 
@@ -684,7 +641,7 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
@@ -693,13 +650,13 @@ mod tests {
             ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
         }
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 48000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 32);
 
-        fl.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
-        fl.acknowledge_frames(frame::FrameAck { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
+        fq.acknowledge_group(frame::FrameAck { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
+        fq.acknowledge_group(frame::FrameAck { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
         assert_eq!(frames.len(), 0);
     }
 
@@ -710,7 +667,7 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
@@ -721,29 +678,29 @@ mod tests {
         let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
 
         ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, 0);
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 0, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 0, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         ps.enqueue_packet(p1.clone(), 0, SendMode::Resend, 0);
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 9, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 9, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         ps.enqueue_packet(p2, 0, SendMode::Resend, 0);
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 10, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 10, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         ps.enqueue_packet(p3, 0, SendMode::Resend, 0);
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 11, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 11, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         ps.enqueue_packet(p4, 0, SendMode::Resend, 0);
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 12, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 12, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
-        fl.forget_frames(10);
-        fl.acknowledge_frames(frame::FrameAck { base_id: 0, bitfield: 0b11111, nonce: false });
+        fq.forget_frames(10);
+        fq.acknowledge_group(frame::FrameAck { base_id: 0, bitfield: 0b11111, nonce: false });
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, 2*rtt_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, 2*rtt_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 2);
 
         let dg0 = Datagram {
@@ -776,7 +733,7 @@ mod tests {
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
         let ref mut dq = datagram_queue::DatagramQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
-        let ref mut fl = frame_log::FrameLog::new(0);
+        let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
         let fid = 0;
 
@@ -792,12 +749,12 @@ mod tests {
         ps.enqueue_packet(p3        , 0, SendMode::Resend, 0);
         ps.enqueue_packet(p4.clone(), 0, SendMode::Resend, 0);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
 
         ps.acknowledge(4);
 
-        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fl, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         let dg4 = Datagram {

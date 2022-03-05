@@ -206,7 +206,7 @@ impl TransferWindow {
     }
 }
 
-struct FrameQueue {
+pub struct FrameQueue {
     frame_log: FrameLog,
     feedback_gen: FeedbackGen,
     window: TransferWindow,
