@@ -604,5 +604,62 @@ mod tests {
             rtt_ms: 1000,
         }));
     }
+
+    // TODO: Test max acknowledgement, etc.
+
+    /*
+    #[test]
+    fn max_acknowledgement() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fq = frame_queue::FrameQueue::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        for _ in 0..32 {
+            let packet_data = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+            ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
+        }
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 32);
+
+        fq.acknowledge_group(frame::AckGroup { base_id: 0, bitfield: 0xFFFFFFFF, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 0);
+    }
+
+    #[test]
+    fn multi_acknowledgement() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 48000, 0);
+        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fq = frame_queue::FrameQueue::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        for _ in 0..32 {
+            let packet_data = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+            ps.enqueue_packet(packet_data, 0, SendMode::Resend, fid);
+        }
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 32);
+
+        fq.acknowledge_group(frame::AckGroup { base_id: 0u32.wrapping_sub(16), bitfield: 0xFFFF0000, nonce: false });
+        fq.acknowledge_group(frame::AckGroup { base_id: 0u32.wrapping_add(16), bitfield: 0x0000FFFF, nonce: false });
+
+        let (frames, ..) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, 48000);
+        assert_eq!(frames.len(), 0);
+    }
+    */
 }
 
