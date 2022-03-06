@@ -379,5 +379,27 @@ impl SendRateComp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_throughput_inverse() {
+        let rtts = vec![ 0.01, 0.05, 0.1, 0.2, 0.4, 0.8, 2.0, 4.0 ];
+
+        for &rtt in rtts.iter() {
+            let mut target_loss_rates = vec![ 1.0, 0.0, 0.01, 0.001, 0.0001, 0.00001, 0.000001 ];
+            for _ in 0 .. 50 {
+                let p = -6.0 * (rand::random::<u32>() as f64 / u32::MAX as f64);
+                target_loss_rates.push(10.0f64.powf(p));
+            }
+
+            for &target_loss_rate in target_loss_rates.iter() {
+                let target_send_rate = eval_tcp_throughput(rtt, target_loss_rate);
+                let max_error = (target_send_rate as f64 * 0.05) as i32;
+
+                let send_rate = eval_tcp_throughput(rtt, eval_tcp_throughput_inv(rtt, target_send_rate));
+
+                assert!((target_send_rate as i32 - send_rate as i32).abs() <= max_error);
+            }
+        }
+    }
 }
 
