@@ -12,7 +12,7 @@ mod pending_packet;
 mod packet_sender;
 mod packet_receiver;
 
-mod datagram_queue;
+mod pending_queue;
 mod resend_queue;
 
 mod recv_rate_set;
@@ -38,7 +38,7 @@ pub trait PacketSink {
 
 pub struct DatenMeister {
     packet_sender: packet_sender::PacketSender,
-    datagram_queue: datagram_queue::DatagramQueue,
+    pending_queue: pending_queue::PendingQueue,
     resend_queue: resend_queue::ResendQueue,
     frame_queue: frame_queue::FrameQueue,
 
@@ -65,7 +65,7 @@ impl DatenMeister {
                tx_bandwidth_limit: u32) -> Self {
         Self {
             packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
-            datagram_queue: datagram_queue::DatagramQueue::new(),
+            pending_queue: pending_queue::PendingQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
             frame_queue: frame_queue::FrameQueue::new(tx_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
 
@@ -88,7 +88,7 @@ impl DatenMeister {
     }
 
     pub fn is_send_pending(&self) -> bool {
-        self.packet_sender.pending_count() != 0 || self.datagram_queue.len() != 0 || self.resend_queue.len() != 0
+        self.packet_sender.pending_count() != 0 || self.pending_queue.len() != 0 || self.resend_queue.len() != 0
     }
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
@@ -171,7 +171,7 @@ impl DatenMeister {
         let sync_timeout_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
         let send_sync =
             if let Some(time_data_sent_ms) = self.time_data_sent_ms {
-                if now_ms - time_data_sent_ms >= sync_timeout_ms && self.resend_queue.len() == 0 && self.datagram_queue.len() == 0 {
+                if now_ms - time_data_sent_ms >= sync_timeout_ms && self.resend_queue.len() == 0 && self.pending_queue.len() == 0 {
                     true
                 } else {
                     false
@@ -187,7 +187,7 @@ impl DatenMeister {
         let packet_window_base_id = self.packet_receiver.base_id();
 
         let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
-                                                   &mut self.datagram_queue,
+                                                   &mut self.pending_queue,
                                                    &mut self.resend_queue,
                                                    &mut self.frame_queue,
                                                    &mut self.frame_ack_queue,

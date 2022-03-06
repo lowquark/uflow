@@ -18,5 +18,5 @@ impl Entry {
     }
 }
 
-pub type DatagramQueue = VecDeque<Entry>;
+pub type PendingQueue = VecDeque<Entry>;
 

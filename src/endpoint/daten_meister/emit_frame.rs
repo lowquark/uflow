@@ -6,7 +6,7 @@ use crate::frame::serial::AckFrameBuilder;
 
 use super::packet_sender;
 use super::pending_packet;
-use super::datagram_queue;
+use super::pending_queue;
 use super::resend_queue;
 use super::frame_queue;
 use super::frame_ack_queue;
@@ -142,7 +142,7 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
 
 pub struct FrameEmitter<'a> {
     packet_sender: &'a mut packet_sender::PacketSender,
-    datagram_queue: &'a mut datagram_queue::DatagramQueue,
+    pending_queue: &'a mut pending_queue::PendingQueue,
     resend_queue: &'a mut resend_queue::ResendQueue,
     frame_queue: &'a mut frame_queue::FrameQueue,
     frame_ack_queue: &'a mut frame_ack_queue::FrameAckQueue,
@@ -151,14 +151,14 @@ pub struct FrameEmitter<'a> {
 
 impl<'a> FrameEmitter<'a> {
     pub fn new(packet_sender: &'a mut packet_sender::PacketSender,
-               datagram_queue: &'a mut datagram_queue::DatagramQueue,
+               pending_queue: &'a mut pending_queue::PendingQueue,
                resend_queue: &'a mut resend_queue::ResendQueue,
                frame_queue: &'a mut frame_queue::FrameQueue,
                frame_ack_queue: &'a mut frame_ack_queue::FrameAckQueue,
                flush_id: u32) -> Self {
         Self {
             packet_sender,
-            datagram_queue,
+            pending_queue,
             resend_queue,
             frame_queue,
             frame_ack_queue,
@@ -199,22 +199,22 @@ impl<'a> FrameEmitter<'a> {
         }
 
         loop {
-            if self.datagram_queue.is_empty() {
+            if self.pending_queue.is_empty() {
                 if let Some((packet_rc, resend)) = self.packet_sender.emit_packet(self.flush_id) {
                     let pending_packet_ref = packet_rc.borrow();
 
                     let last_fragment_id = pending_packet_ref.last_fragment_id();
                     for i in 0 ..= last_fragment_id {
                         let fragment_ref = pending_packet::FragmentRef::new(&packet_rc, i);
-                        let entry = datagram_queue::Entry::new(fragment_ref, resend);
-                        self.datagram_queue.push_back(entry);
+                        let entry = pending_queue::Entry::new(fragment_ref, resend);
+                        self.pending_queue.push_back(entry);
                     }
                 } else {
                     break;
                 }
             }
 
-            while let Some(entry) = self.datagram_queue.front() {
+            while let Some(entry) = self.pending_queue.front() {
                 if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
                     let packet_ref = packet_rc.borrow();
 
@@ -228,7 +228,7 @@ impl<'a> FrameEmitter<'a> {
                         Ok(_) => (),
                     }
 
-                    let entry = self.datagram_queue.pop_front().unwrap();
+                    let entry = self.pending_queue.pop_front().unwrap();
 
                     if entry.resend {
                         self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
@@ -326,7 +326,7 @@ mod tests {
     use std::collections::VecDeque;
 
     fn test_emit_data_frames(ps: &mut packet_sender::PacketSender,
-                             dq: &mut datagram_queue::DatagramQueue,
+                             dq: &mut pending_queue::PendingQueue,
                              rq: &mut resend_queue::ResendQueue,
                              fq: &mut frame_queue::FrameQueue,
                              faq: &mut frame_ack_queue::FrameAckQueue,
@@ -372,7 +372,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -401,7 +401,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -444,7 +444,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -480,7 +480,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -511,7 +511,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -555,7 +555,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new(0, MAX_FRAME_WINDOW_SIZE);
@@ -605,7 +605,7 @@ mod tests {
         let rtt_ms = 100;
 
         let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
-        let ref mut dq = datagram_queue::DatagramQueue::new();
+        let ref mut dq = pending_queue::PendingQueue::new();
         let ref mut rq = resend_queue::ResendQueue::new();
         let ref mut fq = frame_queue::FrameQueue::new(0);
         let ref mut faq = frame_ack_queue::FrameAckQueue::new();
