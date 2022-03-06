@@ -234,6 +234,8 @@ impl SendRateComp {
 
                     // Apply target send rate as if computed loss rate had been received
                     self.send_rate = send_rate_target.min(send_rate_limit).max(MINIMUM_RATE);
+                    //println!("SS: first loss: new send rate: {} (limit {}, rl: {}, li: {})",
+                    //    self.send_rate, send_rate_limit, rate_limited, loss_increase);
 
                     self.mode = SendRateMode::ThroughputEqn(
                         ThroughputEqnState {
@@ -251,11 +253,15 @@ impl SendRateComp {
                         if now_ms - time_last_doubled_ms >= rtt_ms {
                             state.time_last_doubled_ms = Some(now_ms);
                             self.send_rate = (2*self.send_rate).min(send_rate_limit).max(initial_rate);
+                            //println!("SS: doubling: new send rate: {} (limit {}, rl: {}, li: {})",
+                            //    self.send_rate, send_rate_limit, rate_limited, loss_increase);
                         }
                     } else {
                         // Re-initialize slow start phase after first feedback, see section 4.2
                         state.time_last_doubled_ms = Some(now_ms);
                         self.send_rate = initial_rate;
+                        //println!("SS: first feedback: new send rate: {} (limit {}, rl: {}, li: {})",
+                        //    self.send_rate, send_rate_limit, rate_limited, loss_increase);
                     }
                 }
             }
@@ -264,6 +270,8 @@ impl SendRateComp {
                 state.send_rate_tcp = eval_tcp_throughput(rtt_s, loss_rate);
 
                 self.send_rate = state.send_rate_tcp.min(send_rate_limit).max(MINIMUM_RATE);
+                //println!("TE: new send rate: {} (limit {}, rl: {}, li: {})",
+                //    self.send_rate, send_rate_limit, rate_limited, loss_increase);
             }
             _ => panic!()
         }

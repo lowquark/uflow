@@ -229,6 +229,10 @@ impl FrameQueue {
         self.frame_log.next_id()
     }
 
+    pub fn base_id(&self) -> u32 {
+        self.window.base_id
+    }
+
     pub fn push(&mut self, size: usize, now_ms: u64, fragment_refs: Box<[FragmentRef]>, nonce: bool, rate_limited: bool) {
         debug_assert!(size <= u32::MAX as usize);
 

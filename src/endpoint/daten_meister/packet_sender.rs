@@ -108,6 +108,10 @@ impl PacketSender {
         self.next_id
     }
 
+    pub fn base_id(&self) -> u32 {
+        self.base_id
+    }
+
     // Places a user packet on the send queue. Silently drops the packet if the packet exceeds the
     // receiver's maximum receive allocation.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {

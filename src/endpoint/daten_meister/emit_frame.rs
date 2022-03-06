@@ -245,8 +245,8 @@ impl<'a> FrameEmitter<'a> {
     }
 
     pub fn emit_sync_frame<F>(&mut self,
-                              next_frame_id: u32,
-                              next_packet_id: u32,
+                              next_frame_id: Option<u32>,
+                              next_packet_id: Option<u32>,
                               max_send_size: usize,
                               mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
         if frame::serial::SYNC_FRAME_SIZE > max_send_size {
@@ -267,17 +267,24 @@ impl<'a> FrameEmitter<'a> {
                               frame_window_base_id: u32,
                               packet_window_base_id: u32,
                               max_send_size: usize,
+                              min_one: bool,
                               mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
         let mut bytes_remaining = max_send_size;
+        let mut frame_sent = false;
 
         let mut fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
+
+        let potential_frame_size = fbuilder.size();
+        if potential_frame_size > bytes_remaining {
+            return 0;
+        }
 
         while let Some(frame_ack) = self.frame_ack_queue.peek() {
             let encoded_size = AckFrameBuilder::encoded_size(&frame_ack);
             let potential_frame_size = fbuilder.size() + encoded_size;
 
             if potential_frame_size > bytes_remaining {
-                if fbuilder.count() > 0 {
+                if fbuilder.count() > 0 || min_one && !frame_sent {
                     let frame_data = fbuilder.build();
                     bytes_remaining -= frame_data.len();
                     emit_cb(frame_data);
@@ -291,6 +298,7 @@ impl<'a> FrameEmitter<'a> {
 
                 let frame_data = fbuilder.build();
                 bytes_remaining -= frame_data.len();
+                frame_sent = true;
                 emit_cb(frame_data);
 
                 fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
@@ -302,7 +310,7 @@ impl<'a> FrameEmitter<'a> {
             self.frame_ack_queue.pop();
         }
 
-        if fbuilder.count() > 0 {
+        if fbuilder.count() > 0 || min_one && !frame_sent {
             let frame_data = fbuilder.build();
             bytes_remaining -= frame_data.len();
             emit_cb(frame_data);
