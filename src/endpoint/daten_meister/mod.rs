@@ -72,7 +72,7 @@ impl DatenMeister {
             send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
 
             packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
-            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(),
+            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(rx_base_id, MAX_FRAME_WINDOW_SIZE),
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
@@ -100,16 +100,18 @@ impl DatenMeister {
     }
 
     pub fn handle_data_frame(&mut self, frame: frame::DataFrame) {
-        self.frame_ack_queue.mark_seen(frame.sequence_id, frame.nonce);
+        if self.frame_ack_queue.window_contains(frame.sequence_id) {
+            self.frame_ack_queue.mark_seen(frame.sequence_id, frame.nonce);
 
-        for datagram in frame.datagrams.into_iter() {
-            self.packet_receiver.handle_datagram(datagram);
+            for datagram in frame.datagrams.into_iter() {
+                self.packet_receiver.handle_datagram(datagram);
+            }
         }
     }
 
     pub fn handle_sync_frame(&mut self, frame: frame::SyncFrame) {
-        self.frame_ack_queue.mark_seen(frame.sequence_id, frame.nonce);
-        self.packet_receiver.resynchronize(frame.sender_next_id);
+        self.frame_ack_queue.resynchronize(frame.next_frame_id);
+        self.packet_receiver.resynchronize(frame.next_packet_id);
     }
 
     pub fn handle_ack_frame(&mut self, frame: frame::AckFrame) {
@@ -166,8 +168,10 @@ impl DatenMeister {
         let flush_id = self.flush_id;
         self.flush_id = self.flush_id.wrapping_add(1);
 
-        let sender_next_id = self.packet_sender.next_id();
-        let frame_window_base_id = 0; // XXX TODO!
+        let next_frame_id = self.frame_queue.next_id();
+        let next_packet_id = self.packet_sender.next_id();
+
+        let frame_window_base_id = self.frame_ack_queue.base_id();
         let packet_window_base_id = self.packet_receiver.base_id();
 
         let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
@@ -185,7 +189,7 @@ impl DatenMeister {
 
             if now_ms - *time_data_sent_ms >= sync_timeout_ms {
                 let bytes_sent =
-                    fe.emit_sync_frame(sender_next_id, self.flush_alloc, |frame_data| {
+                    fe.emit_sync_frame(next_frame_id, next_packet_id, self.flush_alloc, |frame_data| {
                         sink.send(&frame_data);
                     });
 

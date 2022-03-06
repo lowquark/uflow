@@ -27,7 +27,7 @@ const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
 const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
 
-const SYNC_FRAME_PAYLOAD_SIZE: usize = 9;
+const SYNC_FRAME_PAYLOAD_SIZE: usize = 8;
 
 const ACK_FRAME_PAYLOAD_HEADER_SIZE: usize = 10;
 
@@ -240,19 +240,17 @@ fn read_sync_payload(data: &[u8]) -> Option<Frame> {
         return None;
     }
 
-    let sequence_id = ((data[0] as u32) << 24) |
-                      ((data[1] as u32) << 16) |
-                      ((data[2] as u32) <<  8) |
-                      ((data[3] as u32)      );
+    let next_frame_id = ((data[0] as u32) << 24) |
+                        ((data[1] as u32) << 16) |
+                        ((data[2] as u32) <<  8) |
+                        ((data[3] as u32)      );
 
-    let nonce = data[4] != 0;
+    let next_packet_id = ((data[4] as u32) << 24) |
+                         ((data[5] as u32) << 16) |
+                         ((data[6] as u32) <<  8) |
+                         ((data[7] as u32)      );
 
-    let sender_next_id = ((data[5] as u32) << 24) |
-                         ((data[6] as u32) << 16) |
-                         ((data[7] as u32) <<  8) |
-                         ((data[8] as u32)      );
-
-    Some(Frame::SyncFrame(SyncFrame { sequence_id, nonce, sender_next_id }))
+    Some(Frame::SyncFrame(SyncFrame { next_frame_id, next_packet_id }))
 }
 
 fn read_frame_ack(data: &[u8]) -> Option<(AckGroup, usize)> {
@@ -377,15 +375,14 @@ fn write_data(frame: &DataFrame) -> Box<[u8]> {
 fn write_sync(frame: &SyncFrame) -> Box<[u8]> {
     Box::new([
         SYNC_FRAME_ID,
-        (frame.sequence_id >> 24) as u8,
-        (frame.sequence_id >> 16) as u8,
-        (frame.sequence_id >>  8) as u8,
-        (frame.sequence_id      ) as u8,
-        frame.nonce as u8,
-        (frame.sender_next_id >> 24) as u8,
-        (frame.sender_next_id >> 16) as u8,
-        (frame.sender_next_id >>  8) as u8,
-        (frame.sender_next_id      ) as u8,
+        (frame.next_frame_id >> 24) as u8,
+        (frame.next_frame_id >> 16) as u8,
+        (frame.next_frame_id >>  8) as u8,
+        (frame.next_frame_id      ) as u8,
+        (frame.next_packet_id >> 24) as u8,
+        (frame.next_packet_id >> 16) as u8,
+        (frame.next_packet_id >>  8) as u8,
+        (frame.next_packet_id      ) as u8,
     ])
 }
 
@@ -551,9 +548,8 @@ mod tests {
     #[test]
     fn sync_basic() {
         let f = Frame::SyncFrame(SyncFrame {
-            sequence_id: 0x010203,
-            nonce: true,
-            sender_next_id: 0x12345678,
+            next_frame_id: 0x01020304,
+            next_packet_id: 0x05060708,
         });
         verify_consistent(&f);
         verify_extra_bytes_fail(&f);
@@ -696,9 +692,8 @@ mod tests {
 
         for _ in 0..NUM_ROUNDS {
             let f = Frame::SyncFrame(SyncFrame {
-                sequence_id: rand::random::<u32>(),
-                nonce: rand::random::<bool>(),
-                sender_next_id: rand::random::<u32>(),
+                next_frame_id: rand::random::<u32>(),
+                next_packet_id: rand::random::<u32>(),
             });
             verify_consistent(&f);
             verify_extra_bytes_fail(&f);

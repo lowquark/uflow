@@ -116,9 +116,8 @@ pub struct DataFrame {
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct SyncFrame {
-    pub sequence_id: u32,
-    pub nonce: bool,
-    pub sender_next_id: u32,
+    pub next_frame_id: u32,
+    pub next_packet_id: u32,
 }
 
 #[derive(Clone,Debug,PartialEq)]

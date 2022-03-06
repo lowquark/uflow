@@ -244,7 +244,11 @@ impl<'a> FrameEmitter<'a> {
         return dfe.total_size();
     }
 
-    pub fn emit_sync_frame<F>(&mut self, sender_next_id: u32, max_send_size: usize, mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
+    pub fn emit_sync_frame<F>(&mut self,
+                              next_frame_id: u32,
+                              next_packet_id: u32,
+                              max_send_size: usize,
+                              mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
         // TODO: It's a shame that this check needs to happen here (this check seems out of place)
         if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
             return 0;
@@ -254,7 +258,7 @@ impl<'a> FrameEmitter<'a> {
             return 0;
         }
 
-        let frame = frame::Frame::SyncFrame(frame::SyncFrame { sequence_id: 0, nonce: false, sender_next_id });
+        let frame = frame::Frame::SyncFrame(frame::SyncFrame { next_frame_id, next_packet_id });
 
         use frame::serial::Serialize;
         let frame_data = frame.write();
