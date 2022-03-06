@@ -249,11 +249,6 @@ impl<'a> FrameEmitter<'a> {
                               next_packet_id: u32,
                               max_send_size: usize,
                               mut emit_cb: F) -> usize where F: FnMut(Box<[u8]>) {
-        // TODO: It's a shame that this check needs to happen here (this check seems out of place)
-        if self.resend_queue.len() != 0 || self.datagram_queue.len() != 0 {
-            return 0;
-        }
-
         if frame::serial::SYNC_FRAME_SIZE > max_send_size {
             return 0;
         }
@@ -321,6 +316,7 @@ impl<'a> FrameEmitter<'a> {
 mod tests {
     use super::*;
 
+    /*
     use crate::SendMode;
     use crate::frame::Datagram;
     use crate::frame::FragmentId;
@@ -335,7 +331,6 @@ mod tests {
         id: u32,
     }
 
-    /*
     fn test_emit_data_frames(ps: &mut packet_sender::PacketSender,
                              dq: &mut datagram_queue::DatagramQueue,
                              rq: &mut resend_queue::ResendQueue,

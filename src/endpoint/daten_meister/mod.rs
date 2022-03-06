@@ -168,6 +168,18 @@ impl DatenMeister {
         let flush_id = self.flush_id;
         self.flush_id = self.flush_id.wrapping_add(1);
 
+        let sync_timeout_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
+        let send_sync =
+            if let Some(time_data_sent_ms) = self.time_data_sent_ms {
+                if now_ms - time_data_sent_ms >= sync_timeout_ms && self.resend_queue.len() == 0 && self.datagram_queue.len() == 0 {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
         let next_frame_id = self.frame_queue.next_id();
         let next_packet_id = self.packet_sender.next_id();
 
@@ -184,30 +196,27 @@ impl DatenMeister {
         let ref mut time_data_sent_ms = self.time_data_sent_ms;
         let ref mut send_rate_comp = self.send_rate_comp;
 
-        if let Some(time_data_sent_ms) = time_data_sent_ms {
-            let sync_timeout_ms = send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
+        if send_sync {
+            let bytes_sent =
+                fe.emit_sync_frame(next_frame_id, next_packet_id, self.flush_alloc, |frame_data| {
+                    sink.send(&frame_data);
+                    *time_data_sent_ms = Some(now_ms);
+                });
 
-            if now_ms - *time_data_sent_ms >= sync_timeout_ms {
-                let bytes_sent =
-                    fe.emit_sync_frame(next_frame_id, next_packet_id, self.flush_alloc, |frame_data| {
-                        sink.send(&frame_data);
-                    });
-
-                self.flush_alloc -= bytes_sent;
-            }
+            self.flush_alloc -= bytes_sent;
         }
 
         let bytes_sent =
-            fe.emit_ack_frames(frame_window_base_id, packet_window_base_id, self.flush_alloc, |data| {
-                sink.send(&data);
+            fe.emit_ack_frames(frame_window_base_id, packet_window_base_id, self.flush_alloc, |frame_data| {
+                sink.send(&frame_data);
             });
 
         self.flush_alloc -= bytes_sent;
 
         let bytes_sent =
             fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |frame_data| {
-                *time_data_sent_ms = Some(now_ms);
                 sink.send(&frame_data);
+                *time_data_sent_ms = Some(now_ms);
                 send_rate_comp.notify_frame_sent(now_ms);
             });
 
