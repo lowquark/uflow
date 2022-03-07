@@ -134,6 +134,7 @@ impl DatenMeister {
         let now_ms = (now - self.time_base).as_millis() as u64;
 
         let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(INITIAL_RTT_ESTIMATE_MS);
+        let rto_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS);
 
         // Forget old frame data
         self.frame_queue.forget_frames(now_ms.saturating_sub(rtt_ms*4), self.send_rate_comp.rtt_ms());
@@ -150,8 +151,7 @@ impl DatenMeister {
         self.fill_flush_alloc(now);
 
         // Send as many frames as possible
-        // TODO: Consider rto_ms/4 idea further
-        self.emit_frames(now_ms, rtt_ms, sink);
+        self.emit_frames(now_ms, rtt_ms, rto_ms, sink);
     }
 
     fn fill_flush_alloc(&mut self, now: time::Instant) {
@@ -168,69 +168,212 @@ impl DatenMeister {
         self.time_last_flushed = Some(now);
     }
 
-    fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, sink: &mut impl FrameSink) {
-        let flush_id = self.flush_id;
-        self.flush_id = self.flush_id.wrapping_add(1);
+    fn emit_sync_frame(&mut self, now_ms: u64, rto_ms: u64, sink: &mut impl FrameSink) -> Result<(),()> {
+        let sync_timeout_ms = rto_ms.max(MIN_SYNC_TIMEOUT_MS);
 
-        let sync_timeout_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
+        if now_ms - self.sync_timeout_base_ms >= sync_timeout_ms {
+            if frame::serial::SYNC_FRAME_SIZE > self.flush_alloc {
+                return Err(());
+            }
 
-        let sync_timeout = now_ms - self.sync_timeout_base_ms >= sync_timeout_ms;
+            let next_frame_id =
+                if self.frame_queue.next_id() != self.frame_queue.base_id() {
+                    Some(self.frame_queue.next_id())
+                } else {
+                    None
+                };
 
-        let sync_frame_id =
-            if self.frame_queue.next_id() != self.frame_queue.base_id() {
-                Some(self.frame_queue.next_id())
-            } else {
-                None
-            };
+            let next_packet_id =
+                if self.packet_sender.next_id() != self.packet_sender.base_id() &&
+                   self.resend_queue.len() == 0 && self.pending_queue.len() == 0 {
+                    Some(self.packet_sender.next_id())
+                } else {
+                    None
+                };
 
-        let sync_packet_id =
-            if self.packet_sender.next_id() != self.packet_sender.base_id() &&
-               self.resend_queue.len() == 0 && self.pending_queue.len() == 0 {
-                Some(self.packet_sender.next_id())
-            } else {
-                None
-            };
+            let frame = frame::Frame::SyncFrame(frame::SyncFrame { next_frame_id, next_packet_id });
+
+            use frame::serial::Serialize;
+            let frame_data = frame.write();
+
+            sink.send(&frame_data);
+            self.flush_alloc -= frame_data.len();
+            self.sync_timeout_base_ms = now_ms;
+        }
+
+        return Ok(());
+    }
+
+    fn emit_ack_frames(&mut self, sink: &mut impl FrameSink) -> Result<(),()> {
+        use crate::frame::serial::AckFrameBuilder;
 
         let frame_window_base_id = self.frame_ack_queue.base_id();
         let packet_window_base_id = self.packet_receiver.base_id();
 
-        let mut fe = emit_frame::FrameEmitter::new(&mut self.packet_sender,
-                                                   &mut self.pending_queue,
-                                                   &mut self.resend_queue,
-                                                   &mut self.frame_queue,
-                                                   &mut self.frame_ack_queue,
-                                                   flush_id);
+        let mut fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
+        let mut frame_sent = false;
+
+        let potential_frame_size = fbuilder.size();
+        if potential_frame_size > self.flush_alloc {
+            return Err(());
+        }
+
+        while let Some(frame_ack) = self.frame_ack_queue.peek() {
+            let encoded_size = AckFrameBuilder::encoded_size(&frame_ack);
+            let potential_frame_size = fbuilder.size() + encoded_size;
+
+            if potential_frame_size > self.flush_alloc {
+                if fbuilder.count() > 0 || self.sync_reply && !frame_sent {
+                    let frame_data = fbuilder.build();
+                    sink.send(&frame_data);
+                    self.flush_alloc -= frame_data.len();
+                    self.sync_reply = false;
+                }
+
+                return Err(());
+            }
+
+            if potential_frame_size > MAX_FRAME_SIZE {
+                debug_assert!(fbuilder.count() > 0);
+
+                let frame_data = fbuilder.build();
+                sink.send(&frame_data);
+                self.flush_alloc -= frame_data.len();
+                self.sync_reply = false;
+
+                fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
+                frame_sent = true;
+                continue;
+            }
+
+            fbuilder.add(&frame_ack);
+
+            self.frame_ack_queue.pop();
+        }
+
+        if fbuilder.count() > 0 || self.sync_reply && !frame_sent {
+            let frame_data = fbuilder.build();
+            sink.send(&frame_data);
+            self.flush_alloc -= frame_data.len();
+            self.sync_reply = false;
+        }
+
+        return Ok(());
+    }
+
+    fn emit_data_frames(&mut self, now_ms: u64, rtt_ms: u64, flush_id: u32, sink: &mut impl FrameSink) -> Result<(),()> {
+        let flush_alloc_init = self.flush_alloc;
 
         let ref mut sync_timeout_base_ms = self.sync_timeout_base_ms;
         let ref mut send_rate_comp = self.send_rate_comp;
-        let ref mut sync_reply = self.sync_reply;
+        let ref mut flush_alloc = self.flush_alloc;
 
-        if sync_timeout {
-            let bytes_sent =
-                fe.emit_sync_frame(sync_frame_id, sync_packet_id, self.flush_alloc, |frame_data| {
-                    sink.send(&frame_data);
-                    *sync_timeout_base_ms = now_ms;
-                });
+        let emit_cb = |frame_bytes: Box<[u8]>| {
+            sink.send(&frame_bytes);
+            send_rate_comp.notify_frame_sent(now_ms);
+            *sync_timeout_base_ms = now_ms;
+            *flush_alloc -= frame_bytes.len();
+        };
 
-            self.flush_alloc -= bytes_sent;
+        let mut dfe = emit_frame::DataFrameEmitter::new(now_ms, &mut self.frame_queue, flush_alloc_init, emit_cb);
+
+        while let Some(entry) = self.resend_queue.peek() {
+            if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
+                let packet_ref = packet_rc.borrow();
+
+                if packet_ref.fragment_acknowledged(entry.fragment_ref.fragment_id) {
+                    self.resend_queue.pop();
+                    continue;
+                }
+
+                if entry.resend_time > now_ms {
+                    break;
+                }
+
+                match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, true) {
+                    Err(_) => return Err(()),
+                    Ok(_) => (),
+                }
+
+                let entry = self.resend_queue.pop().unwrap();
+
+                const MAX_SEND_COUNT: u8 = 2;
+
+                let new_resend_time = now_ms + rtt_ms*(1 << entry.send_count);
+                let new_send_count = (entry.send_count + 1).min(MAX_SEND_COUNT);
+
+                self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, new_resend_time, new_send_count));
+            } else {
+                self.resend_queue.pop();
+                continue;
+            }
         }
 
-        let bytes_sent =
-            fe.emit_ack_frames(frame_window_base_id, packet_window_base_id, self.flush_alloc, *sync_reply, |frame_data| {
-                sink.send(&frame_data);
-                *sync_reply = false;
-            });
+        loop {
+            if self.pending_queue.is_empty() {
+                if let Some((packet_rc, resend)) = self.packet_sender.emit_packet(flush_id) {
+                    let pending_packet_ref = packet_rc.borrow();
 
-        self.flush_alloc -= bytes_sent;
+                    let last_fragment_id = pending_packet_ref.last_fragment_id();
+                    for i in 0 ..= last_fragment_id {
+                        let fragment_ref = pending_packet::FragmentRef::new(&packet_rc, i);
+                        let entry = pending_queue::Entry::new(fragment_ref, resend);
+                        self.pending_queue.push_back(entry);
+                    }
+                } else {
+                    break;
+                }
+            }
 
-        let bytes_sent =
-            fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |frame_data| {
-                sink.send(&frame_data);
-                *sync_timeout_base_ms = now_ms;
-                send_rate_comp.notify_frame_sent(now_ms);
-            });
+            while let Some(entry) = self.pending_queue.front() {
+                if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
+                    let packet_ref = packet_rc.borrow();
 
-        self.flush_alloc -= bytes_sent;
+                    if packet_ref.fragment_acknowledged(entry.fragment_ref.fragment_id) {
+                        self.resend_queue.pop();
+                        continue;
+                    }
+
+                    match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, entry.resend) {
+                        Err(_) => return Err(()),
+                        Ok(_) => (),
+                    }
+
+                    let entry = self.pending_queue.pop_front().unwrap();
+
+                    if entry.resend {
+                        self.resend_queue.push(resend_queue::Entry::new(entry.fragment_ref, now_ms + rtt_ms, 1));
+                    }
+                } else {
+                    self.resend_queue.pop();
+                    continue;
+                }
+            }
+        }
+
+        dfe.flush();
+
+        return Ok(());
+    }
+
+    fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, rto_ms: u64, sink: &mut impl FrameSink) {
+        let flush_id = self.flush_id;
+        self.flush_id = self.flush_id.wrapping_add(1);
+
+        match self.emit_sync_frame(now_ms, rto_ms, sink) {
+            Err(_) => return,
+            Ok(_) => (),
+        }
+
+        match self.emit_ack_frames(sink) {
+            Err(_) => return,
+            Ok(_) => (),
+        }
+
+        match self.emit_data_frames(now_ms, rtt_ms, flush_id, sink) {
+            Err(_) => return,
+            Ok(_) => (),
+        }
     }
 }
 
@@ -243,7 +386,6 @@ mod tests {
     use crate::frame::FragmentId;
 
     use crate::MAX_FRAGMENT_SIZE;
-    use crate::MAX_FRAME_WINDOW_SIZE;
 
     use std::collections::VecDeque;
 
@@ -297,7 +439,7 @@ mod tests {
 
             self.dm.flush_alloc = max_send_size;
 
-            self.dm.emit_frames(now_ms, rtt_ms, &mut test_sink);
+            self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, &mut test_sink);
 
             return test_sink.emitted;
         }
