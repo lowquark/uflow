@@ -8,7 +8,7 @@ use super::FrameSink;
 
 use std::time;
 
-mod emit_frame;
+mod emit;
 mod frame_ack_queue;
 mod frame_queue;
 mod loss_rate;
@@ -222,7 +222,7 @@ impl DatenMeister {
             *sync_reply = false;
         };
 
-        let mut afe = emit_frame::AckFrameEmitter::new(frame_window_base_id, packet_window_base_id, sync_reply_init, flush_alloc_init, emit_cb);
+        let mut afe = emit::AckFrameEmitter::new(frame_window_base_id, packet_window_base_id, sync_reply_init, flush_alloc_init, emit_cb);
 
         while let Some(ack_group) = self.frame_ack_queue.peek() {
             match afe.push(ack_group) {
@@ -252,7 +252,7 @@ impl DatenMeister {
             *flush_alloc -= frame_bytes.len();
         };
 
-        let mut dfe = emit_frame::DataFrameEmitter::new(now_ms, &mut self.frame_queue, flush_alloc_init, emit_cb);
+        let mut dfe = emit::DataFrameEmitter::new(now_ms, &mut self.frame_queue, flush_alloc_init, emit_cb);
 
         while let Some(entry) = self.resend_queue.peek() {
             if let Some(packet_rc) = entry.fragment_ref.packet.upgrade() {
