@@ -45,7 +45,7 @@ pub struct DatenMeister {
 
     time_base: time::Instant,
     time_last_flushed: Option<time::Instant>,
-    sync_timeout_base_ms: Option<u64>,
+    sync_timeout_base_ms: u64,
 
     flush_alloc: usize,
     flush_id: u32,
@@ -71,7 +71,7 @@ impl DatenMeister {
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
-            sync_timeout_base_ms: None,
+            sync_timeout_base_ms: 0,
 
             flush_alloc: MAX_FRAME_SIZE,
             flush_id: 0,
@@ -174,12 +174,7 @@ impl DatenMeister {
 
         let sync_timeout_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
 
-        let sync_timeout =
-            if let Some(sync_timeout_base_ms) = self.sync_timeout_base_ms {
-                now_ms - sync_timeout_base_ms >= sync_timeout_ms
-            } else {
-                false
-            };
+        let sync_timeout = now_ms - self.sync_timeout_base_ms >= sync_timeout_ms;
 
         let sync_frame_id =
             if self.frame_queue.next_id() != self.frame_queue.base_id() {
@@ -214,7 +209,7 @@ impl DatenMeister {
             let bytes_sent =
                 fe.emit_sync_frame(sync_frame_id, sync_packet_id, self.flush_alloc, |frame_data| {
                     sink.send(&frame_data);
-                    *sync_timeout_base_ms = Some(now_ms);
+                    *sync_timeout_base_ms = now_ms;
                 });
 
             self.flush_alloc -= bytes_sent;
@@ -231,7 +226,7 @@ impl DatenMeister {
         let bytes_sent =
             fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |frame_data| {
                 sink.send(&frame_data);
-                *sync_timeout_base_ms = Some(now_ms);
+                *sync_timeout_base_ms = now_ms;
                 send_rate_comp.notify_frame_sent(now_ms);
             });
 
