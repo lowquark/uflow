@@ -66,6 +66,7 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
 
         debug_assert!(potential_frame_size <= MAX_FRAME_SIZE);
         if potential_frame_size > self.bytes_remaining {
+            self.frame_queue.mark_rate_limited();
             return Err(EmitError::SizeLimited);
         }
 
@@ -100,10 +101,11 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
             let potential_frame_size = next_frame.fbuilder.size() + encoded_size;
 
             if potential_frame_size > MAX_FRAME_SIZE {
-                self.flush_internal(false);
+                self.flush();
                 return self.push_initial(packet_rc, fragment_id, persistent);
             } else if potential_frame_size > self.bytes_remaining {
-                self.flush_internal(true);
+                self.flush();
+                self.frame_queue.mark_rate_limited();
                 return Err(EmitError::SizeLimited);
             } else {
                 next_frame.fbuilder.add(&datagram);
@@ -118,21 +120,17 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
         }
     }
 
-    fn flush_internal(&mut self, rate_limited: bool) {
+    fn flush(&mut self) {
         if let Some(next_frame) = self.in_progress_frame.take() {
             let frame_data = next_frame.fbuilder.build();
             let fragment_refs = next_frame.fragment_refs.into_boxed_slice();
 
             debug_assert!(self.frame_queue.can_push());
-            self.frame_queue.push(frame_data.len(), self.now_ms, fragment_refs, next_frame.nonce, rate_limited);
+            self.frame_queue.push(frame_data.len(), self.now_ms, fragment_refs, next_frame.nonce);
 
             self.bytes_remaining -= frame_data.len();
             (self.callback)(frame_data);
         }
-    }
-
-    pub fn flush(&mut self) {
-        self.flush_internal(false);
     }
 
     pub fn total_size(&self) -> usize {

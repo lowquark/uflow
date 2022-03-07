@@ -210,6 +210,8 @@ pub struct FrameQueue {
     frame_log: FrameLog,
     feedback_gen: FeedbackGen,
     window: TransferWindow,
+
+    rate_limited: bool,
 }
 
 impl FrameQueue {
@@ -218,6 +220,8 @@ impl FrameQueue {
             frame_log: FrameLog::new(base_id),
             feedback_gen: FeedbackGen::new(base_id, size + tail_size),
             window: TransferWindow::new(base_id, size, tail_size),
+
+            rate_limited: false,
         }
     }
 
@@ -233,7 +237,11 @@ impl FrameQueue {
         self.window.base_id
     }
 
-    pub fn push(&mut self, size: usize, now_ms: u64, fragment_refs: Box<[FragmentRef]>, nonce: bool, rate_limited: bool) {
+    pub fn mark_rate_limited(&mut self) {
+        self.rate_limited = true;
+    }
+
+    pub fn push(&mut self, size: usize, now_ms: u64, fragment_refs: Box<[FragmentRef]>, nonce: bool) {
         debug_assert!(size <= u32::MAX as usize);
 
         if self.can_push() {
@@ -242,9 +250,11 @@ impl FrameQueue {
                 send_time_ms: now_ms,
                 fragment_refs,
                 nonce,
-                rate_limited,
+                rate_limited: self.rate_limited,
                 acked: false,
-            })
+            });
+
+            self.rate_limited = false;
         }
     }
 
@@ -415,12 +425,13 @@ mod tests {
         let n4 = rand::random();
         let n5 = rand::random();
 
-        fq.push(  1, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n0, false);
-        fq.push(  2, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n1, false);
-        fq.push(  4, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n2, false);
-        fq.push(  8, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n3, false);
-        fq.push( 16, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n4,  true);
-        fq.push( 32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n5, false);
+        fq.push(  1, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n0);
+        fq.push(  2, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n1);
+        fq.push(  4, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n2);
+        fq.push(  8, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n3);
+        fq.mark_rate_limited();
+        fq.push( 16, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n4);
+        fq.push( 32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n5);
 
         // No feedback until an ack frame has been received
         assert_eq!(fq.get_feedback(1000), None);
@@ -473,11 +484,11 @@ mod tests {
 
         assert_eq!(fq.can_push(), true);
 
-        fq.push(  1, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n0, false);
-        fq.push(  2, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n1, false);
-        fq.push(  4, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n2, false);
-        fq.push(  8, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n3, false);
-        fq.push( 16, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n4, false);
+        fq.push(  1, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n0);
+        fq.push(  2, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n1);
+        fq.push(  4, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n2);
+        fq.push(  8, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n3);
+        fq.push( 16, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), n4);
 
         assert_eq!(fq.can_push(), false);
 
@@ -515,7 +526,7 @@ mod tests {
                 PendingPacket::new(vec![].into_boxed_slice(), 0, 0, 0, 0)
             ));
 
-            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce, false);
+            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce);
             nonces.push(nonce);
         }
 
@@ -527,7 +538,7 @@ mod tests {
                 PendingPacket::new(vec![].into_boxed_slice(), 0, 0, 0, 0)
             ));
 
-            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce, false);
+            fq.push(32, 0, vec![ FragmentRef::new(&packet_rc, 0) ].into_boxed_slice(), nonce);
             nonces.push(nonce);
         }
 
