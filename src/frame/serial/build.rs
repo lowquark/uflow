@@ -3,14 +3,15 @@ use super::DatagramRef;
 use super::AckGroup;
 
 use super::DATA_FRAME_ID;
-use super::ACK_FRAME_ID;
-
+use super::DATA_FRAME_OVERHEAD;
 use super::DATAGRAM_HEADER_SIZE_FRAGMENT;
 use super::DATAGRAM_HEADER_SIZE_FULL;
 
-use super::FRAME_ACK_SIZE;
+use super::ACK_FRAME_ID;
+use super::ACK_FRAME_OVERHEAD;
+use super::ACK_GROUP_SIZE;
 
-pub const MAX_CHANNELS: usize = 64;
+use super::MAX_CHANNELS;
 
 pub struct DataFrameBuilder {
     buffer: Vec<u8>,
@@ -18,6 +19,8 @@ pub struct DataFrameBuilder {
 }
 
 impl DataFrameBuilder {
+    pub const INITIAL_SIZE: usize = DATA_FRAME_OVERHEAD;
+
     pub fn new(sequence_id: u32, nonce: bool) -> Self {
         let header = vec![
             DATA_FRAME_ID,
@@ -97,7 +100,7 @@ impl DataFrameBuilder {
         self.buffer.len()
     }
 
-    pub fn encoded_size_ref(datagram: &DatagramRef) -> usize {
+    pub fn encoded_size(datagram: &DatagramRef) -> usize {
         if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
             DATAGRAM_HEADER_SIZE_FULL + datagram.data.len()
         } else {
@@ -112,6 +115,8 @@ pub struct AckFrameBuilder {
 }
 
 impl AckFrameBuilder {
+    pub const INITIAL_SIZE: usize = ACK_FRAME_OVERHEAD;
+
     pub fn new(frame_window_base_id: u32, packet_window_base_id: u32) -> Self {
         let header = vec![
             ACK_FRAME_ID,
@@ -162,12 +167,8 @@ impl AckFrameBuilder {
         self.buffer.len()
     }
 
-    pub fn count(&self) -> u16 {
-        self.count
-    }
-
     pub fn encoded_size(_frame_ack: &AckGroup) -> usize {
-        FRAME_ACK_SIZE
+        ACK_GROUP_SIZE
     }
 }
 

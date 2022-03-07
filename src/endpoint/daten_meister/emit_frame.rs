@@ -2,11 +2,12 @@
 use crate::MAX_FRAME_SIZE;
 use crate::frame;
 use crate::frame::serial::DataFrameBuilder;
+use crate::frame::serial::AckFrameBuilder;
 
 use super::pending_packet;
 use super::frame_queue;
 
-pub enum EmitError {
+pub enum DataPushError {
     SizeLimited,
     WindowLimited,
 }
@@ -42,23 +43,24 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
         }
     }
 
-    fn push_initial(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), EmitError> {
+    fn push_initial(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), DataPushError> {
         debug_assert!(self.in_progress_frame.is_none());
 
         if !self.frame_queue.can_push() {
-            return Err(EmitError::WindowLimited);
+            return Err(DataPushError::WindowLimited);
         }
 
         let packet_ref = packet_rc.borrow();
         let datagram = packet_ref.datagram(fragment_id);
 
-        let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
-        let potential_frame_size = frame::serial::DATA_FRAME_OVERHEAD + encoded_size;
+        let encoded_size = DataFrameBuilder::encoded_size(&datagram);
+        let potential_frame_size = DataFrameBuilder::INITIAL_SIZE + encoded_size;
 
         debug_assert!(potential_frame_size <= MAX_FRAME_SIZE);
+
         if potential_frame_size > self.bytes_remaining {
             self.frame_queue.mark_rate_limited();
-            return Err(EmitError::SizeLimited);
+            return Err(DataPushError::SizeLimited);
         }
 
         let frame_id = self.frame_queue.next_id();
@@ -66,6 +68,7 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
 
         let mut fbuilder = DataFrameBuilder::new(frame_id, nonce);
         fbuilder.add(&datagram);
+
         debug_assert!(fbuilder.size() == potential_frame_size);
 
         let mut fragment_refs = Vec::new();
@@ -82,22 +85,22 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
         return Ok(());
     }
 
-    pub fn push(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), EmitError> {
+    pub fn push(&mut self, packet_rc: &pending_packet::PendingPacketRc, fragment_id: u16, persistent: bool) -> Result<(), DataPushError> {
         let packet_ref = packet_rc.borrow();
         let datagram = packet_ref.datagram(fragment_id);
 
         if let Some(ref mut next_frame) = self.in_progress_frame {
             // Try to add to in-progress frame
-            let encoded_size = DataFrameBuilder::encoded_size_ref(&datagram);
+            let encoded_size = DataFrameBuilder::encoded_size(&datagram);
             let potential_frame_size = next_frame.fbuilder.size() + encoded_size;
 
             if potential_frame_size > MAX_FRAME_SIZE {
-                self.flush();
+                self.finalize();
                 return self.push_initial(packet_rc, fragment_id, persistent);
             } else if potential_frame_size > self.bytes_remaining {
-                self.flush();
+                self.finalize();
                 self.frame_queue.mark_rate_limited();
-                return Err(EmitError::SizeLimited);
+                return Err(DataPushError::SizeLimited);
             } else {
                 next_frame.fbuilder.add(&datagram);
                 if persistent {
@@ -111,7 +114,7 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
         }
     }
 
-    pub fn flush(&mut self) {
+    pub fn finalize(&mut self) {
         if let Some(next_frame) = self.in_progress_frame.take() {
             let frame_data = next_frame.fbuilder.build();
             let fragment_refs = next_frame.fragment_refs.into_boxed_slice();
@@ -121,6 +124,92 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
 
             self.bytes_remaining -= frame_data.len();
             (self.callback)(frame_data);
+        }
+    }
+}
+
+pub struct AckFrameEmitter<F> {
+    frame_window_base_id: u32,
+    packet_window_base_id: u32,
+
+    in_progress_frame: Option<frame::serial::AckFrameBuilder>,
+
+    bytes_remaining: usize,
+
+    callback: F,
+}
+
+impl<F> AckFrameEmitter<F> where F: FnMut(Box<[u8]>) {
+    pub fn new(frame_window_base_id: u32, packet_window_base_id: u32, min_one: bool, max_send_size: usize, callback: F) -> Self {
+        let potential_frame_size = AckFrameBuilder::INITIAL_SIZE;
+
+        let in_progress_frame = if min_one && potential_frame_size <= max_send_size {
+            Some(AckFrameBuilder::new(frame_window_base_id, packet_window_base_id))
+        } else {
+            None
+        };
+
+        Self {
+            frame_window_base_id,
+            packet_window_base_id,
+
+            in_progress_frame,
+
+            bytes_remaining: max_send_size,
+
+            callback,
+        }
+    }
+
+    fn push_initial(&mut self, ack_group: &frame::AckGroup) -> Result<(), ()> {
+        debug_assert!(self.in_progress_frame.is_none());
+
+        let encoded_size = AckFrameBuilder::encoded_size(ack_group);
+        let potential_frame_size = AckFrameBuilder::INITIAL_SIZE + encoded_size;
+
+        debug_assert!(potential_frame_size <= MAX_FRAME_SIZE);
+
+        if potential_frame_size > self.bytes_remaining {
+            return Err(());
+        }
+
+        let mut fbuilder = AckFrameBuilder::new(self.frame_window_base_id, self.packet_window_base_id);
+        fbuilder.add(ack_group);
+
+        debug_assert!(fbuilder.size() == potential_frame_size);
+
+        self.in_progress_frame = Some(fbuilder);
+
+        return Ok(());
+    }
+
+    pub fn push(&mut self, ack_group: &frame::AckGroup) -> Result<(), ()> {
+        if let Some(ref mut next_frame) = self.in_progress_frame {
+            // Try to add to in-progress frame
+            let encoded_size = AckFrameBuilder::encoded_size(ack_group);
+            let potential_frame_size = next_frame.size() + encoded_size;
+
+            if potential_frame_size > MAX_FRAME_SIZE {
+                self.finalize();
+                return self.push_initial(ack_group);
+            } else if potential_frame_size > self.bytes_remaining {
+                self.finalize();
+                return Err(());
+            } else {
+                next_frame.add(ack_group);
+                return Ok(());
+            }
+        } else {
+            // No in-progress frame
+            return self.push_initial(ack_group);
+        }
+    }
+
+    pub fn finalize(&mut self) {
+        if let Some(next_frame) = self.in_progress_frame.take() {
+            let frame_bytes = next_frame.build();
+            self.bytes_remaining -= frame_bytes.len();
+            (self.callback)(frame_bytes);
         }
     }
 }

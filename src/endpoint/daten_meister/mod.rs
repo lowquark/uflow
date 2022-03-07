@@ -191,6 +191,8 @@ impl DatenMeister {
                     None
                 };
 
+            // TODO: Only send a (None, None) sync frame if application requests keepalives
+
             let frame = frame::Frame::SyncFrame(frame::SyncFrame { next_frame_id, next_packet_id });
 
             use frame::serial::Serialize;
@@ -205,58 +207,33 @@ impl DatenMeister {
     }
 
     fn emit_ack_frames(&mut self, sink: &mut impl FrameSink) -> Result<(),()> {
-        use crate::frame::serial::AckFrameBuilder;
+        let flush_alloc_init = self.flush_alloc;
+        let sync_reply_init = self.sync_reply;
 
         let frame_window_base_id = self.frame_ack_queue.base_id();
         let packet_window_base_id = self.packet_receiver.base_id();
 
-        let mut fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
-        let mut frame_sent = false;
+        let ref mut flush_alloc = self.flush_alloc;
+        let ref mut sync_reply = self.sync_reply;
 
-        let potential_frame_size = fbuilder.size();
-        if potential_frame_size > self.flush_alloc {
-            return Err(());
-        }
+        let emit_cb = |frame_bytes: Box<[u8]>| {
+            sink.send(&frame_bytes);
+            *flush_alloc -= frame_bytes.len();
+            *sync_reply = false;
+        };
 
-        while let Some(frame_ack) = self.frame_ack_queue.peek() {
-            let encoded_size = AckFrameBuilder::encoded_size(&frame_ack);
-            let potential_frame_size = fbuilder.size() + encoded_size;
+        let mut afe = emit_frame::AckFrameEmitter::new(frame_window_base_id, packet_window_base_id, sync_reply_init, flush_alloc_init, emit_cb);
 
-            if potential_frame_size > self.flush_alloc {
-                if fbuilder.count() > 0 || self.sync_reply && !frame_sent {
-                    let frame_data = fbuilder.build();
-                    sink.send(&frame_data);
-                    self.flush_alloc -= frame_data.len();
-                    self.sync_reply = false;
-                }
-
-                return Err(());
+        while let Some(ack_group) = self.frame_ack_queue.peek() {
+            match afe.push(ack_group) {
+                Err(_) => return Err(()),
+                Ok(_) => (),
             }
-
-            if potential_frame_size > MAX_FRAME_SIZE {
-                debug_assert!(fbuilder.count() > 0);
-
-                let frame_data = fbuilder.build();
-                sink.send(&frame_data);
-                self.flush_alloc -= frame_data.len();
-                self.sync_reply = false;
-
-                fbuilder = AckFrameBuilder::new(frame_window_base_id, packet_window_base_id);
-                frame_sent = true;
-                continue;
-            }
-
-            fbuilder.add(&frame_ack);
 
             self.frame_ack_queue.pop();
         }
 
-        if fbuilder.count() > 0 || self.sync_reply && !frame_sent {
-            let frame_data = fbuilder.build();
-            sink.send(&frame_data);
-            self.flush_alloc -= frame_data.len();
-            self.sync_reply = false;
-        }
+        afe.finalize();
 
         return Ok(());
     }
@@ -351,7 +328,7 @@ impl DatenMeister {
             }
         }
 
-        dfe.flush();
+        dfe.finalize();
 
         return Ok(());
     }
@@ -744,3 +721,4 @@ mod tests {
     }
     */
 }
+

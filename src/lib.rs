@@ -278,7 +278,7 @@ pub const UDP_HEADER_SIZE: usize = 28;
 pub const MAX_FRAME_SIZE: usize = INTERNET_MTU - UDP_HEADER_SIZE;
 
 /// The maximum size of a packet fragment in bytes, according to frame serialization overhead.
-pub const MAX_FRAGMENT_SIZE: usize = MAX_FRAME_SIZE - frame::serial::MAX_DATAGRAM_OVERHEAD - frame::serial::DATA_FRAME_OVERHEAD;
+pub const MAX_FRAGMENT_SIZE: usize = MAX_FRAME_SIZE - frame::serial::DATA_FRAME_OVERHEAD - frame::serial::MAX_DATAGRAM_OVERHEAD;
 
 /// The absolute maximum size of a packet, in bytes.
 pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGMENTS;

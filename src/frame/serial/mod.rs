@@ -6,6 +6,8 @@ pub use build::AckFrameBuilder;
 
 use super::*;
 
+const FRAME_HEADER_SIZE: usize = 1;
+
 const CONNECT_FRAME_ID: u8 = 0;
 const CONNECT_ACK_FRAME_ID: u8 = 1;
 const DISCONNECT_FRAME_ID: u8 = 2;
@@ -14,28 +16,29 @@ const DATA_FRAME_ID: u8 = 4;
 const SYNC_FRAME_ID: u8 = 5;
 const ACK_FRAME_ID: u8 = 6;
 
-const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 15;
-const DATAGRAM_HEADER_SIZE_FULL: usize = 11;
-
-const FRAME_ACK_SIZE: usize = 9;
-
 const CONNECT_FRAME_PAYLOAD_SIZE: usize = 18;
+
 const CONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
 
 const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
+
 const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
+const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 15;
+const DATAGRAM_HEADER_SIZE_FULL: usize = 11;
 const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
+pub const MAX_DATAGRAM_OVERHEAD: usize = DATAGRAM_HEADER_SIZE_FRAGMENT;
+pub const DATA_FRAME_OVERHEAD: usize = FRAME_HEADER_SIZE + DATA_FRAME_PAYLOAD_HEADER_SIZE;
 
 const SYNC_FRAME_PAYLOAD_SIZE: usize = 9;
+pub const SYNC_FRAME_SIZE: usize = FRAME_HEADER_SIZE + SYNC_FRAME_PAYLOAD_SIZE;
 
+const ACK_GROUP_SIZE: usize = 9;
 const ACK_FRAME_PAYLOAD_HEADER_SIZE: usize = 10;
+pub const ACK_FRAME_OVERHEAD: usize = FRAME_HEADER_SIZE + ACK_FRAME_PAYLOAD_HEADER_SIZE;
 
-pub use build::MAX_CHANNELS;
+pub const MAX_CHANNELS: usize = 64;
 pub const MAX_FRAGMENTS: usize = 1 << 16;
-pub const MAX_DATAGRAM_OVERHEAD: usize = DATAGRAM_HEADER_SIZE_FRAGMENT;
-pub const DATA_FRAME_OVERHEAD: usize = 1 + DATA_FRAME_PAYLOAD_HEADER_SIZE;
-pub const SYNC_FRAME_SIZE: usize = 1 + SYNC_FRAME_PAYLOAD_SIZE;
 
 fn read_connect_payload(data: &[u8]) -> Option<Frame> {
     if data.len() != CONNECT_FRAME_PAYLOAD_SIZE {
@@ -265,7 +268,7 @@ fn read_sync_payload(data: &[u8]) -> Option<Frame> {
 
 fn read_frame_ack(data: &[u8]) -> Option<(AckGroup, usize)> {
     // Ack
-    if data.len() < FRAME_ACK_SIZE {
+    if data.len() < ACK_GROUP_SIZE {
         return None;
     }
 
@@ -285,7 +288,7 @@ fn read_frame_ack(data: &[u8]) -> Option<(AckGroup, usize)> {
         base_id,
         bitfield,
         nonce,
-    }, FRAME_ACK_SIZE));
+    }, ACK_GROUP_SIZE));
 }
 
 fn read_ack_payload(data: &[u8]) -> Option<Frame> {
