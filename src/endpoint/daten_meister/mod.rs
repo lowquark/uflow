@@ -239,3 +239,371 @@ impl DatenMeister {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::SendMode;
+    use crate::frame::Datagram;
+    use crate::frame::FragmentId;
+
+    use crate::MAX_FRAGMENT_SIZE;
+    use crate::MAX_FRAME_WINDOW_SIZE;
+
+    use std::collections::VecDeque;
+
+    struct TestSink {
+        emitted: VecDeque<Box<[u8]>>,
+    }
+
+    impl TestSink {
+        fn new() -> Self {
+            Self {
+                emitted: VecDeque::new(),
+            }
+        }
+    }
+
+    impl FrameSink for TestSink {
+        fn send(&mut self, frame_bytes: &[u8]) {
+            self.emitted.push_back(frame_bytes.into());
+        }
+    }
+
+    struct TestApparatus {
+        dm: DatenMeister,
+    }
+
+    impl TestApparatus {
+        fn new() -> Self {
+            Self {
+                dm: DatenMeister::new(1, 1, 10_000, 10_000, 0, 0, 100_000)
+            }
+        }
+
+        fn set_flush_id(&mut self, flush_id: u32) {
+            self.dm.flush_id = flush_id;
+        }
+
+        fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
+            self.dm.send(data, channel_id, mode)
+        }
+
+        fn acknowledge_packet_base_id(&mut self, base_id: u32) {
+            self.dm.packet_sender.acknowledge(base_id)
+        }
+
+        fn acknowledge_frame_group(&mut self, group: frame::AckGroup, rtt_ms: Option<u64>) {
+            self.dm.frame_queue.acknowledge_group(group, rtt_ms);
+        }
+
+        fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, max_send_size: usize) -> VecDeque<Box<[u8]>> {
+            let mut test_sink = TestSink::new();
+
+            self.dm.flush_alloc = max_send_size;
+
+            self.dm.emit_frames(now_ms, rtt_ms, &mut test_sink);
+
+            return test_sink.emitted;
+        }
+    }
+
+    fn test_data_frame(frame_bytes: &Box<[u8]>, sequence_id: u32, datagrams: Vec<Datagram>) {
+        use crate::frame::serial::Serialize;
+
+        match frame::Frame::read(frame_bytes).unwrap() {
+            frame::Frame::DataFrame(data_frame) => {
+                assert_eq!(data_frame.sequence_id, sequence_id);
+                assert_eq!(data_frame.datagrams, datagrams);
+            }
+            _ => panic!("Expected DataFrame")
+        }
+    }
+
+    fn get_data_frame_nonce(frame_bytes: &Box<[u8]>) -> bool {
+        use crate::frame::serial::Serialize;
+
+        match frame::Frame::read(frame_bytes).unwrap() {
+            frame::Frame::DataFrame(data_frame) => {
+                return data_frame.nonce;
+            }
+            _ => panic!("Expected DataFrame")
+        }
+    }
+
+    #[test]
+    fn basic() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        ta.enqueue_packet(vec![ 0, 0, 0 ].into_boxed_slice(), 0, SendMode::Unreliable);
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg0 = Datagram {
+            sequence_id: 0,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: vec![ 0, 0, 0 ].into_boxed_slice(),
+        };
+
+        test_data_frame(&frames[0], 0, vec![ dg0 ]);
+    }
+
+    #[test]
+    fn max_frame_size() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        let packet_data = (0 .. 2*MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        ta.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable);
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 2);
+
+        let dg0 = Datagram {
+            sequence_id: 0,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 1 },
+            data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
+        };
+
+        let dg1 = Datagram {
+            sequence_id: 0,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 1, last: 1 },
+            data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
+        };
+
+        test_data_frame(&frames[0], 0, vec![ dg0 ]);
+        test_data_frame(&frames[1], 1, vec![ dg1 ]);
+
+        assert_eq!(frames[0].len(), MAX_FRAME_SIZE);
+        assert_eq!(frames[1].len(), MAX_FRAME_SIZE);
+    }
+
+    // Packets should be resent [1, 2, 4, 4, ... 4] RTTs after the previous send.
+    #[test]
+    fn resend_timing() {
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        ta.enqueue_packet(p0.clone(), 0, SendMode::Resend);
+
+        let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+
+        let frames = ta.emit_frames(1, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+
+        let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
+
+        for &time_ms in resend_times.iter() {
+            let frames = ta.emit_frames(time_ms - 1, rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 0);
+
+            let frames = ta.emit_frames(time_ms    , rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 1);
+
+            let frames = ta.emit_frames(time_ms + 1, rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 0);
+        }
+    }
+
+    // Time sensitive packet IDs should not be resent if the flush ID does not match.
+    #[test]
+    fn time_sensitive_drop() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        ta.enqueue_packet(vec![ 0, 0, 0 ].into_boxed_slice(), 0, SendMode::TimeSensitive);
+        ta.enqueue_packet(vec![ 1, 1, 1 ].into_boxed_slice(), 0, SendMode::Unreliable);
+
+        ta.set_flush_id(1);
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg0 = Datagram {
+            sequence_id: 0,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: vec![ 1, 1, 1 ].into_boxed_slice(),
+        };
+
+        test_data_frame(&frames[0], 0, vec![ dg0 ]);
+    }
+
+    // Once the packet transfer window advances, persistent packets in the resend queue should not
+    // be resent.
+    #[test]
+    fn no_resend_after_packet_skip() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        let p0 = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p1 = vec![ 1; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p2 = vec![ 2; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+
+        ta.enqueue_packet(p0        , 0, SendMode::Resend);
+        ta.enqueue_packet(p1        , 0, SendMode::Resend);
+        ta.enqueue_packet(p2        , 0, SendMode::Resend);
+        ta.enqueue_packet(p3        , 0, SendMode::Resend);
+        ta.enqueue_packet(p4.clone(), 0, SendMode::Resend);
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 5);
+
+        ta.acknowledge_packet_base_id(4);
+
+        let frames = ta.emit_frames(now_ms + rtt_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg4 = Datagram {
+            sequence_id: 4,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p4,
+        };
+
+        test_data_frame(&frames[0], 5, vec![ dg4 ]);
+    }
+
+    #[test]
+    fn no_resend_after_ack() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let mut ta = TestApparatus::new();
+
+        let p0 = vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p1 = vec![ 1; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p2 = vec![ 2; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+        let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
+
+        ta.enqueue_packet(p0        , 0, SendMode::Resend);
+        ta.enqueue_packet(p1.clone(), 0, SendMode::Resend);
+        ta.enqueue_packet(p2        , 0, SendMode::Resend);
+        ta.enqueue_packet(p3        , 0, SendMode::Resend);
+        ta.enqueue_packet(p4        , 0, SendMode::Resend);
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 5);
+
+        let n0 = get_data_frame_nonce(&frames[0]);
+        let n2 = get_data_frame_nonce(&frames[2]);
+        let n3 = get_data_frame_nonce(&frames[3]);
+        let n4 = get_data_frame_nonce(&frames[4]);
+
+        ta.acknowledge_frame_group(frame::AckGroup { base_id: 0, bitfield: 0b11101, nonce: n0 ^ n2 ^ n3 ^ n4 }, Some(rtt_ms));
+
+        let frames = ta.emit_frames(now_ms + rtt_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+
+        let dg1 = Datagram {
+            sequence_id: 1,
+            channel_id: 0,
+            window_parent_lead: 0,
+            channel_parent_lead: 0,
+            fragment_id: FragmentId { id: 0, last: 0 },
+            data: p1,
+        };
+
+        test_data_frame(&frames[0], 5, vec![ dg1 ]);
+    }
+
+    /*
+    #[test]
+    fn size_limited_flag() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
+        let ref mut dq = pending_queue::PendingQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fq = frame_queue::FrameQueue::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        // No data
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 0);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        let p0 = (0 .. 2*MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
+
+        // Send path
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        // Resend path
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+    }
+    */
+}
