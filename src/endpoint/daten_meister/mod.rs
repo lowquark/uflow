@@ -1,32 +1,25 @@
 
+use crate::SendMode;
 use crate::MAX_FRAME_SIZE;
 use crate::MAX_FRAME_WINDOW_SIZE;
-// TODO:
-//use crate::MAX_FRAME_WINDOW_TAIL_SIZE;
-use crate::SendMode;
 use crate::frame;
 
 use super::FrameSink;
 
 use std::time;
 
-mod pending_packet;
-
-mod packet_sender;
+mod emit_frame;
+mod frame_ack_queue;
+mod frame_queue;
+mod loss_rate;
 mod packet_receiver;
-
+mod packet_sender;
+mod pending_packet;
 mod pending_queue;
-mod resend_queue;
-
 mod recv_rate_set;
 mod reorder_buffer;
+mod resend_queue;
 mod send_rate;
-mod loss_rate;
-mod frame_queue;
-
-mod frame_ack_queue;
-
-mod emit_frame;
 
 #[cfg(test)]
 mod packet_tests;
@@ -45,10 +38,10 @@ pub struct DatenMeister {
     resend_queue: resend_queue::ResendQueue,
     frame_queue: frame_queue::FrameQueue,
 
-    send_rate_comp: send_rate::SendRateComp,
-
     packet_receiver: packet_receiver::PacketReceiver,
     frame_ack_queue: frame_ack_queue::FrameAckQueue,
+
+    send_rate_comp: send_rate::SendRateComp,
 
     time_base: time::Instant,
     time_last_flushed: Option<time::Instant>,
@@ -71,10 +64,10 @@ impl DatenMeister {
             resend_queue: resend_queue::ResendQueue::new(),
             frame_queue: frame_queue::FrameQueue::new(tx_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
 
-            send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
-
             packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
             frame_ack_queue: frame_ack_queue::FrameAckQueue::new(rx_base_id, MAX_FRAME_WINDOW_SIZE),
+
+            send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
