@@ -327,7 +327,7 @@ mod tests {
     use crate::frame::FragmentId;
 
     use crate::MAX_FRAGMENT_SIZE;
-    use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE as MAX_FRAME_WINDOW_SIZE;
+    use crate::MAX_FRAME_WINDOW_SIZE;
 
     use std::collections::VecDeque;
 

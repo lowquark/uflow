@@ -1,5 +1,8 @@
 
 use crate::MAX_FRAME_SIZE;
+use crate::MAX_FRAME_WINDOW_SIZE;
+// TODO:
+//use crate::MAX_FRAME_WINDOW_TAIL_SIZE;
 use crate::SendMode;
 use crate::frame;
 
@@ -56,9 +59,6 @@ pub struct DatenMeister {
 
     sync_reply: bool,
 }
-
-// TODO: Rename
-use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE as MAX_FRAME_WINDOW_SIZE;
 
 impl DatenMeister {
     pub fn new(tx_channels: usize, rx_channels: usize,

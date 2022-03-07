@@ -261,6 +261,12 @@ pub const PROTOCOL_VERSION: u8 = 0;
 /// The maximum number of channels which may be used on a given connection.
 pub const MAX_CHANNELS: usize = frame::serial::MAX_CHANNELS;
 
+/// The maximum size of the frame transfer window, in sequence IDs.
+pub const MAX_FRAME_WINDOW_SIZE: u32 = 4096;
+
+/// The maximum size of the packet transfer window, in sequence IDs.
+pub const MAX_PACKET_WINDOW_SIZE: u32 = 4096;
+
 /// The maximum transfer unit (MTU) of the internet.
 pub const INTERNET_MTU: usize = 1500;
 
@@ -276,9 +282,6 @@ pub const MAX_FRAGMENT_SIZE: usize = MAX_FRAME_SIZE - frame::serial::MAX_DATAGRA
 
 /// The absolute maximum size of a packet, in bytes.
 pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGMENTS;
-
-const MAX_PACKET_TRANSFER_WINDOW_SIZE: u32 = 4096;
-const MAX_FRAME_TRANSFER_WINDOW_SIZE: u32 = 16384;
 
 /// A mode by which a packet is sent.
 #[derive(Clone,Copy,Debug,PartialEq)]

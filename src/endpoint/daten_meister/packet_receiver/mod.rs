@@ -5,7 +5,7 @@ use assembly_window::AssemblyWindow;
 
 use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
-use crate::MAX_PACKET_TRANSFER_WINDOW_SIZE;
+use crate::MAX_PACKET_WINDOW_SIZE;
 
 use super::PacketSink;
 
@@ -50,9 +50,9 @@ impl PacketReceiver {
     pub fn new(channel_num: usize, max_alloc: usize, base_id: u32) -> Self {
         debug_assert!(channel_num <= MAX_CHANNELS);
 
-        let receive_window: Vec<Option<ReceiveEntry>> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| None).collect();
+        let receive_window: Vec<Option<ReceiveEntry>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
         let channels: Vec<Channel> = (0..channel_num).map(|_| Channel::new()).collect();
-        let channel_base_markers: Vec<Option<u8>> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| None).collect();
+        let channel_base_markers: Vec<Option<u8>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
 
         Self {
             base_id: base_id,
@@ -72,7 +72,7 @@ impl PacketReceiver {
     }
 
     fn window_index(sequence_id: u32) -> usize {
-        (sequence_id % MAX_PACKET_TRANSFER_WINDOW_SIZE) as usize
+        (sequence_id % MAX_PACKET_WINDOW_SIZE) as usize
     }
 
     pub fn handle_datagram(&mut self, datagram: Datagram) {
@@ -85,7 +85,7 @@ impl PacketReceiver {
             return;
         }
 
-        if sequence_id.wrapping_sub(base_id) >= MAX_PACKET_TRANSFER_WINDOW_SIZE {
+        if sequence_id.wrapping_sub(base_id) >= MAX_PACKET_WINDOW_SIZE {
             // Packet not contained by transfer window
             return;
         }
@@ -98,7 +98,7 @@ impl PacketReceiver {
         let ref mut channel = self.channels[channel_idx];
 
         let channel_base_id = channel.base_id.unwrap_or(base_id);
-        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
+        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_WINDOW_SIZE);
 
         if (sequence_id.wrapping_sub(channel_base_id) as i32) < 0 {
             // Packet already surpassed by this channel
@@ -121,7 +121,7 @@ impl PacketReceiver {
             self.receive_window[window_idx] = Some(new_entry);
 
             // Advance end id if this packet is newer
-            if sequence_id.wrapping_sub(self.end_id) < MAX_PACKET_TRANSFER_WINDOW_SIZE {
+            if sequence_id.wrapping_sub(self.end_id) < MAX_PACKET_WINDOW_SIZE {
                 self.end_id = sequence_id.wrapping_add(1);
             }
         }
@@ -155,7 +155,7 @@ impl PacketReceiver {
         let new_base_delta = new_base_id.wrapping_sub(base_id);
 
         if new_base_delta != 0 {
-            assert!(new_base_delta <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
+            assert!(new_base_delta <= MAX_PACKET_WINDOW_SIZE);
 
             for i in 0 .. new_base_delta {
                 let sequence_id = base_id.wrapping_add(i);
@@ -182,7 +182,7 @@ impl PacketReceiver {
 
         let mut channel_flags = if self.channels.len() == 64 { 0xFFFFFFFFFFFFFFFF } else { (1u64 << self.channels.len()) - 1 };
 
-        debug_assert!(slot_num <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
+        debug_assert!(slot_num <= MAX_PACKET_WINDOW_SIZE);
 
         // println!("-- receive() base_id: {} end_id: {} --", self.base_id, self.end_id);
 
@@ -207,7 +207,7 @@ impl PacketReceiver {
                         let ref mut channel = self.channels[channel_id as usize];
 
                         let channel_base_id = channel.base_id.unwrap_or(base_id);
-                        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_TRANSFER_WINDOW_SIZE);
+                        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_WINDOW_SIZE);
 
                         let channel_parent_lead = entry.channel_parent_lead as u32;
                         let channel_delta = sequence_id.wrapping_sub(channel_base_id);
@@ -267,7 +267,7 @@ impl PacketReceiver {
     pub fn resynchronize(&mut self, sender_next_id: u32) {
         let sender_delta = sender_next_id.wrapping_sub(self.base_id);
 
-        if sender_delta > MAX_PACKET_TRANSFER_WINDOW_SIZE {
+        if sender_delta > MAX_PACKET_WINDOW_SIZE {
             return;
         }
 
@@ -292,7 +292,7 @@ impl PacketReceiver {
 mod tests {
     use crate::frame::Datagram;
     use crate::frame::FragmentId;
-    use super::MAX_PACKET_TRANSFER_WINDOW_SIZE;
+    use super::MAX_PACKET_WINDOW_SIZE;
 
     use super::PacketReceiver;
 
@@ -633,7 +633,7 @@ mod tests {
         let mut rx = PacketReceiver::new(2, 100000, 0);
         let mut sink = TestPacketSink::new();
 
-        for sequence_id in 1 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
+        for sequence_id in 1 .. MAX_PACKET_WINDOW_SIZE {
             rx.handle_datagram(new_packet_datagram(sequence_id, 0, sequence_id as u16, sequence_id as u16));
         }
         rx.receive(&mut sink);
@@ -641,20 +641,20 @@ mod tests {
         assert!(sink.is_empty());
 
         assert_eq!(rx.base_id, 0);
-        assert_eq!(rx.end_id, MAX_PACKET_TRANSFER_WINDOW_SIZE);
+        assert_eq!(rx.end_id, MAX_PACKET_WINDOW_SIZE);
         assert_eq!(rx.channels[0].base_id, None);
         assert_eq!(rx.channels[1].base_id, None);
 
         rx.handle_datagram(new_packet_datagram(0, 0, 0, 0));
         rx.receive(&mut sink);
 
-        for sequence_id in 0 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
+        for sequence_id in 0 .. MAX_PACKET_WINDOW_SIZE {
             assert_eq!(sink.pop(), new_packet_data(sequence_id));
         }
         assert!(sink.is_empty());
 
-        assert_eq!(rx.base_id, MAX_PACKET_TRANSFER_WINDOW_SIZE);
-        assert_eq!(rx.end_id, MAX_PACKET_TRANSFER_WINDOW_SIZE);
+        assert_eq!(rx.base_id, MAX_PACKET_WINDOW_SIZE);
+        assert_eq!(rx.end_id, MAX_PACKET_WINDOW_SIZE);
         assert_eq!(rx.channels[0].base_id, None);
         assert_eq!(rx.channels[1].base_id, None);
     }
@@ -670,14 +670,14 @@ mod tests {
         let mut rx_id = 0;
 
         for _ in 0 .. n {
-            for _ in 0 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
+            for _ in 0 .. MAX_PACKET_WINDOW_SIZE {
                 rx.handle_datagram(new_packet_datagram(tx_id, 0, 0, 0));
                 tx_id += 1;
             }
 
             rx.receive(&mut sink);
 
-            for _ in 0 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
+            for _ in 0 .. MAX_PACKET_WINDOW_SIZE {
                 assert_eq!(sink.pop(), new_packet_data(rx_id));
                 rx_id += 1;
             }

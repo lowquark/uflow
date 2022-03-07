@@ -4,7 +4,7 @@ use super::pending_packet::{PendingPacket, PendingPacketRc};
 use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_SIZE;
-use crate::MAX_PACKET_TRANSFER_WINDOW_SIZE;
+use crate::MAX_PACKET_WINDOW_SIZE;
 use crate::SendMode;
 
 use std::collections::VecDeque;
@@ -82,7 +82,7 @@ impl PacketSender {
 
         let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
 
-        let window: Vec<Option<WindowEntry>> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| None).collect();
+        let window: Vec<Option<WindowEntry>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
         let channels: Vec<Channel> = (0..channel_num).map(|_| Channel::new()).collect();
 
         Self {
@@ -139,7 +139,7 @@ impl PacketSender {
         }
 
         if let Some(packet) = self.packet_send_queue.front() {
-            if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_TRANSFER_WINDOW_SIZE {
+            if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_WINDOW_SIZE {
                 return None;
             }
 
@@ -191,7 +191,7 @@ impl PacketSender {
 
             let pending_packet_clone = Rc::clone(&pending_packet);
 
-            let window_idx = (sequence_id % MAX_PACKET_TRANSFER_WINDOW_SIZE) as usize;
+            let window_idx = (sequence_id % MAX_PACKET_WINDOW_SIZE) as usize;
             debug_assert!(self.window[window_idx].is_none());
 
             self.window[window_idx] = Some(WindowEntry {
@@ -224,7 +224,7 @@ impl PacketSender {
         }
 
         while self.base_id != receiver_base_id {
-            let window_idx = (self.base_id % MAX_PACKET_TRANSFER_WINDOW_SIZE) as usize;
+            let window_idx = (self.base_id % MAX_PACKET_WINDOW_SIZE) as usize;
 
             let ref mut window_entry = self.window[window_idx];
 
@@ -359,7 +359,7 @@ mod tests {
 
         let mut flush_id = 0;
 
-        for i in 0 .. MAX_PACKET_TRANSFER_WINDOW_SIZE {
+        for i in 0 .. MAX_PACKET_WINDOW_SIZE {
             let ref_id = i*7;
 
             tx.acknowledge(ref_id);

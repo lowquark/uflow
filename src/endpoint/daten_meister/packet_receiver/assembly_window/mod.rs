@@ -4,7 +4,7 @@ mod fragment_buffer;
 use fragment_buffer::FragmentBuffer;
 
 use super::MAX_FRAGMENT_SIZE;
-use super::MAX_PACKET_TRANSFER_WINDOW_SIZE;
+use super::MAX_PACKET_WINDOW_SIZE;
 use super::Datagram;
 
 struct ActiveEntry {
@@ -71,7 +71,7 @@ impl AssemblyWindow {
     pub fn new(max_alloc: usize) -> Self {
         let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
 
-        let window: Vec<WindowEntry> = (0..MAX_PACKET_TRANSFER_WINDOW_SIZE).map(|_| WindowEntry::Open).collect();
+        let window: Vec<WindowEntry> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| WindowEntry::Open).collect();
 
         Self {
             window: window.into_boxed_slice(),
@@ -423,7 +423,7 @@ mod tests {
     /*
     #[test]
     fn invalid_datagrams() {
-        use super::MAX_PACKET_TRANSFER_WINDOW_SIZE;
+        use super::MAX_PACKET_WINDOW_SIZE;
 
         let mut window = AssemblyWindow::new(10000);
 
@@ -432,7 +432,7 @@ mod tests {
 
         // Beyond receive window
         let result = window.try_add(0, Datagram {
-            sequence_id: MAX_PACKET_TRANSFER_WINDOW_SIZE,
+            sequence_id: MAX_PACKET_WINDOW_SIZE,
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,

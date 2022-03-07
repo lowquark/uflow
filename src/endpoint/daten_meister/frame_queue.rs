@@ -405,8 +405,7 @@ mod tests {
     use std::rc::Rc;
     use std::cell::RefCell;
 
-    // TODO: Rename
-    use crate::MAX_FRAME_TRANSFER_WINDOW_SIZE as MAX_FRAME_WINDOW_SIZE;
+    use crate::MAX_FRAME_WINDOW_SIZE;
     // TODO:
     //use crate::MAX_FRAME_WINDOW_TAIL_SIZE;
 
