@@ -45,7 +45,7 @@ pub struct DatenMeister {
 
     time_base: time::Instant,
     time_last_flushed: Option<time::Instant>,
-    time_data_sent_ms: Option<u64>,
+    sync_timeout_base_ms: Option<u64>,
 
     flush_alloc: usize,
     flush_id: u32,
@@ -71,7 +71,7 @@ impl DatenMeister {
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
-            time_data_sent_ms: None,
+            sync_timeout_base_ms: None,
 
             flush_alloc: MAX_FRAME_SIZE,
             flush_id: 0,
@@ -175,29 +175,26 @@ impl DatenMeister {
         let sync_timeout_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS).max(MIN_SYNC_TIMEOUT_MS);
 
         let sync_timeout =
-            if let Some(time_data_sent_ms) = self.time_data_sent_ms {
-                if now_ms - time_data_sent_ms >= sync_timeout_ms {
-                    true
-                } else {
-                    false
-                }
+            if let Some(sync_timeout_base_ms) = self.sync_timeout_base_ms {
+                now_ms - sync_timeout_base_ms >= sync_timeout_ms
             } else {
                 false
             };
 
-        let sync_frame_id = if self.frame_queue.next_id() != self.frame_queue.base_id() {
-            Some(self.frame_queue.next_id())
-        } else {
-            None
-        };
+        let sync_frame_id =
+            if self.frame_queue.next_id() != self.frame_queue.base_id() {
+                Some(self.frame_queue.next_id())
+            } else {
+                None
+            };
 
-        let sync_packet_id = if self.packet_sender.next_id() != self.packet_sender.base_id() &&
-                                self.resend_queue.len() == 0 &&
-                                self.pending_queue.len() == 0 {
-            Some(self.packet_sender.next_id())
-        } else {
-            None
-        };
+        let sync_packet_id =
+            if self.packet_sender.next_id() != self.packet_sender.base_id() &&
+               self.resend_queue.len() == 0 && self.pending_queue.len() == 0 {
+                Some(self.packet_sender.next_id())
+            } else {
+                None
+            };
 
         let frame_window_base_id = self.frame_ack_queue.base_id();
         let packet_window_base_id = self.packet_receiver.base_id();
@@ -209,7 +206,7 @@ impl DatenMeister {
                                                    &mut self.frame_ack_queue,
                                                    flush_id);
 
-        let ref mut time_data_sent_ms = self.time_data_sent_ms;
+        let ref mut sync_timeout_base_ms = self.sync_timeout_base_ms;
         let ref mut send_rate_comp = self.send_rate_comp;
         let ref mut sync_reply = self.sync_reply;
 
@@ -217,7 +214,7 @@ impl DatenMeister {
             let bytes_sent =
                 fe.emit_sync_frame(sync_frame_id, sync_packet_id, self.flush_alloc, |frame_data| {
                     sink.send(&frame_data);
-                    *time_data_sent_ms = Some(now_ms);
+                    *sync_timeout_base_ms = Some(now_ms);
                 });
 
             self.flush_alloc -= bytes_sent;
@@ -234,7 +231,7 @@ impl DatenMeister {
         let bytes_sent =
             fe.emit_data_frames(now_ms, rtt_ms, self.flush_alloc, |frame_data| {
                 sink.send(&frame_data);
-                *time_data_sent_ms = Some(now_ms);
+                *sync_timeout_base_ms = Some(now_ms);
                 send_rate_comp.notify_frame_sent(now_ms);
             });
 
