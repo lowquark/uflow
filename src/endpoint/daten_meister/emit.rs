@@ -214,3 +214,79 @@ impl<F> AckFrameEmitter<F> where F: FnMut(Box<[u8]>) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /*
+    #[test]
+    fn size_limited_flag() {
+        let now_ms = 0;
+        let rtt_ms = 100;
+
+        let ref mut ps = packet_sender::PacketSender::new(1, 10000, 0);
+        let ref mut dq = pending_queue::PendingQueue::new();
+        let ref mut rq = resend_queue::ResendQueue::new();
+        let ref mut fq = frame_queue::FrameQueue::new(0);
+        let ref mut faq = frame_ack_queue::FrameAckQueue::new();
+        let fid = 0;
+
+        // No data
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, 0);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        let p0 = (0 .. 2*MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        ps.enqueue_packet(p0.clone(), 0, SendMode::Resend, fid);
+
+        // Send path
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+
+        // Resend path
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE-1);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, true);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(size, MAX_FRAME_SIZE);
+        assert_eq!(size_limit, false);
+
+        let (frames, size, size_limit) = test_emit_data_frames(ps, dq, rq, fq, faq, fid, now_ms + rtt_ms, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+        assert_eq!(size, 0);
+        assert_eq!(size_limit, false);
+    }
+    */
+}
+
