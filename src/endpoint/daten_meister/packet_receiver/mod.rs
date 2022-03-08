@@ -11,6 +11,25 @@ use super::PacketSink;
 
 pub use crate::frame::Datagram;
 
+pub fn datagram_is_valid(dg: &Datagram) -> bool {
+    if dg.channel_parent_lead != 0 {
+        if dg.window_parent_lead == 0 || dg.channel_parent_lead < dg.window_parent_lead {
+            return false;
+        }
+    }
+    if dg.fragment_id.id > dg.fragment_id.last {
+        return false;
+    }
+    if dg.fragment_id.id < dg.fragment_id.last && dg.data.len() != MAX_FRAGMENT_SIZE {
+        return false;
+    }
+    if dg.data.len() > MAX_FRAGMENT_SIZE {
+        return false;
+    }
+
+    return true;
+}
+
 struct ReceiveEntry {
     channel_id: u8,
     window_parent_lead: u16,
@@ -80,7 +99,7 @@ impl PacketReceiver {
         let channel_idx = datagram.channel_id as usize;
         let sequence_id = datagram.sequence_id;
 
-        if !datagram.is_valid() {
+        if !datagram_is_valid(&datagram) {
             // Datagram has invalid contents
             return;
         }

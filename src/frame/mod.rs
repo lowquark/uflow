@@ -53,30 +53,6 @@ impl<'a> From<DatagramRef<'a>> for Datagram {
     }
 }
 
-impl Datagram {
-    // TODO: Does validity concern this layer? (No.)
-    pub fn is_valid(&self) -> bool {
-        use super::MAX_FRAGMENT_SIZE;
-
-        if self.channel_parent_lead != 0 {
-            if self.window_parent_lead == 0 || self.channel_parent_lead < self.window_parent_lead {
-                return false;
-            }
-        }
-        if self.fragment_id.id > self.fragment_id.last {
-            return false;
-        }
-        if self.fragment_id.id < self.fragment_id.last && self.data.len() != MAX_FRAGMENT_SIZE {
-            return false;
-        }
-        if self.data.len() > MAX_FRAGMENT_SIZE {
-            return false;
-        }
-
-        return true;
-    }
-}
-
 #[derive(Clone,Debug,PartialEq)]
 pub struct AckGroup {
     pub base_id: u32,
