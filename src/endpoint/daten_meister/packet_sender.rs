@@ -203,7 +203,7 @@ impl PacketSender {
             let resend = match packet.mode {
                 SendMode::TimeSensitive => false,
                 SendMode::Unreliable => false,
-                SendMode::Resend => true,
+                SendMode::Persistent => true,
                 SendMode::Reliable => true,
             };
 
@@ -290,7 +290,7 @@ mod tests {
 
         tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive, 0);
         tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable, 0);
-        tx.enqueue_packet(new_packet_data(2), 0, SendMode::Resend, 0);
+        tx.enqueue_packet(new_packet_data(2), 0, SendMode::Persistent, 0);
         tx.enqueue_packet(new_packet_data(3), 0, SendMode::Reliable, 0);
 
         assert_eq!(packet_info(tx.emit_packet(0).unwrap()), (0, 0, 0, 0, false));

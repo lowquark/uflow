@@ -545,7 +545,7 @@ mod tests {
         let mut ta = TestApparatus::new();
 
         let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
-        ta.enqueue_packet(p0.clone(), 0, SendMode::Resend);
+        ta.enqueue_packet(p0.clone(), 0, SendMode::Persistent);
 
         let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE);
         assert_eq!(frames.len(), 1);
@@ -610,11 +610,11 @@ mod tests {
         let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
         let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
 
-        ta.enqueue_packet(p0        , 0, SendMode::Resend);
-        ta.enqueue_packet(p1        , 0, SendMode::Resend);
-        ta.enqueue_packet(p2        , 0, SendMode::Resend);
-        ta.enqueue_packet(p3        , 0, SendMode::Resend);
-        ta.enqueue_packet(p4.clone(), 0, SendMode::Resend);
+        ta.enqueue_packet(p0        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p1        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p2        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p3        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p4.clone(), 0, SendMode::Persistent);
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
@@ -650,11 +650,11 @@ mod tests {
         let p3 = vec![ 3; MAX_FRAGMENT_SIZE ].into_boxed_slice();
         let p4 = vec![ 4; MAX_FRAGMENT_SIZE ].into_boxed_slice();
 
-        ta.enqueue_packet(p0        , 0, SendMode::Resend);
-        ta.enqueue_packet(p1.clone(), 0, SendMode::Resend);
-        ta.enqueue_packet(p2        , 0, SendMode::Resend);
-        ta.enqueue_packet(p3        , 0, SendMode::Resend);
-        ta.enqueue_packet(p4        , 0, SendMode::Resend);
+        ta.enqueue_packet(p0        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p1.clone(), 0, SendMode::Persistent);
+        ta.enqueue_packet(p2        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p3        , 0, SendMode::Persistent);
+        ta.enqueue_packet(p4        , 0, SendMode::Persistent);
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
@@ -702,8 +702,8 @@ mod tests {
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(5), next_packet_id: Some(5) });
     }
 
-    // Sync case for which persistent packets are in the resend/pending queues, and only the frame
-    // window is resynchronized.
+    // Sync case for which packets exist in the resend/pending queues, so only the frame window is
+    // resynchronized.
     #[test]
     fn sync_frame_window_only() {
         let now_ms = 0;
@@ -712,7 +712,7 @@ mod tests {
         let mut ta = TestApparatus::new();
 
         for _ in 0 .. 5 {
-            ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Resend);
+            ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Persistent);
         }
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);

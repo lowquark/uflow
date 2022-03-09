@@ -102,7 +102,7 @@ fn client_thread() -> Vec<md5::Digest> {
             // Our local loopback connection is assumed to be both ordered and lossless!
             let mode = match rand::random::<u32>() % 3 {
                 0 => uflow::SendMode::Unreliable,
-                1 => uflow::SendMode::Resend,
+                1 => uflow::SendMode::Persistent,
                 2 => uflow::SendMode::Reliable,
                 _ => panic!("NANI!?"),
             };

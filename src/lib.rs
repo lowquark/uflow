@@ -298,7 +298,7 @@ pub enum SendMode {
     /// This packet will be sent and resent until acknowledged by the receiver. If a subsequent
     /// packet arrives on the same channel before this one does, the receiver may skip this packet.
     /// (In general, the packet will cease to be resent once the sender has detected a skip.)
-    Resend,
+    Persistent,
     /// This packet will be sent until acknowledged by the receiver. The receiver will not deliver
     /// subsequent packets on the same channel until this packet has been received.
     Reliable,

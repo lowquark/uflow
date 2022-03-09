@@ -90,7 +90,7 @@ fn random_transfer() {
         let send_mode = match rand::random::<u32>() % 4 {
             0 => SendMode::TimeSensitive,
             1 => SendMode::Unreliable,
-            2 => SendMode::Resend,
+            2 => SendMode::Persistent,
             3 => SendMode::Reliable,
             _ => panic!()
         };
