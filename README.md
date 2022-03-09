@@ -18,10 +18,13 @@ venerable [ENet](http://enet.bespin.org) library.
     *Persistent*, and *Reliable*
   * TCP-friendly, streaming congestion control implemented according to RFC
     5348
+  * Efficient and minimal frame encoding and transfer protocol
+  * 100% packet throughput under ideal network conditions
   * Water-tight sequence ID management for maximum dup-mitigation
   * Application-configurable receiver memory limits (to prevent memory
     allocation attacks)
-  * Sender-validated acknowledgements (to prevent bandwidth spoofing)
+  * Sender-validated acknowledgements (to prevent loss rate / bandwidth
+    spoofing)
   * Threadless, non-blocking implementation
 
 ## Documentation
