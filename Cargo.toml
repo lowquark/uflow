@@ -3,7 +3,7 @@
 name = "uflow"
 version = "0.5.0"
 edition = "2018"
-description = "Provides real-time, mixed-reliability, and congestion-controlled data transfer over the User Datagram Protocol (UDP)."
+description = "Provides ordered, mixed-reliability, and congestion-controlled data transfer over UDP"
 license = "MIT"
 repository = "https://github.com/lowquark/uflow"
 
