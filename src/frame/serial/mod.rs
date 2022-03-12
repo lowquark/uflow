@@ -1,11 +1,11 @@
 
+use super::*;
+
 mod build;
 mod crc;
 
 pub use build::DataFrameBuilder;
 pub use build::AckFrameBuilder;
-
-use super::*;
 
 const FRAME_HEADER_SIZE: usize = 1;
 const FRAME_CRC_SIZE: usize = 4;

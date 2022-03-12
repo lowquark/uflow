@@ -1,9 +1,10 @@
 
+use super::packet_id;
 use super::packet_sender;
 use super::packet_receiver;
 
-use crate::SendMode;
 use crate::frame::Datagram;
+use crate::SendMode;
 
 use std::collections::VecDeque;
 
@@ -68,7 +69,7 @@ fn random_transfer() {
     const MAX_PACKET_SIZE: usize = 5000;
     const MAX_ALLOC_SIZE: usize = MAX_PACKET_SIZE*NUM_PACKETS;
 
-    let base_id = 0u32.wrapping_sub(NUM_PACKETS as u32/2);
+    let base_id = packet_id::sub(0u32, NUM_PACKETS as u32/2);
 
     let mut sender = packet_sender::PacketSender::new(NUM_CHANNELS, MAX_ALLOC_SIZE, base_id);
     let mut receiver = packet_receiver::PacketReceiver::new(NUM_CHANNELS, MAX_ALLOC_SIZE, base_id);

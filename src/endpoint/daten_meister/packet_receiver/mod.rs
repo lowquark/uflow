@@ -1,17 +1,15 @@
 
-mod assembly_window;
+use super::packet_id;
+use super::PacketSink;
 
-use assembly_window::AssemblyWindow;
-
+use crate::frame;
 use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
 
-use super::PacketSink;
+mod assembly_window;
 
-pub use crate::frame::Datagram;
-
-pub fn datagram_is_valid(dg: &Datagram) -> bool {
+pub fn datagram_is_valid(dg: &frame::Datagram) -> bool {
     if dg.channel_parent_lead != 0 {
         if dg.window_parent_lead == 0 || dg.channel_parent_lead < dg.window_parent_lead {
             return false;
@@ -57,7 +55,7 @@ pub struct PacketReceiver {
     base_id: u32,
     end_id: u32,
 
-    assembly_window: AssemblyWindow,
+    assembly_window: assembly_window::AssemblyWindow,
 
     receive_window: Box<[Option<ReceiveEntry>]>,
 
@@ -77,7 +75,7 @@ impl PacketReceiver {
             base_id: base_id,
             end_id: base_id,
 
-            assembly_window: AssemblyWindow::new(max_alloc),
+            assembly_window: assembly_window::AssemblyWindow::new(max_alloc),
 
             receive_window: receive_window.into_boxed_slice(),
 
@@ -94,7 +92,7 @@ impl PacketReceiver {
         (sequence_id % MAX_PACKET_WINDOW_SIZE) as usize
     }
 
-    pub fn handle_datagram(&mut self, datagram: Datagram) {
+    pub fn handle_datagram(&mut self, datagram: frame::Datagram) {
         let base_id = self.base_id;
         let channel_idx = datagram.channel_id as usize;
         let sequence_id = datagram.sequence_id;
@@ -104,22 +102,25 @@ impl PacketReceiver {
             return;
         }
 
-        if sequence_id.wrapping_sub(base_id) >= MAX_PACKET_WINDOW_SIZE {
-            // Packet not contained by transfer window
-            return;
-        }
-
         if channel_idx >= self.channels.len() {
             // Packet references non-existent channel
             return;
         }
 
         let ref mut channel = self.channels[channel_idx];
-
         let channel_base_id = channel.base_id.unwrap_or(base_id);
-        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_WINDOW_SIZE);
 
-        if (sequence_id.wrapping_sub(channel_base_id) as i32) < 0 {
+        let channel_lead = packet_id::sub(channel_base_id, base_id);
+        let packet_lead = packet_id::sub(sequence_id, base_id);
+
+        debug_assert!(channel_lead <= MAX_PACKET_WINDOW_SIZE);
+
+        if packet_lead >= MAX_PACKET_WINDOW_SIZE {
+            // Packet not contained by transfer window
+            return;
+        }
+
+        if packet_lead < channel_lead {
             // Packet already surpassed by this channel
             return;
         }
@@ -140,8 +141,8 @@ impl PacketReceiver {
             self.receive_window[window_idx] = Some(new_entry);
 
             // Advance end id if this packet is newer
-            if sequence_id.wrapping_sub(self.end_id) < MAX_PACKET_WINDOW_SIZE {
-                self.end_id = sequence_id.wrapping_add(1);
+            if packet_id::sub(sequence_id, self.end_id) < MAX_PACKET_WINDOW_SIZE {
+                self.end_id = packet_id::add(sequence_id, 1);
             }
         }
     }
@@ -171,20 +172,20 @@ impl PacketReceiver {
 
     fn advance_window(&mut self, new_base_id: u32) {
         let base_id = self.base_id;
-        let new_base_delta = new_base_id.wrapping_sub(base_id);
+        let new_base_delta = packet_id::sub(new_base_id, base_id);
 
         if new_base_delta != 0 {
             assert!(new_base_delta <= MAX_PACKET_WINDOW_SIZE);
 
             for i in 0 .. new_base_delta {
-                let sequence_id = base_id.wrapping_add(i);
+                let sequence_id = packet_id::add(base_id, i);
                 self.assembly_window.clear(Self::window_index(sequence_id));
 
-                let next_sequence_id = base_id.wrapping_add(i + 1);
+                let next_sequence_id = packet_id::add(base_id, i + 1);
                 self.try_unset_channel_base_id(next_sequence_id);
             }
 
-            let end_delta = self.end_id.wrapping_sub(base_id);
+            let end_delta = packet_id::sub(self.end_id, base_id);
             if end_delta < new_base_delta {
                 self.end_id = new_base_id;
             }
@@ -197,7 +198,7 @@ impl PacketReceiver {
     // Advances the transfer window if no reliable packets would be skipped.
     pub fn receive(&mut self, sink: &mut impl PacketSink) {
         let base_id = self.base_id;
-        let slot_num = self.end_id.wrapping_sub(base_id);
+        let slot_num = packet_id::sub(self.end_id, base_id);
 
         let mut channel_flags = if self.channels.len() == 64 { 0xFFFFFFFFFFFFFFFF } else { (1u64 << self.channels.len()) - 1 };
 
@@ -211,7 +212,7 @@ impl PacketReceiver {
                 break;
             }
 
-            let sequence_id = base_id.wrapping_add(i);
+            let sequence_id = packet_id::add(base_id, i);
 
             let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
 
@@ -224,19 +225,19 @@ impl PacketReceiver {
                 if channel_flags & channel_bit != 0 {
                     if entry.data.is_some() {
                         let ref mut channel = self.channels[channel_id as usize];
-
                         let channel_base_id = channel.base_id.unwrap_or(base_id);
-                        debug_assert!(channel_base_id.wrapping_sub(base_id) <= MAX_PACKET_WINDOW_SIZE);
+
+                        debug_assert!(packet_id::sub(channel_base_id, base_id) <= MAX_PACKET_WINDOW_SIZE);
 
                         let channel_parent_lead = entry.channel_parent_lead as u32;
-                        let channel_delta = sequence_id.wrapping_sub(channel_base_id);
+                        let channel_delta = packet_id::sub(sequence_id, channel_base_id);
 
                         if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
                             sink.send(entry.data.take().unwrap());
 
                             // TODO: This only needs to be performed once per channel with packets
                             // delivered
-                            self.set_channel_base_id(channel_id, sequence_id.wrapping_add(1));
+                            self.set_channel_base_id(channel_id, packet_id::add(sequence_id, 1));
                         } else {
                             // Cease to consider delivering packets from this channel
 
@@ -257,17 +258,17 @@ impl PacketReceiver {
         let mut new_base_id = base_id;
 
         for i in 0 .. slot_num {
-            let sequence_id = base_id.wrapping_add(i);
+            let sequence_id = packet_id::add(base_id, i);
 
             let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
 
             if let Some(entry) = receive_entry {
                 let window_parent_lead = entry.window_parent_lead as u32;
-                let window_delta = sequence_id.wrapping_sub(new_base_id);
+                let window_delta = packet_id::sub(sequence_id, new_base_id);
 
                 if window_parent_lead == 0 || window_parent_lead > window_delta {
                     // println!("Forget sequence ID {}", sequence_id);
-                    new_base_id = sequence_id.wrapping_add(1);
+                    new_base_id = packet_id::add(sequence_id, 1);
                     *receive_entry = None;
                 } else {
                     // Cease to consider advancing the window
@@ -284,14 +285,14 @@ impl PacketReceiver {
     // comes first. Any incomplete or dropped packets are skipped, and as a result, the sender must
     // ensure that all reliable packets have been received in full prior to issuing the request.
     pub fn resynchronize(&mut self, sender_next_id: u32) {
-        let sender_delta = sender_next_id.wrapping_sub(self.base_id);
+        let sender_delta = packet_id::sub(sender_next_id, self.base_id);
 
         if sender_delta > MAX_PACKET_WINDOW_SIZE {
             return;
         }
 
         for i in 0 .. sender_delta {
-            let sequence_id = self.base_id.wrapping_add(i);
+            let sequence_id = packet_id::add(self.base_id, i);
 
             let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
 
@@ -309,11 +310,7 @@ impl PacketReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::Datagram;
-    use crate::frame::FragmentId;
-    use super::MAX_PACKET_WINDOW_SIZE;
-
-    use super::PacketReceiver;
+    use super::*;
 
     use std::collections::VecDeque;
 
@@ -321,13 +318,13 @@ mod tests {
         sequence_id.to_be_bytes().into()
     }
 
-    fn new_packet_datagram(sequence_id: u32, channel_id: u8, window_parent_lead: u16, channel_parent_lead: u16) -> Datagram {
-        Datagram {
+    fn new_packet_datagram(sequence_id: u32, channel_id: u8, window_parent_lead: u16, channel_parent_lead: u16) -> frame::Datagram {
+        frame::Datagram {
             sequence_id,
             channel_id,
             window_parent_lead,
             channel_parent_lead,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: frame::FragmentId { id: 0, last: 0 },
             data: new_packet_data(sequence_id),
         }
     }

@@ -1,0 +1,13 @@
+
+pub type Type = u32;
+
+pub const MASK: Type = 0xFFFFF;
+
+pub fn add(a: Type, b: Type) -> Type {
+    a.wrapping_add(b) & MASK
+}
+
+pub fn sub(a: Type, b: Type) -> Type {
+    a.wrapping_sub(b) & MASK
+}
+

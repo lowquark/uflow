@@ -1,4 +1,5 @@
 
+use super::packet_id;
 use super::pending_packet::{PendingPacket, PendingPacketRc};
 
 use crate::MAX_CHANNELS;
@@ -139,7 +140,7 @@ impl PacketSender {
         }
 
         if let Some(packet) = self.packet_send_queue.front() {
-            if self.next_id.wrapping_sub(self.base_id) >= MAX_PACKET_WINDOW_SIZE {
+            if packet_id::sub(self.next_id, self.base_id) >= MAX_PACKET_WINDOW_SIZE {
                 return None;
             }
 
@@ -156,7 +157,7 @@ impl PacketSender {
 
             let window_parent_lead =
                 if let Some(parent_id) = self.parent_id {
-                    let lead = sequence_id.wrapping_sub(parent_id);
+                    let lead = packet_id::sub(sequence_id, parent_id);
                     debug_assert!(lead <= u16::MAX as u32);
                     lead as u16
                 } else {
@@ -165,7 +166,7 @@ impl PacketSender {
 
             let channel_parent_lead =
                 if let Some(parent_id) = channel.parent_id {
-                    let lead = sequence_id.wrapping_sub(parent_id);
+                    let lead = packet_id::sub(sequence_id, parent_id);
                     debug_assert!(lead <= u16::MAX as u32);
                     lead as u16
                 } else {
@@ -180,7 +181,7 @@ impl PacketSender {
                 _ => ()
             }
 
-            self.next_id = self.next_id.wrapping_add(1);
+            self.next_id = packet_id::add(self.next_id, 1);
             self.alloc += packet_alloc_size;
 
             let pending_packet = Rc::new(RefCell::new(PendingPacket::new(packet.data,
@@ -216,8 +217,8 @@ impl PacketSender {
     // Responds to a receive window acknowledgement. All packet data beyond the new receive window
     // is forgotten, thereby freeing transfer window & allocation space for new packets.
     pub fn acknowledge(&mut self, receiver_base_id: u32) {
-        let window_size = self.next_id.wrapping_sub(self.base_id);
-        let ack_delta = receiver_base_id.wrapping_sub(self.base_id);
+        let window_size = packet_id::sub(self.next_id, self.base_id);
+        let ack_delta = packet_id::sub(receiver_base_id, self.base_id);
 
         if ack_delta > window_size {
             return;
@@ -250,7 +251,7 @@ impl PacketSender {
                 panic!();
             }
 
-            self.base_id = self.base_id.wrapping_add(1);
+            self.base_id = packet_id::add(self.base_id, 1);
         }
     }
 }
@@ -386,7 +387,7 @@ mod tests {
 
             assert!(tx.emit_packet(0).is_none());
 
-            flush_id = flush_id.wrapping_add(1);
+            flush_id = packet_id::add(flush_id, 1);
         }
     }
 

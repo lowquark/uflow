@@ -1,11 +1,10 @@
 
-mod fragment_buffer;
-
-use fragment_buffer::FragmentBuffer;
-
 use super::MAX_FRAGMENT_SIZE;
 use super::MAX_PACKET_WINDOW_SIZE;
-use super::Datagram;
+
+use crate::frame;
+
+mod fragment_buffer;
 
 struct ActiveEntry {
     // How many allocation points this entry is worth
@@ -18,7 +17,7 @@ struct ActiveEntry {
     last_fragment_id: u16,
 
     // Assembles a multi-fragment packet
-    asm_buffer: FragmentBuffer,
+    asm_buffer: fragment_buffer::FragmentBuffer,
 }
 
 impl ActiveEntry {
@@ -31,7 +30,7 @@ impl ActiveEntry {
             channel_parent_lead,
             last_fragment_id,
 
-            asm_buffer: FragmentBuffer::new(num_fragments),
+            asm_buffer: fragment_buffer::FragmentBuffer::new(num_fragments),
         }
     }
 }
@@ -51,7 +50,7 @@ pub struct Packet {
     pub data: Option<Box<[u8]>>,
 }
 
-fn packet_alloc_size(datagram: &Datagram) -> usize {
+fn packet_alloc_size(datagram: &frame::Datagram) -> usize {
     let num_fragments = datagram.fragment_id.last as usize + 1;
     if num_fragments > 1 {
         num_fragments*MAX_FRAGMENT_SIZE
@@ -81,7 +80,7 @@ impl AssemblyWindow {
         }
     }
 
-    pub fn try_add(&mut self, idx: usize, datagram: Datagram) -> Option<Packet> {
+    pub fn try_add(&mut self, idx: usize, datagram: frame::Datagram) -> Option<Packet> {
         match &mut self.window[idx] {
             WindowEntry::Open => {
                 // New packet
@@ -203,14 +202,10 @@ impl AssemblyWindow {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::Datagram;
-    use crate::frame::FragmentId;
+    use super::*;
 
-    use super::Packet;
-    use super::AssemblyWindow;
-    use super::MAX_FRAGMENT_SIZE;
-
-    use rand;
+    use frame::Datagram;
+    use frame::FragmentId;
 
     #[test]
     fn single_packet_single_fragment() {
