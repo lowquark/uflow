@@ -13,6 +13,27 @@ use super::ACK_GROUP_SIZE;
 
 use super::MAX_CHANNELS;
 
+// Consider:
+//
+// * Max 64 packets per frame
+//
+// * Max 8192 frames per transfer window (16384 valid frames in a receive window)
+//
+// * 20-bit sequence ID
+//      At 64 packets per frame, and with a receive window of size 16384, this identifies
+//      packets unambiguously
+//
+// * Fragment bit
+//      If set, fragment ID is 0/0
+//      If unset, fragment ID is present
+//
+// * 15-bit shrinking values
+//      If top bit of first byte is unset, one byte (7 bits)
+//      If top bit of first byte is set, two bytes (15 bits)
+//
+// Min overhead:  7 bytes
+// Max overhead: 14 bytes
+
 pub struct DataFrameBuilder {
     buffer: Vec<u8>,
     count: u16,
@@ -40,11 +61,10 @@ impl DataFrameBuilder {
     }
 
     pub fn add(&mut self, datagram: &DatagramRef) {
-        let data_len = datagram.data.len();
-        let data_len_u16 = data_len as u32;
-
-        debug_assert!(data_len <= u32::MAX as usize);
         debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
+        debug_assert!(datagram.data.len() <= u16::MAX as usize);
+
+        let data_len_u16 = datagram.data.len() as u16;
 
         if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
             let header = [
@@ -89,6 +109,7 @@ impl DataFrameBuilder {
     }
 
     pub fn build(mut self) -> Box<[u8]> {
+        // TODO: Compute CRC
         let count_offset_0 = 6;
         let count_offset_1 = 7;
         self.buffer[count_offset_0] = (self.count >> 8) as u8;

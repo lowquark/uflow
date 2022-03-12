@@ -1,5 +1,6 @@
 
 mod build;
+mod crc;
 
 pub use build::DataFrameBuilder;
 pub use build::AckFrameBuilder;
@@ -204,6 +205,7 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
 
 fn read_data_payload(data: &[u8]) -> Option<Frame> {
     // TODO: Rely on reader object
+    // TODO: Validate CRC
 
     if data.len() < DATA_FRAME_PAYLOAD_HEADER_SIZE {
         return None;
@@ -330,8 +332,8 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
 
 
 fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
-    Box::new([
-        CONNECT_FRAME_ID,
+    let /*mut*/ bytes = Box::new([
+        CONNECT_FRAME_ID/* | 0x80*/,
         frame.version,
         (frame.nonce >> 24) as u8,
         (frame.nonce >> 16) as u8,
@@ -350,7 +352,23 @@ fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
         (frame.max_receive_alloc >> 16) as u8,
         (frame.max_receive_alloc >>  8) as u8,
         (frame.max_receive_alloc      ) as u8,
-    ])
+        /*
+        0,
+        0,
+        0,
+        0,
+        */
+    ]);
+
+    /*
+    let crc = compute_crc(&bytes[.. bytes.len() - 4]);
+    bytes[bytes.len() - 4] = (crc >> 24) as u8;
+    bytes[bytes.len() - 3] = (crc >> 16) as u8;
+    bytes[bytes.len() - 2] = (crc >>  8) as u8;
+    bytes[bytes.len() - 1] = (crc      ) as u8;
+    */
+
+    return bytes;
 }
 
 fn write_connect_ack(frame: &ConnectAckFrame) -> Box<[u8]> {
