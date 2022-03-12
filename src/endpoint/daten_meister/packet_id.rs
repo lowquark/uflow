@@ -11,3 +11,7 @@ pub fn sub(a: Type, b: Type) -> Type {
     a.wrapping_sub(b) & MASK
 }
 
+pub fn is_valid(a: Type) -> bool {
+    a & MASK == a
+}
+

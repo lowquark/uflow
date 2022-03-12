@@ -27,8 +27,8 @@ const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
 
 const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
-const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 15;
-const DATAGRAM_HEADER_SIZE_FULL: usize = 11;
+const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 14;
+const DATAGRAM_HEADER_SIZE_FULL: usize = 10;
 const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
 pub const MAX_DATAGRAM_OVERHEAD: usize = DATAGRAM_HEADER_SIZE_FRAGMENT;
 pub const DATA_FRAME_OVERHEAD: usize = FRAME_OVERHEAD + DATA_FRAME_PAYLOAD_HEADER_SIZE;
@@ -128,25 +128,24 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
 
         let channel_id = header_byte & 0x3F;
 
-        let sequence_id = ((data[1] as u32) << 24) |
-                          ((data[2] as u32) << 16) |
-                          ((data[3] as u32) <<  8) |
-                          ((data[4] as u32)      );
+        let sequence_id = ((data[1] as u32) << 16) |
+                          ((data[2] as u32) <<  8) |
+                          ((data[3] as u32)      );
 
-        let window_parent_lead = ((data[5] as u16) << 8) |
-                                 ((data[6] as u16)     );
+        let window_parent_lead = ((data[4] as u16) << 8) |
+                                 ((data[5] as u16)     );
 
-        let channel_parent_lead = ((data[7] as u16) << 8) |
-                                  ((data[8] as u16)     );
+        let channel_parent_lead = ((data[6] as u16) << 8) |
+                                  ((data[7] as u16)     );
 
-        let fragment_id_last = ((data[ 9] as u16) << 8) |
-                               ((data[10] as u16)     );
+        let fragment_id_last = ((data[8] as u16) << 8) |
+                               ((data[9] as u16)     );
 
-        let fragment_id = ((data[11] as u16) << 8) |
-                          ((data[12] as u16)     );
+        let fragment_id = ((data[10] as u16) << 8) |
+                          ((data[11] as u16)     );
 
-        let data_len_u16 = ((data[13] as u16) << 8) |
-                           ((data[14] as u16)     );
+        let data_len_u16 = ((data[12] as u16) << 8) |
+                           ((data[13] as u16)     );
         let data_len = data_len_u16 as usize;
 
         if data.len() < header_size + data_len {
@@ -173,19 +172,18 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
 
         let channel_id = header_byte & 0x3F;
 
-        let sequence_id = ((data[1] as u32) << 24) |
-                          ((data[2] as u32) << 16) |
-                          ((data[3] as u32) <<  8) |
-                          ((data[4] as u32)      );
+        let sequence_id = ((data[1] as u32) << 16) |
+                          ((data[2] as u32) <<  8) |
+                          ((data[3] as u32)      );
 
-        let window_parent_lead = ((data[5] as u16) << 8) |
-                                 ((data[6] as u16)     );
+        let window_parent_lead = ((data[4] as u16) << 8) |
+                                 ((data[5] as u16)     );
 
-        let channel_parent_lead = ((data[7] as u16) << 8) |
-                                  ((data[8] as u16)     );
+        let channel_parent_lead = ((data[6] as u16) << 8) |
+                                  ((data[7] as u16)     );
 
-        let data_len_u16 = ((data[ 9] as u16) << 8) |
-                           ((data[10] as u16)     );
+        let data_len_u16 = ((data[8] as u16) << 8) |
+                           ((data[9] as u16)     );
         let data_len = data_len_u16 as usize;
 
         if data.len() < header_size + data_len {
@@ -629,7 +627,7 @@ mod tests {
             nonce: true,
             datagrams: vec![
                 Datagram {
-                    sequence_id: 0x12345678,
+                    sequence_id: 0x45678,
                     channel_id: 63,
                     window_parent_lead: 0x34A8,
                     channel_parent_lead: 0x8A43,
@@ -640,7 +638,7 @@ mod tests {
                     data: vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(),
                 },
                 Datagram {
-                    sequence_id: 0x12345678,
+                    sequence_id: 0x12345,
                     channel_id: 63,
                     window_parent_lead: 0x34A8,
                     channel_parent_lead: 0x8A43,
@@ -757,7 +755,7 @@ mod tests {
     #[test]
     fn data_random() {
         const NUM_ROUNDS: usize = 100;
-        const MAX_DATAGRAMS: usize = 100;
+        const MAX_DATAGRAMS: usize = 64;
         const MAX_DATA_SIZE: usize = 100;
 
         for _ in 0..NUM_ROUNDS {
@@ -766,7 +764,7 @@ mod tests {
             for _ in 0 .. rand::random::<usize>() % MAX_DATAGRAMS {
                 let datagram = match rand::random::<u32>() % 2 {
                     0 => Datagram {
-                        sequence_id: rand::random::<u32>(),
+                        sequence_id: rand::random::<u32>() & 0xFFFFF,
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),
@@ -777,7 +775,7 @@ mod tests {
                         data: random_data(MAX_DATA_SIZE),
                     },
                     1 => Datagram {
-                        sequence_id: rand::random::<u32>(),
+                        sequence_id: rand::random::<u32>() & 0xFFFFF,
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),

@@ -65,6 +65,7 @@ impl DataFrameBuilder {
 
     pub fn add(&mut self, datagram: &DatagramRef) {
         debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
+        debug_assert!(datagram.sequence_id <= 0xFFFFF);
         debug_assert!(datagram.data.len() <= u16::MAX as usize);
 
         let data_len_u16 = datagram.data.len() as u16;
@@ -72,7 +73,6 @@ impl DataFrameBuilder {
         if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
             let header = [
                 datagram.channel_id,
-                (datagram.sequence_id >> 24) as u8,
                 (datagram.sequence_id >> 16) as u8,
                 (datagram.sequence_id >>  8) as u8,
                 (datagram.sequence_id      ) as u8,
@@ -88,7 +88,6 @@ impl DataFrameBuilder {
         } else {
             let header = [
                 datagram.channel_id | 0x80,
-                (datagram.sequence_id >> 24) as u8,
                 (datagram.sequence_id >> 16) as u8,
                 (datagram.sequence_id >>  8) as u8,
                 (datagram.sequence_id      ) as u8,

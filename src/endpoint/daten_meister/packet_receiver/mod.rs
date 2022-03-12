@@ -107,6 +107,8 @@ impl PacketReceiver {
             return;
         }
 
+        debug_assert!(packet_id::is_valid(datagram.sequence_id));
+
         let ref mut channel = self.channels[channel_idx];
         let channel_base_id = channel.base_id.unwrap_or(base_id);
 
