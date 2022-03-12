@@ -11,6 +11,7 @@ use super::ACK_FRAME_ID;
 use super::ACK_FRAME_OVERHEAD;
 use super::ACK_GROUP_SIZE;
 
+use super::FRAME_CRC_SIZE;
 use super::MAX_CHANNELS;
 
 use super::crc;
@@ -130,7 +131,7 @@ impl DataFrameBuilder {
     }
 
     pub fn size(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len() + FRAME_CRC_SIZE
     }
 
     pub fn encoded_size(datagram: &DatagramRef) -> usize {
@@ -208,7 +209,7 @@ impl AckFrameBuilder {
     }
 
     pub fn size(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len() + FRAME_CRC_SIZE
     }
 
     pub fn encoded_size(_frame_ack: &AckGroup) -> usize {
