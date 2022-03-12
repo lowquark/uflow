@@ -246,6 +246,7 @@
 mod client;
 mod endpoint;
 mod frame;
+mod packet_id;
 mod peer;
 mod server;
 mod udp_frame_sink;

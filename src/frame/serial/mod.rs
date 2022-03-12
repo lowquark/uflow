@@ -758,13 +758,15 @@ mod tests {
         const MAX_DATAGRAMS: usize = 64;
         const MAX_DATA_SIZE: usize = 100;
 
+        use crate::packet_id;
+
         for _ in 0..NUM_ROUNDS {
             let mut datagrams = Vec::new();
 
             for _ in 0 .. rand::random::<usize>() % MAX_DATAGRAMS {
                 let datagram = match rand::random::<u32>() % 2 {
                     0 => Datagram {
-                        sequence_id: rand::random::<u32>() & 0xFFFFF,
+                        sequence_id: rand::random::<u32>() & packet_id::MASK,
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),
@@ -775,7 +777,7 @@ mod tests {
                         data: random_data(MAX_DATA_SIZE),
                     },
                     1 => Datagram {
-                        sequence_id: rand::random::<u32>() & 0xFFFFF,
+                        sequence_id: rand::random::<u32>() & packet_id::MASK,
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),

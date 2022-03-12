@@ -1,11 +1,11 @@
 
-use super::packet_id;
 use super::pending_packet::{PendingPacket, PendingPacketRc};
 
 use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::packet_id;
 use crate::SendMode;
 
 use std::collections::VecDeque;

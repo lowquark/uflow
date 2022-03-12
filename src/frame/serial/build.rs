@@ -16,6 +16,8 @@ use super::MAX_CHANNELS;
 
 use super::crc;
 
+use crate::packet_id;
+
 // Consider:
 //
 // * Max 64 packets per frame
@@ -65,7 +67,7 @@ impl DataFrameBuilder {
 
     pub fn add(&mut self, datagram: &DatagramRef) {
         debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
-        debug_assert!(datagram.sequence_id <= 0xFFFFF);
+        debug_assert!(packet_id::is_valid(datagram.sequence_id));
         debug_assert!(datagram.data.len() <= u16::MAX as usize);
 
         let data_len_u16 = datagram.data.len() as u16;

@@ -1,15 +1,15 @@
 
-use super::packet_id;
 use super::packet_sender;
 use super::packet_receiver;
 
-use crate::frame::Datagram;
+use crate::frame;
+use crate::packet_id;
 use crate::SendMode;
 
 use std::collections::VecDeque;
 
 struct TestDatagramSink {
-    pub datagrams: VecDeque<Datagram>,
+    pub datagrams: VecDeque<frame::Datagram>,
 }
 
 impl TestDatagramSink {

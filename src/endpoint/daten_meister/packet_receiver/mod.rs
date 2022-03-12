@@ -1,11 +1,11 @@
 
-use super::packet_id;
 use super::PacketSink;
 
 use crate::frame;
 use crate::MAX_CHANNELS;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::packet_id;
 
 mod assembly_window;
 

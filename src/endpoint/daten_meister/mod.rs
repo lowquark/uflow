@@ -12,7 +12,6 @@ mod emit;
 mod frame_ack_queue;
 mod frame_queue;
 mod loss_rate;
-mod packet_id;
 mod packet_receiver;
 mod packet_sender;
 mod pending_packet;
@@ -59,13 +58,15 @@ impl DatenMeister {
                tx_alloc_limit: usize, rx_alloc_limit: usize,
                tx_base_id: u32, rx_base_id: u32,
                tx_bandwidth_limit: u32) -> Self {
+        use crate::packet_id;
+
         Self {
-            packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id),
+            packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id & packet_id::MASK),
             pending_queue: pending_queue::PendingQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
             frame_queue: frame_queue::FrameQueue::new(tx_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
 
-            packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id),
+            packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id & packet_id::MASK),
             frame_ack_queue: frame_ack_queue::FrameAckQueue::new(rx_base_id, MAX_FRAME_WINDOW_SIZE),
 
             send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
