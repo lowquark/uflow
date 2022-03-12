@@ -38,8 +38,10 @@
 //           ------------------------ --------
 //           8   1   C   B   7   7    B   A    -> Partial result for 0x00 is !0xAB77BC18 = 0x548843E7
 
+static INITIAL_CRC: u32 = 0;
+
 #[cfg(test)]
-fn compute_slow(initial_crc: u32, data: &[u8]) -> u32 {
+fn extend_slow(initial_crc: u32, data: &[u8]) -> u32 {
     let mut reg = !initial_crc;
     for &byte in data.iter() {
         reg ^= byte as u32;
@@ -89,12 +91,16 @@ static PARTIAL_RESULTS: [u32; 256] = [
     0xF10A4025, 0x3F528294, 0x5F7BC3DE, 0x9123016F, 0x9F29414A, 0x517183FB, 0x3158C2B1, 0xFF000000,
 ];
 
-pub fn compute(initial_crc: u32, data: &[u8]) -> u32 {
-    let mut reg = initial_crc;
+pub fn extend(initial_crc: u32, data: &[u8]) -> u32 {
+    let mut crc = initial_crc;
     for &byte in data.iter() {
-        reg = (reg >> 8) ^ PARTIAL_RESULTS[(reg as u8 ^ byte) as usize];
+        crc = (crc >> 8) ^ PARTIAL_RESULTS[(crc as u8 ^ byte) as usize];
     }
-    return reg;
+    return crc;
+}
+
+pub fn compute(data: &[u8]) -> u32 {
+    extend(INITIAL_CRC, data)
 }
 
 #[cfg(test)]
@@ -106,13 +112,13 @@ mod tests {
     fn main() {
         println!("polynomial: {:b}", 0x132c00699u64);
 
-        let check_value = compute_slow(0, "123456789".as_bytes().into());
+        let check_value = extend_slow(0, "123456789".as_bytes().into());
         println!("check value: {:X}", check_value);
 
         let mut code: usize = 0;
         for _ in 0 .. 32 {
             for _ in 0 .. 8 {
-                print!("0x{:08X}, ", compute_slow(0, &[code as u8]));
+                print!("0x{:08X}, ", extend_slow(0, &[code as u8]));
                 code += 1;
             }
             println!("");
@@ -122,13 +128,13 @@ mod tests {
 
     #[test]
     fn zero_nonzero_crc() {
-        assert!(compute_slow(0, &[0]) != 0);
+        assert!(extend_slow(0, &[0]) != 0);
     }
 
     #[test]
     fn basic() {
-        assert_eq!(compute_slow(0, "123456789".as_bytes().into()), 0x11A6F2A3);
-        assert_eq!(compute(0, "123456789".as_bytes().into()), 0x11A6F2A3);
+        assert_eq!(extend_slow(0, "123456789".as_bytes().into()), 0x11A6F2A3);
+        assert_eq!(extend(0, "123456789".as_bytes().into()), 0x11A6F2A3);
     }
 
     #[test]
@@ -136,7 +142,7 @@ mod tests {
         for _ in 0 .. 100 {
             let data = (0 .. 1024).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice();
             let initial_crc = rand::random::<u32>();
-            assert_eq!(compute_slow(initial_crc, &data), compute(initial_crc, &data));
+            assert_eq!(extend_slow(initial_crc, &data), extend(initial_crc, &data));
         }
     }
 }

@@ -13,6 +13,8 @@ use super::ACK_GROUP_SIZE;
 
 use super::MAX_CHANNELS;
 
+use super::crc;
+
 // Consider:
 //
 // * Max 64 packets per frame
@@ -109,11 +111,21 @@ impl DataFrameBuilder {
     }
 
     pub fn build(mut self) -> Box<[u8]> {
-        // TODO: Compute CRC
         let count_offset_0 = 6;
         let count_offset_1 = 7;
         self.buffer[count_offset_0] = (self.count >> 8) as u8;
         self.buffer[count_offset_1] = (self.count     ) as u8;
+
+        let data_bytes = self.buffer.as_slice();
+        let crc = crc::compute(&data_bytes);
+
+        self.buffer.extend_from_slice(&[
+            (crc >> 24) as u8,
+            (crc >> 16) as u8,
+            (crc >>  8) as u8,
+            (crc      ) as u8,
+        ]);
+
         self.buffer.into_boxed_slice()
     }
 
@@ -181,6 +193,17 @@ impl AckFrameBuilder {
         let count_offset_1 = 10;
         self.buffer[count_offset_0] = (self.count >> 8) as u8;
         self.buffer[count_offset_1] = (self.count     ) as u8;
+
+        let data_bytes = self.buffer.as_slice();
+        let crc = crc::compute(&data_bytes);
+
+        self.buffer.extend_from_slice(&[
+            (crc >> 24) as u8,
+            (crc >> 16) as u8,
+            (crc >>  8) as u8,
+            (crc      ) as u8,
+        ]);
+
         self.buffer.into_boxed_slice()
     }
 

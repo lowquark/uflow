@@ -8,6 +8,8 @@ pub use build::AckFrameBuilder;
 use super::*;
 
 const FRAME_HEADER_SIZE: usize = 1;
+const FRAME_CRC_SIZE: usize = 4;
+const FRAME_OVERHEAD: usize = FRAME_HEADER_SIZE + FRAME_CRC_SIZE;
 
 const CONNECT_FRAME_ID: u8 = 0;
 const CONNECT_ACK_FRAME_ID: u8 = 1;
@@ -29,14 +31,14 @@ const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 15;
 const DATAGRAM_HEADER_SIZE_FULL: usize = 11;
 const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
 pub const MAX_DATAGRAM_OVERHEAD: usize = DATAGRAM_HEADER_SIZE_FRAGMENT;
-pub const DATA_FRAME_OVERHEAD: usize = FRAME_HEADER_SIZE + DATA_FRAME_PAYLOAD_HEADER_SIZE;
+pub const DATA_FRAME_OVERHEAD: usize = FRAME_OVERHEAD + DATA_FRAME_PAYLOAD_HEADER_SIZE;
 
 const SYNC_FRAME_PAYLOAD_SIZE: usize = 9;
-pub const SYNC_FRAME_SIZE: usize = FRAME_HEADER_SIZE + SYNC_FRAME_PAYLOAD_SIZE;
+pub const SYNC_FRAME_SIZE: usize = FRAME_OVERHEAD + SYNC_FRAME_PAYLOAD_SIZE;
 
 const ACK_GROUP_SIZE: usize = 9;
 const ACK_FRAME_PAYLOAD_HEADER_SIZE: usize = 10;
-pub const ACK_FRAME_OVERHEAD: usize = FRAME_HEADER_SIZE + ACK_FRAME_PAYLOAD_HEADER_SIZE;
+pub const ACK_FRAME_OVERHEAD: usize = FRAME_OVERHEAD + ACK_FRAME_PAYLOAD_HEADER_SIZE;
 
 pub const MAX_CHANNELS: usize = 64;
 pub const MAX_FRAGMENTS: usize = 1 << 16;
@@ -205,7 +207,6 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
 
 fn read_data_payload(data: &[u8]) -> Option<Frame> {
     // TODO: Rely on reader object
-    // TODO: Validate CRC
 
     if data.len() < DATA_FRAME_PAYLOAD_HEADER_SIZE {
         return None;
@@ -332,8 +333,8 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
 
 
 fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
-    let /*mut*/ bytes = Box::new([
-        CONNECT_FRAME_ID/* | 0x80*/,
+    let mut frame_bytes = Box::new([
+        CONNECT_FRAME_ID,
         frame.version,
         (frame.nonce >> 24) as u8,
         (frame.nonce >> 16) as u8,
@@ -352,45 +353,89 @@ fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
         (frame.max_receive_alloc >> 16) as u8,
         (frame.max_receive_alloc >>  8) as u8,
         (frame.max_receive_alloc      ) as u8,
-        /*
         0,
         0,
         0,
         0,
-        */
     ]);
 
-    /*
-    let crc = compute_crc(&bytes[.. bytes.len() - 4]);
-    bytes[bytes.len() - 4] = (crc >> 24) as u8;
-    bytes[bytes.len() - 3] = (crc >> 16) as u8;
-    bytes[bytes.len() - 2] = (crc >>  8) as u8;
-    bytes[bytes.len() - 1] = (crc      ) as u8;
-    */
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
 
-    return bytes;
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
 }
 
 fn write_connect_ack(frame: &ConnectAckFrame) -> Box<[u8]> {
-    Box::new([
+    let mut frame_bytes = Box::new([
         CONNECT_ACK_FRAME_ID,
         (frame.nonce >> 24) as u8,
         (frame.nonce >> 16) as u8,
         (frame.nonce >>  8) as u8,
         (frame.nonce      ) as u8,
-    ])
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
 }
 
 fn write_disconnect(_frame: &DisconnectFrame) -> Box<[u8]> {
-    Box::new([
-        DISCONNECT_FRAME_ID
-    ])
+    let mut frame_bytes = Box::new([
+        DISCONNECT_FRAME_ID,
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
 }
 
 fn write_disconnect_ack(_frame: &DisconnectAckFrame) -> Box<[u8]> {
-    Box::new([
-        DISCONNECT_ACK_FRAME_ID
-    ])
+    let mut frame_bytes = Box::new([
+        DISCONNECT_ACK_FRAME_ID,
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
 }
 
 fn write_data(frame: &DataFrame) -> Box<[u8]> {
@@ -410,7 +455,7 @@ fn write_sync(frame: &SyncFrame) -> Box<[u8]> {
     let next_frame_id = frame.next_frame_id.unwrap_or(0);
     let next_packet_id = frame.next_packet_id.unwrap_or(0);
 
-    Box::new([
+    let mut frame_bytes = Box::new([
         SYNC_FRAME_ID,
         mode,
         (next_frame_id >> 24) as u8,
@@ -421,7 +466,22 @@ fn write_sync(frame: &SyncFrame) -> Box<[u8]> {
         (next_packet_id >> 16) as u8,
         (next_packet_id >>  8) as u8,
         (next_packet_id      ) as u8,
-    ])
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
 }
 
 fn write_ack(frame: &AckFrame) -> Box<[u8]> {
@@ -440,19 +500,33 @@ pub trait Serialize {
 }
 
 impl Serialize for Frame {
-    fn read(data: &[u8]) -> Option<Self> {
-        if data.len() == 0 {
+    fn read(frame_bytes: &[u8]) -> Option<Self> {
+        if frame_bytes.len() < 5 {
             return None;
         }
 
-        match data[0] {
-            CONNECT_FRAME_ID => read_connect_payload(&data[1..]),
-            CONNECT_ACK_FRAME_ID => read_connect_ack_payload(&data[1..]),
-            DISCONNECT_FRAME_ID => read_disconnect_payload(&data[1..]),
-            DISCONNECT_ACK_FRAME_ID => read_disconnect_ack_payload(&data[1..]),
-            DATA_FRAME_ID => read_data_payload(&data[1..]),
-            SYNC_FRAME_ID => read_sync_payload(&data[1..]),
-            ACK_FRAME_ID => read_ack_payload(&data[1..]),
+        let frame_len = frame_bytes.len();
+        let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+        let crc = ((frame_bytes[frame_len - 4] as u32) << 24) |
+                  ((frame_bytes[frame_len - 3] as u32) << 16) |
+                  ((frame_bytes[frame_len - 2] as u32) <<  8) |
+                  ((frame_bytes[frame_len - 1] as u32)      );
+
+        if crc::compute(&data_bytes) != crc {
+            return None;
+        }
+
+        let payload_bytes = &frame_bytes[1 .. frame_len - 4];
+
+        match frame_bytes[0] {
+            CONNECT_FRAME_ID => read_connect_payload(payload_bytes),
+            CONNECT_ACK_FRAME_ID => read_connect_ack_payload(payload_bytes),
+            DISCONNECT_FRAME_ID => read_disconnect_payload(payload_bytes),
+            DISCONNECT_ACK_FRAME_ID => read_disconnect_ack_payload(payload_bytes),
+            DATA_FRAME_ID => read_data_payload(payload_bytes),
+            SYNC_FRAME_ID => read_sync_payload(payload_bytes),
+            ACK_FRAME_ID => read_ack_payload(payload_bytes),
             _ => None,
         }
     }
