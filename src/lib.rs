@@ -256,7 +256,7 @@ pub use peer::Peer;
 pub use endpoint::Config as EndpointConfig;
 
 /// The current protocol version ID.
-pub const PROTOCOL_VERSION: u8 = 0;
+pub const PROTOCOL_VERSION: u8 = 1;
 
 /// The maximum number of channels which may be used on a given connection.
 pub const MAX_CHANNELS: usize = frame::serial::MAX_CHANNELS;
