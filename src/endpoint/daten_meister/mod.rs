@@ -27,9 +27,28 @@ mod packet_tests;
 const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
 const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
 const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
+const MIN_SYNC_KEEPALIVE_TIMEOUT_MS: u64 = 5000;
 
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);
+}
+
+pub struct Config {
+    pub tx_channel_count: usize,
+    pub rx_channel_count: usize,
+
+    pub tx_alloc_limit: usize,
+    pub rx_alloc_limit: usize,
+
+    pub tx_frame_base_id: u32,
+    pub rx_frame_base_id: u32,
+
+    pub tx_packet_base_id: u32,
+    pub rx_packet_base_id: u32,
+
+    pub tx_bandwidth_limit: u32,
+
+    pub keepalive: bool,
 }
 
 pub struct DatenMeister {
@@ -51,25 +70,21 @@ pub struct DatenMeister {
     flush_id: u32,
 
     sync_reply: bool,
+    sync_keepalive: bool,
 }
 
 impl DatenMeister {
-    pub fn new(tx_channels: usize, rx_channels: usize,
-               tx_alloc_limit: usize, rx_alloc_limit: usize,
-               tx_base_id: u32, rx_base_id: u32,
-               tx_bandwidth_limit: u32) -> Self {
-        use crate::packet_id;
-
+    pub fn new(config: Config) -> Self {
         Self {
-            packet_sender: packet_sender::PacketSender::new(tx_channels, tx_alloc_limit, tx_base_id & packet_id::MASK),
+            packet_sender: packet_sender::PacketSender::new(config.tx_channel_count, config.tx_alloc_limit, config.tx_packet_base_id),
             pending_queue: pending_queue::PendingQueue::new(),
             resend_queue: resend_queue::ResendQueue::new(),
-            frame_queue: frame_queue::FrameQueue::new(tx_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
+            frame_queue: frame_queue::FrameQueue::new(config.tx_frame_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
 
-            packet_receiver: packet_receiver::PacketReceiver::new(rx_channels, rx_alloc_limit, rx_base_id & packet_id::MASK),
-            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(rx_base_id, MAX_FRAME_WINDOW_SIZE),
+            packet_receiver: packet_receiver::PacketReceiver::new(config.rx_channel_count, config.rx_alloc_limit, config.rx_packet_base_id),
+            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_base_id, MAX_FRAME_WINDOW_SIZE),
 
-            send_rate_comp: send_rate::SendRateComp::new(tx_bandwidth_limit),
+            send_rate_comp: send_rate::SendRateComp::new(config.tx_bandwidth_limit),
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
@@ -79,6 +94,7 @@ impl DatenMeister {
             flush_id: 0,
 
             sync_reply: false,
+            sync_keepalive: config.keepalive,
         }
     }
 
@@ -174,11 +190,6 @@ impl DatenMeister {
         let flush_id = self.flush_id;
         self.flush_id = self.flush_id.wrapping_add(1);
 
-        match self.emit_sync_frame(now_ms, rto_ms, sink) {
-            Err(_) => return,
-            Ok(_) => (),
-        }
-
         match self.emit_ack_frames(sink) {
             Err(_) => return,
             Ok(_) => (),
@@ -188,12 +199,18 @@ impl DatenMeister {
             Err(_) => return,
             Ok(_) => (),
         }
+
+        match self.emit_sync_frame(now_ms, rto_ms, sink) {
+            Err(_) => return,
+            Ok(_) => (),
+        }
     }
 
     fn emit_sync_frame(&mut self, now_ms: u64, rto_ms: u64, sink: &mut impl FrameSink) -> Result<(),()> {
+        let elapsed_ms = now_ms - self.sync_timeout_base_ms;
         let sync_timeout_ms = rto_ms.max(MIN_SYNC_TIMEOUT_MS);
 
-        if now_ms - self.sync_timeout_base_ms >= sync_timeout_ms {
+        if elapsed_ms >= sync_timeout_ms {
             let next_frame_id =
                 if self.frame_queue.next_id() != self.frame_queue.base_id() {
                     Some(self.frame_queue.next_id())
@@ -209,7 +226,15 @@ impl DatenMeister {
                     None
                 };
 
-            // TODO: Only send a (None, None) sync frame if application requests keepalives
+            if next_frame_id.is_none() && next_packet_id.is_none() {
+                if self.sync_keepalive {
+                    if elapsed_ms < MIN_SYNC_KEEPALIVE_TIMEOUT_MS {
+                        return Ok(());
+                    }
+                } else {
+                    return Ok(());
+                }
+            }
 
             if frame::serial::SYNC_FRAME_SIZE > self.flush_alloc {
                 return Err(());
@@ -290,7 +315,9 @@ impl DatenMeister {
                 }
 
                 match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, true) {
-                    Err(_) => return Err(()),
+                    // Being window-limited does not preclude further sends
+                    Err(emit::DataPushError::WindowLimited) => return Ok(()),
+                    Err(emit::DataPushError::SizeLimited) => return Err(()),
                     Ok(_) => (),
                 }
 
@@ -334,7 +361,9 @@ impl DatenMeister {
                     }
 
                     match dfe.push(&packet_rc, entry.fragment_ref.fragment_id, entry.resend) {
-                        Err(_) => return Err(()),
+                        // Being window-limited does not preclude further sends
+                        Err(emit::DataPushError::WindowLimited) => return Ok(()),
+                        Err(emit::DataPushError::SizeLimited) => return Err(()),
                         Ok(_) => (),
                     }
 
@@ -365,6 +394,7 @@ mod tests {
     use crate::frame::FragmentId;
 
     use crate::MAX_FRAGMENT_SIZE;
+    use crate::MAX_PACKET_WINDOW_SIZE;
 
     use std::collections::VecDeque;
 
@@ -392,8 +422,26 @@ mod tests {
 
     impl TestApparatus {
         fn new() -> Self {
+            let config = Config {
+                tx_channel_count: 1,
+                rx_channel_count: 1,
+
+                tx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
+                rx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
+
+                tx_frame_base_id: 0,
+                rx_frame_base_id: 0,
+
+                tx_packet_base_id: 0,
+                rx_packet_base_id: 0,
+
+                tx_bandwidth_limit: 100_000,
+
+                keepalive: true,
+            };
+
             Self {
-                dm: DatenMeister::new(1, 1, 10_000, 10_000, 0, 0, 100_000)
+                dm: DatenMeister::new(config)
             }
         }
 
@@ -539,36 +587,6 @@ mod tests {
         assert_eq!(frames[1].len(), MAX_FRAME_SIZE);
     }
 
-    // Packets should be resent [1, 2, 4, 4, ... 4] RTTs after the previous send.
-    #[test]
-    fn resend_timing() {
-        let rtt_ms = 100;
-
-        let mut ta = TestApparatus::new();
-
-        let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
-        ta.enqueue_packet(p0.clone(), 0, SendMode::Persistent);
-
-        let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE);
-        assert_eq!(frames.len(), 1);
-
-        let frames = ta.emit_frames(1, rtt_ms, MAX_FRAME_SIZE);
-        assert_eq!(frames.len(), 0);
-
-        let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
-
-        for &time_ms in resend_times.iter() {
-            let frames = ta.emit_frames(time_ms - 1, rtt_ms, MAX_FRAME_SIZE);
-            assert_eq!(frames.len(), 0);
-
-            let frames = ta.emit_frames(time_ms    , rtt_ms, MAX_FRAME_SIZE);
-            assert_eq!(frames.len(), 1);
-
-            let frames = ta.emit_frames(time_ms + 1, rtt_ms, MAX_FRAME_SIZE);
-            assert_eq!(frames.len(), 0);
-        }
-    }
-
     // Time sensitive packet IDs should not be resent if the flush ID does not match.
     #[test]
     fn time_sensitive_drop() {
@@ -686,10 +704,10 @@ mod tests {
     // Simple sync case for which both the frame and packet windows are resynchronized.
     #[test]
     fn sync_frame_and_packet_window() {
-        let now_ms = 0;
-        let rtt_ms = 100;
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
 
         let mut ta = TestApparatus::new();
+        let mut now_ms = 0;
 
         for _ in 0 .. 5 {
             ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Unreliable);
@@ -698,47 +716,46 @@ mod tests {
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 5);
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
+        now_ms += MIN_SYNC_TIMEOUT_MS;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(5), next_packet_id: Some(5) });
     }
 
-    // Sync case for which packets exist in the resend/pending queues, so only the frame window is
-    // resynchronized.
+    // Sync case for which packets exist in the resend/pending queues, and the frame transfer
+    // window is full, so only the frame window is resynchronized.
     #[test]
     fn sync_frame_window_only() {
-        let now_ms = 0;
-        let rtt_ms = 100;
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
 
         let mut ta = TestApparatus::new();
+        let mut now_ms = 0;
 
-        for _ in 0 .. 5 {
+        for _ in 0 .. MAX_FRAME_WINDOW_SIZE {
             ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Persistent);
         }
 
+        let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE * MAX_FRAME_WINDOW_SIZE as usize);
+        assert_eq!(frames.len(), MAX_FRAME_WINDOW_SIZE as usize);
+
+        now_ms += MIN_SYNC_TIMEOUT_MS;
+
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
-        assert_eq!(frames.len(), 5);
+        assert_eq!(frames.len(), 1);
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
-        assert_eq!(frames.len(), 6);
-
-        test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(5), next_packet_id: None });
-
-        let frames = ta.emit_frames(now_ms + 2*MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
-        assert_eq!(frames.len(), 6);
-
-        test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(10), next_packet_id: None });
+        test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(MAX_FRAME_WINDOW_SIZE), next_packet_id: None });
     }
 
     // Sync case for which no the receiver has not yet called receive(), and only the packet window
     // is resynchronized.
     #[test]
     fn sync_packet_window_only() {
-        let now_ms = 0;
-        let rtt_ms = 100;
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
 
         let mut ta = TestApparatus::new();
+        let mut now_ms = 0;
 
         for _ in 0 .. 5 {
             ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Unreliable);
@@ -749,7 +766,9 @@ mod tests {
 
         ta.receive_ack(frame::AckFrame { frame_acks: Vec::new(), frame_window_base_id: 5, packet_window_base_id: 0 });
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
+        now_ms += MIN_SYNC_TIMEOUT_MS;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: Some(5) });
@@ -759,7 +778,7 @@ mod tests {
     #[test]
     fn sync_response() {
         let now_ms = 0;
-        let rtt_ms = 100;
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
 
         let mut ta = TestApparatus::new();
 
@@ -771,42 +790,87 @@ mod tests {
         test_ack_frame(&frames[0], frame::AckFrame { frame_acks: Vec::new(), frame_window_base_id: 5, packet_window_base_id: 5 });
     }
 
-    // Keepalive syncs should be sent periodically after no data has been sent
+    // Packets should be resent [1, 2, 4, 4, ... 4] RTTs after the previous send.
     #[test]
-    fn sync_keepalive() {
-        let now_ms = 0;
-        let rtt_ms = 100;
+    fn resend_timing() {
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
 
         let mut ta = TestApparatus::new();
+
+        let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        ta.enqueue_packet(p0.clone(), 0, SendMode::Persistent);
+
+        let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 1);
+
+        let frames = ta.emit_frames(1, rtt_ms, MAX_FRAME_SIZE);
+        assert_eq!(frames.len(), 0);
+
+        let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
+
+        for &now_ms in resend_times.iter() {
+            let frames = ta.emit_frames(now_ms - 1, rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 0);
+
+            let frames = ta.emit_frames(now_ms    , rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 1);
+
+            let frames = ta.emit_frames(now_ms + 1, rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 0);
+        }
+    }
+
+    // Keepalive syncs should be sent periodically after no data has been sent
+    #[test]
+    fn keepalive_timing() {
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
+
+        let mut ta = TestApparatus::new();
+        let mut now_ms = 0;
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS - 1, rtt_ms, 10000);
+        now_ms += MIN_SYNC_KEEPALIVE_TIMEOUT_MS - 1;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
+        now_ms += 1;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: None });
 
-        let frames = ta.emit_frames(now_ms + MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
 
-        let frames = ta.emit_frames(now_ms + 2 * MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
+        now_ms += MIN_SYNC_KEEPALIVE_TIMEOUT_MS;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: None });
 
         // Disrupt the normal timing
+        now_ms += MIN_SYNC_KEEPALIVE_TIMEOUT_MS/2;
+
         ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Unreliable);
-        let frames = ta.emit_frames(now_ms + 2 * MIN_SYNC_TIMEOUT_MS + MIN_SYNC_TIMEOUT_MS/2, rtt_ms, 10000);
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
 
-        let frames = ta.emit_frames(now_ms + 3 * MIN_SYNC_TIMEOUT_MS, rtt_ms, 10000);
-        assert_eq!(frames.len(), 0);
+        now_ms += MIN_SYNC_TIMEOUT_MS;
 
-        let frames = ta.emit_frames(now_ms + 3 * MIN_SYNC_TIMEOUT_MS + MIN_SYNC_TIMEOUT_MS/2, rtt_ms, 10000);
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: Some(1), next_packet_id: Some(1) });
+
+        ta.receive_ack(frame::AckFrame { frame_acks: Vec::new(), frame_window_base_id: 1, packet_window_base_id: 1 });
+
+        now_ms += MIN_SYNC_KEEPALIVE_TIMEOUT_MS;
+
+        let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
+        assert_eq!(frames.len(), 1);
+        test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: None });
     }
 }
 

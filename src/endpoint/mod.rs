@@ -476,18 +476,26 @@ impl Endpoint {
                        remote: frame::ConnectFrame,
                        initial_sends: VecDeque<SendEntry>,
                        max_send_rate: u32) {
-        let tx_channels = local.channel_count_sup as usize + 1;
-        let rx_channels = remote.channel_count_sup as usize + 1;
-        let tx_alloc_limit = remote.max_receive_alloc as usize;
-        let rx_alloc_limit = local.max_receive_alloc as usize;
-        let tx_base_id = local.nonce;
-        let rx_base_id = remote.nonce;
-        let tx_bandwidth_limit = max_send_rate.min(remote.max_receive_rate);
+        use crate::packet_id;
 
-        let mut daten_meister = DatenMeister::new(tx_channels, rx_channels,
-                                                  tx_alloc_limit, rx_alloc_limit,
-                                                  tx_base_id, rx_base_id,
-                                                  tx_bandwidth_limit);
+        let config = daten_meister::Config {
+            tx_channel_count: local.channel_count_sup as usize + 1,
+            rx_channel_count: remote.channel_count_sup as usize + 1,
+
+            tx_alloc_limit: remote.max_receive_alloc as usize,
+            rx_alloc_limit: local.max_receive_alloc as usize,
+
+            tx_frame_base_id: local.nonce,
+            rx_frame_base_id: remote.nonce,
+
+            tx_packet_base_id: local.nonce & packet_id::MASK,
+            rx_packet_base_id: remote.nonce & packet_id::MASK,
+
+            tx_bandwidth_limit: max_send_rate.min(remote.max_receive_rate),
+            keepalive: true,
+        };
+
+        let mut daten_meister = DatenMeister::new(config);
 
         for send in initial_sends.into_iter() {
             daten_meister.send(send.data, send.channel_id, send.mode);
