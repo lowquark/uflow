@@ -69,12 +69,10 @@ impl Server {
         std::mem::take(&mut self.incoming_peers).into_iter()
     }
 
-    /// Processes UDP frames received since the last call to [`step()`](Self::step), and
-    /// sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
-    ///
-    /// Current, non-zombie [`Peer`](peer::Peer) objects will be updated as relevant data is
-    /// received. Call [`Peer::poll_events()`](peer::Peer::poll_events) after calling this method
-    /// to retrieve incoming packets and connection status updates for an individual peer.
+    /// Processes UDP frames received since the previous call to [`step()`](Self::step). Current,
+    /// non-zombie [`Peer`](peer::Peer) objects will be updated as relevant data is received. Call
+    /// [`Peer::poll_events()`](peer::Peer::poll_events) after calling this function to retrieve
+    /// incoming packets and connection status updates for an individual peer.
     pub fn step(&mut self) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
@@ -86,13 +84,17 @@ impl Server {
             }
         }
 
-        self.flush();
-
         self.endpoints.retain(|_, endpoint| !endpoint.borrow().is_zombie());
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
     /// Sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
+    ///
+    /// *Note*: Internally, this function uses the [leaky bucket
+    /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
+    /// frames are sent. Thus, it should be called relatively frequently (at least once per
+    /// connection round-trip time) to ensure that data is transferred smoothly. Regular intervals
+    /// are best, but there is no penalty to making two calls in short succession.
     pub fn flush(&mut self) {
         for (&address, endpoint) in self.endpoints.iter_mut() {
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);

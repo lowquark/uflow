@@ -21,6 +21,9 @@ impl<'a> UdpFrameSink<'a> {
 
 impl<'a> endpoint::FrameSink for UdpFrameSink<'a> {
     fn send(&mut self, frame_data: &[u8]) {
+        //use crate::frame;
+        //use frame::serial::Serialize;
+        //println!("{:?}", frame::Frame::read(&frame_data));
         let _ = self.socket.send_to(frame_data, self.address);
     }
 }

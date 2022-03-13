@@ -228,6 +228,8 @@ fn client_thread() -> Vec<md5::Digest> {
             }
         }
 
+        client.flush();
+
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
