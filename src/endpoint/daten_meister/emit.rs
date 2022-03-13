@@ -1,8 +1,10 @@
 
-use crate::MAX_FRAME_SIZE;
 use crate::frame;
-use crate::frame::serial::DataFrameBuilder;
 use crate::frame::serial::AckFrameBuilder;
+use crate::frame::serial::DataFrameBuilder;
+use crate::MAX_FRAME_SIZE;
+use crate::MAX_FRAME_WINDOW_SIZE;
+use crate::packet_id;
 
 use super::pending_packet;
 use super::frame_queue;
@@ -49,13 +51,21 @@ impl<'a, F> DataFrameEmitter<'a, F> where F: FnMut(Box<[u8]>) {
         if let Some(ref mut next_frame) = self.in_progress_frame {
             let potential_frame_size = next_frame.fbuilder.size() + encoded_size;
 
+            // Restrict the number of datagrams per frame to ensure that packet IDs are unique over
+            // the receiver's frame window, which has size MAX_FRAME_WINDOW_SIZE * 2. I.e.:
+            //
+            //    max_packet_count * MAX_FRAME_WINDOW_SIZE * 2 <= packet_id::SPAN
+
+            let max_packet_count =
+                ((packet_id::SPAN / (MAX_FRAME_WINDOW_SIZE * 2)) as usize).min(frame::serial::DataFrameBuilder::MAX_COUNT);
+
             if potential_frame_size > self.bytes_remaining {
                 // Emit in-progress frame
                 self.finalize();
                 // Will occur below (overhead increases with new frame)
                 self.frame_queue.mark_rate_limited();
                 return Err(DataPushError::SizeLimited);
-            } else if potential_frame_size > MAX_FRAME_SIZE {
+            } else if potential_frame_size > MAX_FRAME_SIZE || next_frame.fbuilder.count() >= max_packet_count {
                 // Emit in-progress frame
                 self.finalize();
             } else {

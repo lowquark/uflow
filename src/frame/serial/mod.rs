@@ -29,9 +29,10 @@ const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
 const DATAGRAM_HEADER_SIZE_FRAGMENT: usize = 14;
 const DATAGRAM_HEADER_SIZE_FULL: usize = 10;
-const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 7;
+const DATA_FRAME_PAYLOAD_HEADER_SIZE: usize = 5;
 pub const MAX_DATAGRAM_OVERHEAD: usize = DATAGRAM_HEADER_SIZE_FRAGMENT;
 pub const DATA_FRAME_OVERHEAD: usize = FRAME_OVERHEAD + DATA_FRAME_PAYLOAD_HEADER_SIZE;
+pub const DATA_FRAME_MAX_DATAGRAM_COUNT: usize = 127;
 
 const SYNC_FRAME_PAYLOAD_SIZE: usize = 9;
 pub const SYNC_FRAME_SIZE: usize = FRAME_OVERHEAD + SYNC_FRAME_PAYLOAD_SIZE;
@@ -215,10 +216,9 @@ fn read_data_payload(data: &[u8]) -> Option<Frame> {
                       ((data[2] as u32) <<  8) |
                       ((data[3] as u32)      );
 
-    let nonce = data[4] != 0;
+    let nonce = data[4] & 0x80 != 0x00;
 
-    let datagram_num = ((data[5] as u16) << 8) |
-                       ((data[6] as u16)     );
+    let datagram_num = data[4] & 0x7F;
 
     let mut data_slice = &data[DATA_FRAME_PAYLOAD_HEADER_SIZE..];
     let mut datagrams = Vec::new();

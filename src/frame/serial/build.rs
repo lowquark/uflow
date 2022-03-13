@@ -3,6 +3,7 @@ use super::DatagramRef;
 use super::AckGroup;
 
 use super::DATA_FRAME_ID;
+use super::DATA_FRAME_MAX_DATAGRAM_COUNT;
 use super::DATA_FRAME_OVERHEAD;
 use super::DATAGRAM_HEADER_SIZE_FRAGMENT;
 use super::DATAGRAM_HEADER_SIZE_FULL;
@@ -41,22 +42,23 @@ use crate::packet_id;
 
 pub struct DataFrameBuilder {
     buffer: Vec<u8>,
-    count: u16,
+    count: usize,
 }
 
 impl DataFrameBuilder {
     pub const INITIAL_SIZE: usize = DATA_FRAME_OVERHEAD;
+    pub const MAX_COUNT: usize = DATA_FRAME_MAX_DATAGRAM_COUNT;
 
     pub fn new(sequence_id: u32, nonce: bool) -> Self {
+        // TODO: Could also place nonce + 6-bit length in header byte
+
         let header = vec![
             DATA_FRAME_ID,
             (sequence_id >> 24) as u8,
             (sequence_id >> 16) as u8,
             (sequence_id >>  8) as u8,
             (sequence_id      ) as u8,
-            nonce as u8,
-            0,
-            0
+            (nonce as u8) << 7,
         ];
 
         Self {
@@ -69,6 +71,7 @@ impl DataFrameBuilder {
         debug_assert!((datagram.channel_id as usize) < MAX_CHANNELS);
         debug_assert!(packet_id::is_valid(datagram.sequence_id));
         debug_assert!(datagram.data.len() <= u16::MAX as usize);
+        debug_assert!(self.count < DATA_FRAME_MAX_DATAGRAM_COUNT);
 
         let data_len_u16 = datagram.data.len() as u16;
 
@@ -113,10 +116,10 @@ impl DataFrameBuilder {
     }
 
     pub fn build(mut self) -> Box<[u8]> {
-        let count_offset_0 = 6;
-        let count_offset_1 = 7;
-        self.buffer[count_offset_0] = (self.count >> 8) as u8;
-        self.buffer[count_offset_1] = (self.count     ) as u8;
+        debug_assert!(self.count <= DATA_FRAME_MAX_DATAGRAM_COUNT);
+
+        let nack_count_offset = 5;
+        self.buffer[nack_count_offset] |= self.count as u8;
 
         let data_bytes = self.buffer.as_slice();
         let crc = crc::compute(&data_bytes);
@@ -129,6 +132,10 @@ impl DataFrameBuilder {
         ]);
 
         self.buffer.into_boxed_slice()
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
     }
 
     pub fn size(&self) -> usize {
