@@ -5,8 +5,9 @@ use super::AckGroup;
 use super::DATA_FRAME_ID;
 use super::DATA_FRAME_MAX_DATAGRAM_COUNT;
 use super::DATA_FRAME_OVERHEAD;
-use super::DATAGRAM_HEADER_SIZE_FRAGMENT;
-use super::DATAGRAM_HEADER_SIZE_FULL;
+use super::DATAGRAM_HEADER_SIZE_MICRO;
+use super::DATAGRAM_HEADER_SIZE_SMALL;
+use super::DATAGRAM_HEADER_SIZE_LARGE;
 
 use super::ACK_FRAME_ID;
 use super::ACK_FRAME_OVERHEAD;
@@ -19,26 +20,31 @@ use super::crc;
 
 use crate::packet_id;
 
-// Consider:
-//
-// * Max 64 packets per frame
-//
-// * Max 8192 frames per transfer window (16384 valid frames in a receive window)
-//
-// * 20-bit sequence ID
-//      At 64 packets per frame, and with a receive window of size 16384, this identifies
-//      packets unambiguously
-//
-// * Fragment bit
-//      If set, fragment ID is 0/0
-//      If unset, fragment ID is present
-//
-// * 15-bit shrinking values
-//      If top bit of first byte is unset, one byte (7 bits)
-//      If top bit of first byte is set, two bytes (15 bits)
-//
-// Min overhead:  7 bytes
-// Max overhead: 14 bytes
+// If we allow a maximum of 64 packets per frame, and 8192 frames per transfer window, then there
+// are 16384 frames in the receive window, and a 20-bit sequence ID is sufficient to ensure no
+// packets are ambiguous within the receive window.
+
+// C: Channel ID          [0, 2^6)
+// S: Sequence ID         [0, 2^20)
+// D: Payload length      [0, 2^16)
+// W: Window parent lead  [0, 2^16)
+// H: Channel parent lead [0, 2^16)
+// F: Fragment ID         [0, 2^16)
+// L: Last fragment ID    [0, 2^16)
+
+// L == 0 => F == 0
+
+// If L == 0 && D < 64 && W < 128 && H < 256:
+//   Micro header (6 bytes)
+//   0CDDDDDD  SSSSCCCC  SSSSSSSS  SSSSSSSS  CWWWWWWW  HHHHHHHH
+
+// Else if L == 0 && D < 256 && L == 0:
+//   Small header (9 bytes)
+//   10CCCCCC  DDDDDDDD  0000SSSS  SSSSSSSS  SSSSSSSS  WWWWWWWW  WWWWWWWW  HHHHHHHH  HHHHHHHH
+
+// Else:
+//   Large header (14 bytes)
+//   11CCCCCC  DDDDDDDD  DDDDDDDD  0000SSSS  SSSSSSSS  SSSSSSSS  WWWWWWWW  WWWWWWWW  HHHHHHHH  HHHHHHHH  FFFFFFFF  FFFFFFFF  LLLLLLLL  LLLLLLLL
 
 pub struct DataFrameBuilder {
     buffer: Vec<u8>,
@@ -75,42 +81,66 @@ impl DataFrameBuilder {
 
         let data_len_u16 = datagram.data.len() as u16;
 
-        if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
-            let header = [
-                datagram.channel_id,
-                (datagram.sequence_id >> 16) as u8,
-                (datagram.sequence_id >>  8) as u8,
-                (datagram.sequence_id      ) as u8,
-                (datagram.window_parent_lead >> 8) as u8,
-                (datagram.window_parent_lead     ) as u8,
-                (datagram.channel_parent_lead >> 8) as u8,
-                (datagram.channel_parent_lead     ) as u8,
-                (data_len_u16 >> 8) as u8,
-                (data_len_u16     ) as u8,
-            ];
+        if datagram.fragment_id.last == 0 {
+            debug_assert!(datagram.fragment_id.id == 0);
 
-            self.buffer.extend_from_slice(&header);
-        } else {
-            let header = [
-                datagram.channel_id | 0x80,
-                (datagram.sequence_id >> 16) as u8,
-                (datagram.sequence_id >>  8) as u8,
-                (datagram.sequence_id      ) as u8,
-                (datagram.window_parent_lead >> 8) as u8,
-                (datagram.window_parent_lead     ) as u8,
-                (datagram.channel_parent_lead >> 8) as u8,
-                (datagram.channel_parent_lead     ) as u8,
-                (datagram.fragment_id.last >> 8) as u8,
-                (datagram.fragment_id.last     ) as u8,
-                (datagram.fragment_id.id >> 8) as u8,
-                (datagram.fragment_id.id     ) as u8,
-                (data_len_u16 >> 8) as u8,
-                (data_len_u16     ) as u8,
-            ];
+            if data_len_u16 < 64 && datagram.window_parent_lead < 128 && datagram.channel_parent_lead < 256 {
+                // Micro
+                let header = [
+                    data_len_u16 as u8 | (datagram.channel_id & 0x10) << 2,
+                    (datagram.sequence_id >> 12) as u8 & 0xF0 | datagram.channel_id & 0x0F,
+                    (datagram.sequence_id >>  8) as u8,
+                    (datagram.sequence_id      ) as u8,
+                    datagram.window_parent_lead as u8 | (datagram.channel_id & 0x20) << 2,
+                    datagram.channel_parent_lead as u8,
+                ];
 
-            self.buffer.extend_from_slice(&header);
+                self.buffer.extend_from_slice(&header);
+                self.buffer.extend_from_slice(&datagram.data);
+                self.count += 1;
+
+                return;
+            } else if data_len_u16 < 256 {
+                // Small
+                let header = [
+                    datagram.channel_id | 0x80,
+                    data_len_u16 as u8,
+                    (datagram.sequence_id >> 16) as u8,
+                    (datagram.sequence_id >>  8) as u8,
+                    (datagram.sequence_id      ) as u8,
+                    (datagram.window_parent_lead >> 8) as u8,
+                    (datagram.window_parent_lead     ) as u8,
+                    (datagram.channel_parent_lead >> 8) as u8,
+                    (datagram.channel_parent_lead     ) as u8,
+                ];
+
+                self.buffer.extend_from_slice(&header);
+                self.buffer.extend_from_slice(&datagram.data);
+                self.count += 1;
+
+                return;
+            }
         }
 
+        // Large
+        let header = [
+            datagram.channel_id | 0xC0,
+            (data_len_u16 >> 8) as u8,
+            (data_len_u16     ) as u8,
+            (datagram.sequence_id >> 16) as u8,
+            (datagram.sequence_id >>  8) as u8,
+            (datagram.sequence_id      ) as u8,
+            (datagram.window_parent_lead >> 8) as u8,
+            (datagram.window_parent_lead     ) as u8,
+            (datagram.channel_parent_lead >> 8) as u8,
+            (datagram.channel_parent_lead     ) as u8,
+            (datagram.fragment_id.id >> 8) as u8,
+            (datagram.fragment_id.id     ) as u8,
+            (datagram.fragment_id.last >> 8) as u8,
+            (datagram.fragment_id.last     ) as u8,
+        ];
+
+        self.buffer.extend_from_slice(&header);
         self.buffer.extend_from_slice(&datagram.data);
         self.count += 1;
     }
@@ -143,11 +173,16 @@ impl DataFrameBuilder {
     }
 
     pub fn encoded_size(datagram: &DatagramRef) -> usize {
-        if datagram.fragment_id.id == 0 && datagram.fragment_id.last == 0 {
-            DATAGRAM_HEADER_SIZE_FULL + datagram.data.len()
-        } else {
-            DATAGRAM_HEADER_SIZE_FRAGMENT + datagram.data.len()
+        let data_len = datagram.data.len();
+
+        if datagram.fragment_id.last == 0 {
+            if data_len < 64 && datagram.window_parent_lead < 128 && datagram.channel_parent_lead < 256 {
+                return DATAGRAM_HEADER_SIZE_MICRO + data_len;
+            } else if data_len < 256 {
+                return DATAGRAM_HEADER_SIZE_SMALL + data_len;
+            }
         }
+        return DATAGRAM_HEADER_SIZE_LARGE + data_len;
     }
 }
 
