@@ -872,5 +872,58 @@ mod tests {
         assert_eq!(frames.len(), 1);
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: None });
     }
+
+    // No two packets in a frame receive window may have the same ID
+    #[test]
+    fn packet_unambiguity() {
+        let now_ms = 0;
+        let rtt_ms = INITIAL_RTT_ESTIMATE_MS;
+
+        let mut ta = TestApparatus::new();
+
+        use frame::serial::{DATA_FRAME_OVERHEAD, DATA_FRAME_MAX_DATAGRAM_COUNT, MIN_DATAGRAM_OVERHEAD};
+        use crate::packet_id;
+
+        // Here we assume that sending hundreds of zero-length packets reaches the datagram limit,
+        // not the frame size limit.
+        assert!(DATA_FRAME_OVERHEAD + DATA_FRAME_MAX_DATAGRAM_COUNT * MIN_DATAGRAM_OVERHEAD <= MAX_FRAME_SIZE);
+
+        let mut max_id: usize = 0;
+
+        let receive_window_size = 2*MAX_FRAME_WINDOW_SIZE as usize;
+
+        for _ in 0 .. receive_window_size {
+            for _ in 0 .. DATA_FRAME_MAX_DATAGRAM_COUNT as usize {
+                ta.enqueue_packet(Vec::new().into_boxed_slice(), 0, SendMode::Unreliable);
+            }
+
+            let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE);
+            assert_eq!(frames.len(), 1);
+
+            use frame::serial::Serialize;
+            let data_frame = match frame::Frame::read(&frames[0]) {
+                Some(frame::Frame::DataFrame(data_frame)) => data_frame,
+                _ => panic!(),
+            };
+
+            for datagram in data_frame.datagrams.iter() {
+                // If the sequence IDs of packets wrap back around to zero, this will fail. If this
+                // does not fail, we do not wrap, and therefore have unique packets throughout the
+                // frame receive window.
+                assert_eq!(datagram.sequence_id as usize, max_id);
+                max_id += 1;
+            }
+
+            // Keep the windows happy
+            ta.receive_ack(frame::AckFrame {
+                frame_acks: Vec::new(),
+                frame_window_base_id: data_frame.sequence_id,
+                packet_window_base_id: max_id as u32,
+            });
+        }
+
+        println!("max_id: {}", max_id);
+        println!("packet_id::SPAN: {}", packet_id::SPAN);
+    }
 }
 
