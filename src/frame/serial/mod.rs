@@ -255,13 +255,13 @@ fn read_data_payload(data: &[u8]) -> Option<Frame> {
 
     let datagram_num = data[4] & 0x7F;
 
-    let mut data_slice = &data[DATA_FRAME_PAYLOAD_HEADER_SIZE..];
+    let mut data_slice = &data[DATA_FRAME_PAYLOAD_HEADER_SIZE ..];
     let mut datagrams = Vec::new();
 
     for _ in 0 .. datagram_num {
         if let Some((datagram, read_size)) = read_datagram(data_slice) {
             datagrams.push(datagram);
-            data_slice = &data_slice[read_size..];
+            data_slice = &data_slice[read_size ..];
         } else {
             return None;
         }
@@ -345,13 +345,13 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
     let frame_ack_num = ((data[8] as u16) << 8) |
                         ((data[9] as u16)     );
 
-    let mut data_slice = &data[ACK_FRAME_PAYLOAD_HEADER_SIZE..];
+    let mut data_slice = &data[ACK_FRAME_PAYLOAD_HEADER_SIZE ..];
     let mut frame_acks = Vec::new();
 
     for _ in 0 .. frame_ack_num {
         if let Some((frame_ack, read_size)) = read_frame_ack(data_slice) {
             frame_acks.push(frame_ack);
-            data_slice = &data_slice[read_size..];
+            data_slice = &data_slice[read_size ..];
         } else {
             return None;
         }
@@ -608,8 +608,8 @@ mod tests {
     fn verify_truncation_fails(f: &Frame) {
         let bytes = f.write();
 
-        for i in 1..bytes.len() {
-            let bytes_trunc = &bytes[0..i];
+        for i in 1 .. bytes.len() {
+            let bytes_trunc = &bytes[0 .. i];
             assert_eq!(Frame::read(&bytes_trunc), None);
         }
     }
@@ -767,7 +767,7 @@ mod tests {
     fn connect_random() {
         const NUM_ROUNDS: usize = 100;
 
-        for _ in 0..NUM_ROUNDS {
+        for _ in 0 .. NUM_ROUNDS {
             let f = Frame::ConnectFrame(ConnectFrame {
                 version: rand::random::<u8>(),
                 nonce: rand::random::<u32>(),
@@ -786,7 +786,7 @@ mod tests {
     fn connect_ack_random() {
         const NUM_ROUNDS: usize = 100;
 
-        for _ in 0..NUM_ROUNDS {
+        for _ in 0 .. NUM_ROUNDS {
             let f = Frame::ConnectAckFrame(ConnectAckFrame {
                 nonce: rand::random::<u32>(),
             });
@@ -801,70 +801,80 @@ mod tests {
         (0 .. len).map(|_| rand::random::<u8>()).collect::<Vec<_>>().into_boxed_slice()
     }
 
-    #[test]
-    fn data_random() {
-        const NUM_ROUNDS: usize = 100;
+    fn random_data_frame() -> Frame {
+        use crate::packet_id;
+
         const MAX_DATAGRAMS: usize = 64;
         const MAX_DATA_SIZE: usize = 100;
 
-        use crate::packet_id;
+        let mut datagrams = Vec::new();
 
-        for _ in 0..NUM_ROUNDS {
-            let mut datagrams = Vec::new();
-
-            for _ in 0 .. rand::random::<usize>() % MAX_DATAGRAMS {
-                let datagram = match rand::random::<u32>() % 3 {
-                    0 => Datagram {
-                        // Micro
-                        sequence_id: rand::random::<u32>() & packet_id::MASK,
-                        channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
-                        window_parent_lead: rand::random::<u16>() % 128,
-                        channel_parent_lead: rand::random::<u16>() % 256,
-                        fragment_id: FragmentId {
-                            id: 0,
-                            last: 0,
-                        },
-                        data: random_data(0, 64),
+        for _ in 0 .. rand::random::<usize>() % MAX_DATAGRAMS {
+            let datagram = match rand::random::<u32>() % 3 {
+                0 => Datagram {
+                    // Micro
+                    sequence_id: rand::random::<u32>() & packet_id::MASK,
+                    channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
+                    window_parent_lead: rand::random::<u16>() % 128,
+                    channel_parent_lead: rand::random::<u16>() % 256,
+                    fragment_id: FragmentId {
+                        id: 0,
+                        last: 0,
                     },
-                    1 => Datagram {
-                        // Small
+                    data: random_data(0, 64),
+                },
+                1 => Datagram {
+                    // Small
+                    sequence_id: rand::random::<u32>() & packet_id::MASK,
+                    channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
+                    window_parent_lead: rand::random::<u16>(),
+                    channel_parent_lead: rand::random::<u16>(),
+                    fragment_id: FragmentId {
+                        id: 0,
+                        last: 0,
+                    },
+                    data: random_data(64, MAX_DATA_SIZE),
+                },
+                2 => {
+                    let mut fragment_id_last = rand::random::<u16>();
+                    let mut fragment_id = rand::random::<u16>();
+
+                    if fragment_id > fragment_id_last {
+                        std::mem::swap(&mut fragment_id, &mut fragment_id_last);
+                    }
+
+                    Datagram {
+                        // Large
                         sequence_id: rand::random::<u32>() & packet_id::MASK,
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),
                         fragment_id: FragmentId {
-                            id: 0,
-                            last: 0,
+                            id: fragment_id,
+                            last: fragment_id_last,
                         },
-                        data: random_data(64, MAX_DATA_SIZE),
-                    },
-                    2 => {
-                        let fragment_id_last = rand::random::<u16>();
-
-                        Datagram {
-                            // Large
-                            sequence_id: rand::random::<u32>() & packet_id::MASK,
-                            channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
-                            window_parent_lead: rand::random::<u16>(),
-                            channel_parent_lead: rand::random::<u16>(),
-                            fragment_id: FragmentId {
-                                id: rand::random::<u16>() % (fragment_id_last + 1),
-                                last: fragment_id_last,
-                            },
-                            data: random_data(0, MAX_DATA_SIZE),
-                        }
+                        data: random_data(0, MAX_DATA_SIZE),
                     }
-                    _ => panic!()
-                };
+                }
+                _ => panic!()
+            };
 
-                datagrams.push(datagram);
-            }
+            datagrams.push(datagram);
+        }
 
-            let f = Frame::DataFrame(DataFrame {
-                sequence_id: rand::random::<u32>(),
-                nonce: rand::random::<bool>(),
-                datagrams: datagrams,
-            });
+        return Frame::DataFrame(DataFrame {
+            sequence_id: rand::random::<u32>(),
+            nonce: rand::random::<bool>(),
+            datagrams: datagrams,
+        });
+    }
+
+    #[test]
+    fn data_random() {
+        const NUM_ROUNDS: usize = 100;
+
+        for _ in 0 .. NUM_ROUNDS {
+            let f = random_data_frame();
 
             verify_consistent(&f);
             verify_extra_bytes_fail(&f);
@@ -876,7 +886,7 @@ mod tests {
     fn sync_random() {
         const NUM_ROUNDS: usize = 100;
 
-        for _ in 0..NUM_ROUNDS {
+        for _ in 0 .. NUM_ROUNDS {
             let f = Frame::SyncFrame(SyncFrame {
                 next_frame_id: if rand::random::<u32>() % 5 != 0 { Some(rand::random::<u32>()) } else { None },
                 next_packet_id: if rand::random::<u32>() % 5 != 0 { Some(rand::random::<u32>()) } else { None },
@@ -892,7 +902,7 @@ mod tests {
         const NUM_ROUNDS: usize = 100;
         const MAX_FRAME_ACKS: usize = 100;
 
-        for _ in 0..NUM_ROUNDS {
+        for _ in 0 .. NUM_ROUNDS {
             let mut frame_acks = Vec::new();
 
             for _ in 0 .. rand::random::<usize>() % MAX_FRAME_ACKS {
@@ -914,6 +924,34 @@ mod tests {
             verify_consistent(&f);
             verify_extra_bytes_fail(&f);
             verify_truncation_fails(&f);
+        }
+    }
+
+    // In practice this has yet to fail for any number of flips. May be rarer than 1 in 2^32, lol.
+    #[test]
+    fn crc_flips() {
+        const NUM_ROUNDS: usize = 10000;
+
+        // The alleged strength of the chosen CRC
+        const NUM_FLIPS: usize = 5;
+        const MAX_LEN: usize = 8192;
+
+        for _ in 0 .. NUM_ROUNDS {
+            let f = random_data_frame();
+            let mut frame_bytes = f.write();
+
+            assert!(frame_bytes.len() <= MAX_LEN);
+
+            for _ in 0 .. NUM_FLIPS {
+                let bit_index = rand::random::<usize>() % (frame_bytes.len() * 8);
+
+                let bit = bit_index % 8;
+                let byte_index = bit_index / 8;
+
+                frame_bytes[byte_index] ^= 0x01 << bit;
+            }
+
+            assert_eq!(Frame::read(&frame_bytes), None);
         }
     }
 }
