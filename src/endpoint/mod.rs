@@ -34,13 +34,13 @@ pub struct Config {
     /// The maximum send rate, in bytes per second. The endpoint will ensure that its outgoing
     /// bandwidth does not exceed this value.
     ///
-    /// Must be greater than 0. Values larger than `2^32` will be truncated.
+    /// Must be greater than 0. Values larger than 2^32 will be truncated.
     pub max_send_rate: usize,
 
     /// The maximum acceptable receive rate, in bytes per second. The opposing endpoint will ensure
     /// that its outgoing bandwidth does not exceed this value.
     ///
-    /// Must be greater than 0. Values larger than `2^32` will be truncated.
+    /// Must be greater than 0. Values larger than 2^32 will be truncated.
     pub max_receive_rate: usize,
 
     /// The maximum size of a sent packet, in bytes. The endpoint will ensure that it does not send
@@ -60,6 +60,11 @@ pub struct Config {
     /// size. A connection attempt will fail if the `max_packet_size` of the opposing endpoint
     /// exceeds this value.
     pub max_receive_alloc: usize,
+
+    /// Whether the endpoint should automatically send keepalive frames if no data has been sent
+    /// for one keepalive interval (currently 5 seconds). If set to false, the connection will time
+    /// out if either endpoint does not send data for one timeout interval (currently 20 seconds).
+    pub keepalive: bool,
 }
 
 impl Default for Config {
@@ -67,7 +72,9 @@ impl Default for Config {
     ///   * Number of channels: 1
     ///   * Maximum outgoing bandwidth: 10MB/s
     ///   * Maximum incoming bandwidth: 10MB/s
+    ///   * Maximum packet size: 1MB
     ///   * Maximum receive allocation: 1MB
+    ///   * Keepalive: true
     fn default() -> Self {
         Self {
             channel_count: 1,
@@ -75,32 +82,39 @@ impl Default for Config {
             max_receive_rate: 10_000_000,
             max_packet_size: 1_000_000,
             max_receive_alloc: 1_000_000,
+            keepalive: true,
         }
     }
 }
 
 impl Config {
     /// Sets `channel_count` to the provided value.
-    pub fn channel_count(mut self, channel_count: usize) -> Config {
-        self.channel_count = channel_count;
+    pub fn channel_count(mut self, value: usize) -> Config {
+        self.channel_count = value;
         self
     }
 
     /// Sets `max_send_rate` to the provided value.
-    pub fn max_send_rate(mut self, rate: usize) -> Config {
-        self.max_send_rate = rate;
+    pub fn max_send_rate(mut self, value: usize) -> Config {
+        self.max_send_rate = value;
         self
     }
 
     /// Sets `max_receive_rate` to the provided value.
-    pub fn max_receive_rate(mut self, rate: usize) -> Config {
-        self.max_receive_rate = rate;
+    pub fn max_receive_rate(mut self, value: usize) -> Config {
+        self.max_receive_rate = value;
         self
     }
 
     /// Sets `max_receive_alloc` to the provided value.
-    pub fn max_receive_alloc(mut self, max_receive_alloc: usize) -> Config {
-        self.max_receive_alloc = max_receive_alloc;
+    pub fn max_receive_alloc(mut self, value: usize) -> Config {
+        self.max_receive_alloc = value;
+        self
+    }
+
+    /// Sets `keepalive` to the provided value.
+    pub fn keepalive(mut self, value: bool) -> Config {
+        self.keepalive = value;
         self
     }
 
@@ -187,6 +201,7 @@ pub struct Endpoint {
 
     channel_count: usize,
     max_packet_size: usize,
+    keepalive: bool,
     was_connected: bool,
 }
 
@@ -223,6 +238,8 @@ impl Endpoint {
 
             channel_count: cfg.channel_count,
             max_packet_size: cfg.max_packet_size,
+            keepalive: cfg.keepalive,
+
             was_connected: false,
         }
     }
@@ -492,7 +509,8 @@ impl Endpoint {
             rx_packet_base_id: remote.nonce & packet_id::MASK,
 
             tx_bandwidth_limit: max_send_rate.min(remote.max_receive_rate),
-            keepalive: true,
+
+            keepalive: self.keepalive,
         };
 
         let mut daten_meister = DatenMeister::new(config);
