@@ -89,7 +89,8 @@ impl PendingPacket {
             channel_id: self.channel_id,
             window_parent_lead: self.window_parent_lead,
             channel_parent_lead: self.channel_parent_lead,
-            fragment_id: frame::FragmentId { id: fragment_id, last: self.last_fragment_id },
+            fragment_id,
+            fragment_id_last: self.last_fragment_id,
             data,
         }
     }

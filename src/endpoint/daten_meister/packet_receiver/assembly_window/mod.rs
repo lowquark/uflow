@@ -51,7 +51,7 @@ pub struct Packet {
 }
 
 fn packet_alloc_size(datagram: &frame::Datagram) -> usize {
-    let num_fragments = datagram.fragment_id.last as usize + 1;
+    let num_fragments = datagram.fragment_id_last as usize + 1;
     if num_fragments > 1 {
         num_fragments*MAX_FRAGMENT_SIZE
     } else {
@@ -106,7 +106,7 @@ impl AssemblyWindow {
                 } else {
                     self.alloc += alloc_size;
 
-                    if datagram.fragment_id.last == 0 {
+                    if datagram.fragment_id_last == 0 {
                         let new_entry = WindowEntry::Closed(alloc_size);
 
                         self.window[idx] = new_entry;
@@ -119,16 +119,16 @@ impl AssemblyWindow {
                             data: Some(datagram.data),
                         });
                     } else {
-                        let num_fragments = datagram.fragment_id.last as usize + 1;
+                        let num_fragments = datagram.fragment_id_last as usize + 1;
 
                         let mut new_entry = ActiveEntry::new(alloc_size,
                                                              datagram.channel_id,
                                                              datagram.window_parent_lead,
                                                              datagram.channel_parent_lead,
-                                                             datagram.fragment_id.last, 
+                                                             datagram.fragment_id_last,
                                                              num_fragments);
 
-                        new_entry.asm_buffer.write(datagram.fragment_id.id as usize, datagram.data);
+                        new_entry.asm_buffer.write(datagram.fragment_id as usize, datagram.data);
 
                         self.window[idx] = WindowEntry::Active(new_entry);
 
@@ -153,11 +153,11 @@ impl AssemblyWindow {
                 if datagram.channel_parent_lead != entry.channel_parent_lead {
                     return None;
                 }
-                if datagram.fragment_id.last != entry.last_fragment_id {
+                if datagram.fragment_id_last != entry.last_fragment_id {
                     return None;
                 }
 
-                entry.asm_buffer.write(datagram.fragment_id.id as usize, datagram.data);
+                entry.asm_buffer.write(datagram.fragment_id as usize, datagram.data);
 
                 if entry.asm_buffer.is_finished() {
                     let new_entry = WindowEntry::Closed(entry.alloc_size);
@@ -205,7 +205,6 @@ mod tests {
     use super::*;
 
     use frame::Datagram;
-    use frame::FragmentId;
 
     #[test]
     fn single_packet_single_fragment() {
@@ -220,7 +219,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_data.clone(),
         });
 
@@ -247,7 +247,8 @@ mod tests {
                 channel_id: 0,
                 window_parent_lead: 0,
                 channel_parent_lead: 0,
-                fragment_id: FragmentId { id: i as u16, last: 4 },
+                fragment_id: i as u16,
+                fragment_id_last: 4,
                 data: fragment_data,
             });
 
@@ -282,7 +283,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_0_data.clone(),
         });
 
@@ -300,7 +302,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: vec![].into_boxed_slice(),
         });
 
@@ -319,7 +322,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_2_data[ .. MAX_FRAGMENT_SIZE].into(),
         });
 
@@ -336,7 +340,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_2_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -352,7 +357,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_0_data.clone(),
         });
 
@@ -393,7 +399,8 @@ mod tests {
                 channel_id: 0,
                 window_parent_lead: 0,
                 channel_parent_lead: 0,
-                fragment_id: FragmentId { id: 0, last: (num_fragments - 1) as u16 },
+                fragment_id: 0,
+                fragment_id_last: (num_fragments - 1) as u16,
                 data: fragment_0_data,
             };
 
@@ -431,7 +438,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_data.clone(),
         });
 
@@ -443,7 +451,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 2,
             channel_parent_lead: 1,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_data.clone(),
         });
 
@@ -455,7 +464,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 1,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: packet_data.clone(),
         });
 
@@ -467,7 +477,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 0 },
+            fragment_id: 1,
+            fragment_id_last: 0,
             data: packet_data.clone(),
         });
 
@@ -481,7 +492,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data.clone(),
         });
 
@@ -493,7 +505,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -505,7 +518,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 2, last: 1 },
+            fragment_id: 2,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
         });
 
@@ -517,7 +531,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE-1].into(),
         });
 
@@ -529,7 +544,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
         });
 
@@ -555,7 +571,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
         });
 
@@ -567,7 +584,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
         });
 
@@ -579,7 +597,8 @@ mod tests {
             channel_id: 1,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -591,7 +610,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 1,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -603,7 +623,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 1,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -615,7 +636,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 2 },
+            fragment_id: 1,
+            fragment_id_last: 2,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 
@@ -627,7 +649,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         });
 

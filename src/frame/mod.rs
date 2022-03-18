@@ -2,18 +2,13 @@
 pub mod serial;
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct FragmentId {
-    pub id: u16,
-    pub last: u16,
-}
-
-#[derive(Clone,Debug,PartialEq)]
 pub struct Datagram {
     pub sequence_id: u32,
     pub channel_id: u8,
     pub window_parent_lead: u16,
     pub channel_parent_lead: u16,
-    pub fragment_id: FragmentId,
+    pub fragment_id: u16,
+    pub fragment_id_last: u16,
     pub data: Box<[u8]>,
 }
 
@@ -23,7 +18,8 @@ pub struct DatagramRef<'a> {
     pub channel_id: u8,
     pub window_parent_lead: u16,
     pub channel_parent_lead: u16,
-    pub fragment_id: FragmentId,
+    pub fragment_id: u16,
+    pub fragment_id_last: u16,
     pub data: &'a [u8],
 }
 
@@ -34,7 +30,8 @@ impl<'a> From<&'a Datagram> for DatagramRef<'a> {
             channel_id: obj.channel_id,
             window_parent_lead: obj.window_parent_lead,
             channel_parent_lead: obj.channel_parent_lead,
-            fragment_id: obj.fragment_id.clone(),
+            fragment_id: obj.fragment_id,
+            fragment_id_last: obj.fragment_id_last,
             data: &obj.data,
         }
     }
@@ -48,6 +45,7 @@ impl<'a> From<DatagramRef<'a>> for Datagram {
             window_parent_lead: obj.window_parent_lead,
             channel_parent_lead: obj.channel_parent_lead,
             fragment_id: obj.fragment_id,
+            fragment_id_last: obj.fragment_id_last,
             data: obj.data.into(),
         }
     }

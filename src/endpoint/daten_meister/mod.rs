@@ -391,7 +391,6 @@ mod tests {
 
     use crate::SendMode;
     use crate::frame::Datagram;
-    use crate::frame::FragmentId;
 
     use crate::MAX_FRAGMENT_SIZE;
     use crate::MAX_PACKET_WINDOW_SIZE;
@@ -542,7 +541,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: vec![ 0, 0, 0 ].into_boxed_slice(),
         };
 
@@ -567,7 +567,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 1 },
+            fragment_id: 0,
+            fragment_id_last: 1,
             data: packet_data[ .. MAX_FRAGMENT_SIZE].into(),
         };
 
@@ -576,7 +577,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 1, last: 1 },
+            fragment_id: 1,
+            fragment_id_last: 1,
             data: packet_data[MAX_FRAGMENT_SIZE .. ].into(),
         };
 
@@ -608,7 +610,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: vec![ 1, 1, 1 ].into_boxed_slice(),
         };
 
@@ -649,7 +652,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: p4,
         };
 
@@ -694,7 +698,8 @@ mod tests {
             channel_id: 0,
             window_parent_lead: 0,
             channel_parent_lead: 0,
-            fragment_id: FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: p1,
         };
 

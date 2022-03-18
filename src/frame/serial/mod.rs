@@ -157,7 +157,8 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
             sequence_id,
             window_parent_lead,
             channel_parent_lead,
-            fragment_id: FragmentId { id: fragment_id, last: fragment_id_last },
+            fragment_id,
+            fragment_id_last,
             data,
         }, total_size));
     } else if data[0] & 0x40 == 0x00 {
@@ -195,7 +196,8 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
             sequence_id,
             window_parent_lead,
             channel_parent_lead,
-            fragment_id: FragmentId { id: fragment_id, last: fragment_id_last },
+            fragment_id,
+            fragment_id_last,
             data,
         }, total_size));
     } else {
@@ -236,7 +238,8 @@ fn read_datagram(data: &[u8]) -> Option<(Datagram, usize)> {
             sequence_id,
             window_parent_lead,
             channel_parent_lead,
-            fragment_id: FragmentId { id: fragment_id, last: fragment_id_last },
+            fragment_id,
+            fragment_id_last,
             data,
         }, total_size));
     }
@@ -671,10 +674,8 @@ mod tests {
                     channel_id: 63,
                     window_parent_lead: 0x34A8,
                     channel_parent_lead: 0x8A43,
-                    fragment_id: FragmentId {
-                        id: 0x4789,
-                        last: 0x478A,
-                    },
+                    fragment_id: 0x4789,
+                    fragment_id_last: 0x478A,
                     data: vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(),
                 },
                 Datagram {
@@ -682,10 +683,8 @@ mod tests {
                     channel_id: 63,
                     window_parent_lead: 0x34A8,
                     channel_parent_lead: 0x8A43,
-                    fragment_id: FragmentId {
-                        id: 0,
-                        last: 0,
-                    },
+                    fragment_id: 0,
+                    fragment_id_last: 0,
                     data: small_data,
                 },
                 Datagram {
@@ -693,10 +692,8 @@ mod tests {
                     channel_id: 63,
                     window_parent_lead: 0x34A8,
                     channel_parent_lead: 0x8A43,
-                    fragment_id: FragmentId {
-                        id: 0,
-                        last: 0,
-                    },
+                    fragment_id: 0,
+                    fragment_id_last: 0,
                     data: vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(),
                 },
             ],
@@ -820,10 +817,8 @@ mod tests {
                     channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                     window_parent_lead: rand::random::<u16>() % 128,
                     channel_parent_lead: rand::random::<u16>() % 256,
-                    fragment_id: FragmentId {
-                        id: 0,
-                        last: 0,
-                    },
+                    fragment_id: 0,
+                    fragment_id_last: 0,
                     data: random_data(0, 64),
                 },
                 1 => Datagram {
@@ -832,10 +827,8 @@ mod tests {
                     channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                     window_parent_lead: rand::random::<u16>(),
                     channel_parent_lead: rand::random::<u16>(),
-                    fragment_id: FragmentId {
-                        id: 0,
-                        last: 0,
-                    },
+                    fragment_id: 0,
+                    fragment_id_last: 0,
                     data: random_data(64, MAX_DATA_SIZE),
                 },
                 2 => {
@@ -852,10 +845,8 @@ mod tests {
                         channel_id: (rand::random::<usize>() % MAX_CHANNELS) as u8,
                         window_parent_lead: rand::random::<u16>(),
                         channel_parent_lead: rand::random::<u16>(),
-                        fragment_id: FragmentId {
-                            id: fragment_id,
-                            last: fragment_id_last,
-                        },
+                        fragment_id,
+                        fragment_id_last,
                         data: random_data(0, MAX_DATA_SIZE),
                     }
                 }

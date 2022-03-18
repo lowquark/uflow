@@ -81,8 +81,8 @@ impl DataFrameBuilder {
 
         let data_len_u16 = datagram.data.len() as u16;
 
-        if datagram.fragment_id.last == 0 {
-            debug_assert!(datagram.fragment_id.id == 0);
+        if datagram.fragment_id_last == 0 {
+            debug_assert!(datagram.fragment_id == 0);
 
             if data_len_u16 < 64 && datagram.window_parent_lead < 128 && datagram.channel_parent_lead < 256 {
                 // Micro
@@ -134,10 +134,10 @@ impl DataFrameBuilder {
             (datagram.window_parent_lead     ) as u8,
             (datagram.channel_parent_lead >> 8) as u8,
             (datagram.channel_parent_lead     ) as u8,
-            (datagram.fragment_id.id >> 8) as u8,
-            (datagram.fragment_id.id     ) as u8,
-            (datagram.fragment_id.last >> 8) as u8,
-            (datagram.fragment_id.last     ) as u8,
+            (datagram.fragment_id >> 8) as u8,
+            (datagram.fragment_id     ) as u8,
+            (datagram.fragment_id_last >> 8) as u8,
+            (datagram.fragment_id_last     ) as u8,
         ];
 
         self.buffer.extend_from_slice(&header);
@@ -175,7 +175,7 @@ impl DataFrameBuilder {
     pub fn encoded_size(datagram: &DatagramRef) -> usize {
         let data_len = datagram.data.len();
 
-        if datagram.fragment_id.last == 0 {
+        if datagram.fragment_id_last == 0 {
             if data_len < 64 && datagram.window_parent_lead < 128 && datagram.channel_parent_lead < 256 {
                 return DATAGRAM_HEADER_SIZE_MICRO + data_len;
             } else if data_len < 256 {

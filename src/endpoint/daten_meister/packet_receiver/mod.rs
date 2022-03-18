@@ -15,10 +15,10 @@ pub fn datagram_is_valid(dg: &frame::Datagram) -> bool {
             return false;
         }
     }
-    if dg.fragment_id.id > dg.fragment_id.last {
+    if dg.fragment_id > dg.fragment_id_last {
         return false;
     }
-    if dg.fragment_id.id < dg.fragment_id.last && dg.data.len() != MAX_FRAGMENT_SIZE {
+    if dg.fragment_id < dg.fragment_id_last && dg.data.len() != MAX_FRAGMENT_SIZE {
         return false;
     }
     if dg.data.len() > MAX_FRAGMENT_SIZE {
@@ -326,7 +326,8 @@ mod tests {
             channel_id,
             window_parent_lead,
             channel_parent_lead,
-            fragment_id: frame::FragmentId { id: 0, last: 0 },
+            fragment_id: 0,
+            fragment_id_last: 0,
             data: new_packet_data(sequence_id),
         }
     }
