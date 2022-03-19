@@ -1,6 +1,6 @@
 
 // polynomial: x^32 + x^29 + x^28 + x^25 + x^23 + x^22 + x^10 + x^9 + x^7 + x^4 + x^3 + 1
-// bits: 100110010110000000000011010011001
+// bits: 100110010110000000000011010011001 (0x132c00699)
 // Selected from: https://users.ece.cmu.edu/~koopman/crc/hd6.html
 
 // lsb    msb

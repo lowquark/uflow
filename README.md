@@ -2,9 +2,9 @@
 # Uflow
 
 Uflow is a Rust library and UDP networking protocol for realtime internet data
-transfer, with a focus on simplicity and security. Though it has been designed
-from the ground up, Uflow's interface and functionality are inspired by the
-venerable [ENet](http://enet.bespin.org) library.
+transfer, with a focus on simplicity and robustness. Though it has been
+designed from the ground up, Uflow's interface and functionality are inspired
+by the venerable [ENet](http://enet.bespin.org) library.
 
 ## Features
 
@@ -13,19 +13,21 @@ venerable [ENet](http://enet.bespin.org) library.
     connections
   * Automatic packet fragmentation and reassembly according to the internet MTU
     (1500 bytes)
-  * Up to 64 virtual, independently sequenced packet streams
+  * Up to 64 independently sequenced packet streams
   * 4 intuitive packet transfer modes: *Time-Sensitive*, *Unreliable*,
     *Persistent*, and *Reliable*
   * TCP-friendly, streaming congestion control implemented according to RFC
     5348
   * Efficient frame encoding and transfer protocol with minimal packet overhead
-  * 100% packet throughput and an unchanged delivery order under ideal network
+  * CRC validation for all transmitted frames ([Polynomial: 0x132c00699](http://users.ece.cmu.edu/~koopman/crc/hd6.html))
+  * 100% packet throughput and an unaffected delivery order under ideal network
     conditions
   * Water-tight sequence ID management for maximum dup-mitigation
   * Application-configurable receiver memory limits (to prevent memory
     allocation attacks)
-  * Sender-validated data acknowledgements (to prevent loss rate / bandwidth
+  * Nonce-validated data acknowledgements (to prevent loss rate / bandwidth
     spoofing)
+  * Meticulously designed and unit tested to ensure stall-free behavior
   * Threadless, non-blocking implementation
 
 ## Documentation
@@ -45,6 +47,5 @@ current version has the following improvements:
     cannot be sent immediately (Time-Sensitive)
   * No iteration over the number of channels
 
-These and other features have proven to be functional, and the new design will
-soon™ be summarized in a subsequent whitepaper.
+The new design will soon™ be summarized in an updated whitepaper.
 
