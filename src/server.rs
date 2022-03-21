@@ -23,13 +23,15 @@ pub struct Server {
 }
 
 impl Server {
-    /// Opens a UDP socket and creates a corresponding [`Server`](Self) object. The UDP socket is
-    /// bound to the provided address, and configured to be non-blocking. Any errors resulting from
-    /// socket initialization are forwarded to the caller.
+    /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
+    /// [`Server`](Self) object.
     ///
     /// The server will limit the number of concurrent, non-zombie connections to `max_peer_count`,
     /// and will silently ignore connection requests which would exceed that limit. Valid incoming
     /// connections will be initialized according to `peer_config`.
+    ///
+    /// Any errors resulting from socket initialization are forwarded to the caller. Panics if the
+    /// given endpoint configuration is not valid.
     pub fn bind<A: net::ToSocketAddrs>(addr: A,
                                        max_peer_count: usize,
                                        peer_config: endpoint::Config) -> Result<Self, std::io::Error> {
@@ -88,7 +90,8 @@ impl Server {
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
-    /// Sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
+    /// Sends pending outbound frames (acknowledgements, keep-alives, packet data, etc.) for each
+    /// peer.
     ///
     /// *Note*: Internally, this function uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP

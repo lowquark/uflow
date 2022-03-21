@@ -18,9 +18,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// Opens a UDP socket and creates a corresponding [`Client`](Self) object. The UDP socket is
-    /// bound to the provided address, and configured to be non-blocking. Any errors resulting from
-    /// socket initialization are forwarded to the caller.
+    /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
+    /// [`Client`](Self) object.
+    ///
+    /// Any errors resulting from socket initialization are forwarded to the caller.
     pub fn bind<A: net::ToSocketAddrs>(addr: A) -> Result<Self, std::io::Error> {
         let socket = net::UdpSocket::bind(addr)?;
 
@@ -45,8 +46,10 @@ impl Client {
     }
 
     /// Initiates a connection to a remote host at the specified address, and returns a
-    /// [`Peer`](peer::Peer) object representing the connection. Any errors resulting from address
-    /// resolution are forwarded to the caller.
+    /// [`Peer`](peer::Peer) object representing the connection.
+    ///
+    /// Any errors resulting from address resolution are forwarded to the caller. Panics if the
+    /// given endpoint configuration is not valid.
     pub fn connect<A: net::ToSocketAddrs>(&mut self, addr: A, cfg: endpoint::Config) -> Result<peer::Peer, std::io::Error> {
         assert!(cfg.is_valid(), "invalid endpoint config");
 
@@ -77,7 +80,8 @@ impl Client {
         self.endpoints.retain(|_, endpoint| !endpoint.borrow().is_zombie());
     }
 
-    /// Sends any pending outbound frames (acknowledgements, keep-alives, packet data, etc.).
+    /// Sends pending outbound frames (acknowledgements, keep-alives, packet data, etc.) for each
+    /// peer.
     ///
     /// *Note*: Internally, this function uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
