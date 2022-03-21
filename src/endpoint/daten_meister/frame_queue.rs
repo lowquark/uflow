@@ -215,7 +215,7 @@ pub struct FrameQueue {
 }
 
 impl FrameQueue {
-    pub fn new(base_id: u32, size: u32, tail_size: u32) -> Self {
+    pub fn new(size: u32, tail_size: u32, base_id: u32) -> Self {
         Self {
             frame_log: FrameLog::new(base_id),
             feedback_gen: FeedbackGen::new(base_id, size + tail_size),
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn feedback_generation() {
-        let mut fq = FrameQueue::new(0, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE);
+        let mut fq = FrameQueue::new(MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE, 0);
 
         let packet_rc = Rc::new(RefCell::new(
             PendingPacket::new(vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(), 0, 0, 0, 0)
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn window_advancement() {
-        let mut fq = FrameQueue::new(0, 5, 3);
+        let mut fq = FrameQueue::new(5, 3, 0);
 
         let packet_rc = Rc::new(RefCell::new(
             PendingPacket::new(vec![ 0x00, 0x01, 0x02 ].into_boxed_slice(), 0, 0, 0, 0)
@@ -515,7 +515,7 @@ mod tests {
     }
 
     fn new_full_queue(size: u32) -> (FrameQueue, Vec<bool>) {
-        let mut fq = FrameQueue::new(0, size, size);
+        let mut fq = FrameQueue::new(size, size, 0);
 
         let mut nonces = Vec::new();
 

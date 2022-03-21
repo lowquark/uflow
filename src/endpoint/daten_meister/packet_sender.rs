@@ -1,7 +1,7 @@
 
 use super::pending_packet::{PendingPacket, PendingPacketRc};
 
-use crate::MAX_CHANNELS;
+use crate::CHANNEL_COUNT;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
@@ -79,9 +79,7 @@ pub struct PacketSender {
 }
 
 impl PacketSender {
-    pub fn new(channel_num: usize, max_alloc: usize, window_size: u32, base_id: u32) -> Self {
-        debug_assert!(channel_num > 0);
-        debug_assert!(channel_num <= MAX_CHANNELS);
+    pub fn new(window_size: u32, base_id: u32, max_alloc: usize) -> Self {
         debug_assert!(window_size > 0);
         debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
         debug_assert!(window_size & (window_size - 1) == 0);
@@ -89,7 +87,7 @@ impl PacketSender {
         let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
 
         let window: Vec<Option<WindowEntry>> = (0 .. window_size).map(|_| None).collect();
-        let channels: Vec<Channel> = (0 .. channel_num).map(|_| Channel::new()).collect();
+        let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
 
         Self {
             packet_send_queue: VecDeque::new(),
@@ -125,8 +123,7 @@ impl PacketSender {
         self.base_id
     }
 
-    // Places a user packet on the send queue. Silently drops the packet if the packet exceeds the
-    // receiver's maximum receive allocation.
+    // Places a user packet on the send queue.
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {
         debug_assert!(data.len() <= MAX_PACKET_SIZE);
         debug_assert!(data.len() <= self.max_alloc);
@@ -302,7 +299,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let mut tx = PacketSender::new(1, 10000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut tx = PacketSender::new(MAX_PACKET_WINDOW_SIZE, 0, 10000);
 
         tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive, 0);
         tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable, 0);
@@ -331,7 +328,7 @@ mod tests {
               w  c0 c1
         */
 
-        let mut tx = PacketSender::new(2, 10000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut tx = PacketSender::new(MAX_PACKET_WINDOW_SIZE, 0, 10000);
 
         tx.enqueue_packet(new_packet_data(0), 1, SendMode::Unreliable, 0);
         tx.enqueue_packet(new_packet_data(1), 1, SendMode::Reliable, 0);
@@ -371,7 +368,7 @@ mod tests {
               w  c0 c1
         */
 
-        let mut tx = PacketSender::new(2, 10000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut tx = PacketSender::new(MAX_PACKET_WINDOW_SIZE, 0, 10000);
 
         let mut flush_id = 0;
 

@@ -1,6 +1,6 @@
 
 use crate::Event;
-use crate::MAX_CHANNELS;
+use crate::CHANNEL_COUNT;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
@@ -26,7 +26,7 @@ pub trait FrameSink {
 pub struct Config {
     /// The number of channels used to send packets.
     ///
-    /// Must be greater than 0, and less than or equal to [`MAX_CHANNELS`].
+    /// Must be greater than 0, and less than or equal to [`CHANNEL_COUNT`].
     ///
     /// *Note*: The number of channels used by an endpoint to send data may differ from the
     /// opposing endpoint.
@@ -41,12 +41,18 @@ pub struct Config {
     /// send rate of the endpoint is given by `frame_window_size * INTERNET_MTU / rtt`, where `rtt`
     /// is the current connection RTT.
     pub frame_window_size: usize,
+    //pub max_frame_window_size: usize,
+
+    //pub max_remote_frame_window_size: usize,
 
     /// The size of the frame window, in sequence IDs. This value restricts the maximum number of
     /// packets which may be sent in a single RTT.
     ///
     /// Must be a power of 2, and less than or equal to [`MAX_PACKET_WINDOW_SIZE`].
     pub packet_window_size: usize,
+    //pub packet_window_size: usize,
+
+    //pub max_remote_packet_window_size: usize,
 
     /// The maximum send rate, in bytes per second. The endpoint will ensure that its outgoing
     /// bandwidth does not exceed this value.
@@ -160,7 +166,7 @@ impl Config {
     /// Returns `true` if each parameter has a valid value.
     pub fn is_valid(&self) -> bool {
         self.channel_count > 0 &&
-        self.channel_count <= MAX_CHANNELS &&
+        self.channel_count <= CHANNEL_COUNT &&
         self.frame_window_size > 0 &&
         self.frame_window_size <= MAX_FRAME_WINDOW_SIZE as usize &&
         self.frame_window_size & (self.frame_window_size - 1) == 0 &&
@@ -351,7 +357,7 @@ impl Endpoint {
 
     fn validate_handshake(connect_frame_remote: &frame::ConnectFrame, max_packet_size: usize) -> bool {
         connect_frame_remote.version == PROTOCOL_VERSION &&
-        connect_frame_remote.channel_count_sup as usize <= MAX_CHANNELS - 1 &&
+        connect_frame_remote.channel_count_sup as usize <= CHANNEL_COUNT - 1 &&
         connect_frame_remote.max_receive_alloc as usize >= max_packet_size &&
         connect_frame_remote.frame_window_size != 0 &&
         connect_frame_remote.frame_window_size as u32 <= MAX_FRAME_WINDOW_SIZE &&

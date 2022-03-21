@@ -81,26 +81,13 @@ pub struct DatenMeister {
 impl DatenMeister {
     pub fn new(config: Config) -> Self {
         Self {
-            packet_sender: packet_sender::PacketSender::new(config.tx_channel_count,
-                                                            config.tx_alloc_limit,
-                                                            config.tx_packet_window_size,
-                                                            config.tx_packet_base_id),
-
+            packet_sender: packet_sender::PacketSender::new(config.tx_packet_window_size, config.tx_packet_base_id, config.tx_alloc_limit),
             pending_queue: pending_queue::PendingQueue::new(),
-
             resend_queue: resend_queue::ResendQueue::new(),
+            frame_queue: frame_queue::FrameQueue::new(config.tx_frame_window_size, config.tx_frame_window_size, config.tx_frame_base_id),
 
-            frame_queue: frame_queue::FrameQueue::new(config.tx_frame_base_id,
-                                                      config.tx_frame_window_size,
-                                                      config.tx_frame_window_size),
-
-            packet_receiver: packet_receiver::PacketReceiver::new(config.rx_channel_count,
-                                                                  config.rx_alloc_limit,
-                                                                  config.rx_packet_window_size,
-                                                                  config.rx_packet_base_id),
-
-            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_window_size,
-                                                                 config.rx_frame_base_id),
+            packet_receiver: packet_receiver::PacketReceiver::new(config.rx_packet_window_size, config.rx_packet_base_id, config.rx_alloc_limit),
+            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_window_size, config.rx_frame_base_id),
 
             send_rate_comp: send_rate::SendRateComp::new(config.tx_bandwidth_limit),
 

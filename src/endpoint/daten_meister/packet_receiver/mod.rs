@@ -2,7 +2,7 @@
 use super::PacketSink;
 
 use crate::frame;
-use crate::MAX_CHANNELS;
+use crate::CHANNEL_COUNT;
 use crate::MAX_FRAGMENT_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
 use crate::packet_id;
@@ -64,14 +64,13 @@ pub struct PacketReceiver {
 }
 
 impl PacketReceiver {
-    pub fn new(channel_num: usize, max_alloc: usize, window_size: u32, base_id: u32) -> Self {
-        debug_assert!(channel_num <= MAX_CHANNELS);
+    pub fn new(window_size: u32, base_id: u32, max_alloc: usize) -> Self {
         debug_assert!(window_size > 0);
         debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
         debug_assert!(window_size & (window_size - 1) == 0);
 
         let receive_window: Vec<Option<ReceiveEntry>> = (0 .. window_size).map(|_| None).collect();
-        let channels: Vec<Channel> = (0 .. channel_num).map(|_| Channel::new()).collect();
+        let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
         let channel_base_markers: Vec<Option<u8>> = (0 .. window_size).map(|_| None).collect();
 
         Self {
@@ -370,7 +369,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(0, 0, 0, 0));
@@ -395,7 +394,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 0, 0));
@@ -420,7 +419,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 1, 1));
@@ -447,7 +446,7 @@ mod tests {
               w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 1, 2, 2));
@@ -479,7 +478,7 @@ mod tests {
               w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 1);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 1, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 1, 2, 2));
@@ -512,7 +511,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 1, 1, 1));
@@ -569,7 +568,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 0, 2, 0));
@@ -620,7 +619,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 1, 2));
@@ -652,7 +651,7 @@ mod tests {
 
     #[test]
     fn max_stall() {
-        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         for sequence_id in 1 .. MAX_PACKET_WINDOW_SIZE {
@@ -685,7 +684,7 @@ mod tests {
     fn fill_window_n_times() {
         let n = 4;
 
-        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
+        let mut rx = PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, 100000);
         let mut sink = TestPacketSink::new();
 
         let mut tx_id = 0;

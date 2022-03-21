@@ -268,7 +268,7 @@ pub use endpoint::Config as EndpointConfig;
 pub const PROTOCOL_VERSION: u8 = 2;
 
 /// The maximum number of channels which may be used on a given connection.
-pub const MAX_CHANNELS: usize = frame::serial::MAX_CHANNELS;
+pub const CHANNEL_COUNT: usize = frame::serial::MAX_CHANNELS;
 
 /// The maximum size of the frame transfer window, in sequence IDs.
 pub const MAX_FRAME_WINDOW_SIZE: u32 = 4096;

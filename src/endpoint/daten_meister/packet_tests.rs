@@ -63,9 +63,8 @@ fn random_packet_data_with_id(id: u32, size: usize) -> Box<[u8]> {
 /// Ensures that packets of various sizes can be fragmented and reassembled correctly.
 #[test]
 fn random_transfer() {
-    use crate::MAX_CHANNELS;
+    use crate::CHANNEL_COUNT;
 
-    const NUM_CHANNELS: usize = MAX_CHANNELS;
     const NUM_PACKETS: usize = 1024;
     const MAX_PACKET_SIZE: usize = 5000;
     const MAX_ALLOC_SIZE: usize = MAX_PACKET_SIZE*NUM_PACKETS;
@@ -73,14 +72,14 @@ fn random_transfer() {
 
     let base_id = packet_id::sub(0u32, NUM_PACKETS as u32/2);
 
-    let mut sender = packet_sender::PacketSender::new(NUM_CHANNELS, MAX_ALLOC_SIZE, WINDOW_SIZE, base_id);
-    let mut receiver = packet_receiver::PacketReceiver::new(NUM_CHANNELS, MAX_ALLOC_SIZE, WINDOW_SIZE, base_id);
+    let mut sender = packet_sender::PacketSender::new(WINDOW_SIZE, base_id, MAX_ALLOC_SIZE);
+    let mut receiver = packet_receiver::PacketReceiver::new(WINDOW_SIZE, base_id, MAX_ALLOC_SIZE);
 
-    let mut sent_packet_ids = [0u32; NUM_CHANNELS];
+    let mut sent_packet_ids = [0u32; CHANNEL_COUNT];
     let mut sent_packets = VecDeque::new();
 
     for _ in 0 .. NUM_PACKETS {
-        let channel_id = rand::random::<u8>() % NUM_CHANNELS as u8;
+        let channel_id = rand::random::<u8>() % CHANNEL_COUNT as u8;
         let ref mut packet_id = sent_packet_ids[channel_id as usize];
 
         let size = rand::random::<usize>() % MAX_PACKET_SIZE;
@@ -123,8 +122,8 @@ fn random_transfer() {
 }
 
 fn test_single_transfer(packet_size: usize, max_alloc: usize) {
-    let mut sender = packet_sender::PacketSender::new(1, max_alloc, MAX_PACKET_WINDOW_SIZE, 0);
-    let mut receiver = packet_receiver::PacketReceiver::new(1, max_alloc, MAX_PACKET_WINDOW_SIZE, 0);
+    let mut sender = packet_sender::PacketSender::new(MAX_PACKET_WINDOW_SIZE, 0, max_alloc);
+    let mut receiver = packet_receiver::PacketReceiver::new(MAX_PACKET_WINDOW_SIZE, 0, max_alloc);
 
     let packet_data = random_packet_data(packet_size);
     sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);

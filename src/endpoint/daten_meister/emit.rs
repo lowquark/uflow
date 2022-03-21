@@ -226,7 +226,7 @@ mod tests {
     fn max_datagram_test(max_send_size: usize, window_size: u32, push_count: usize, final_result: Result<(),DataPushError>) -> Vec<Box<[u8]>> {
         let now_ms = 0;
 
-        let mut fq = frame_queue::FrameQueue::new(0, window_size, window_size);
+        let mut fq = frame_queue::FrameQueue::new(window_size, window_size, 0);
 
         let mut frames = Vec::new();
         let emit_cb = |frame_bytes: Box<[u8]>| {
