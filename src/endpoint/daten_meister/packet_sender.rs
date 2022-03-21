@@ -74,6 +74,8 @@ pub struct PacketSender {
 
     parent_id: Option<u32>,
     channels: Box<[Channel]>,
+
+    send_queue_size: usize,
 }
 
 impl PacketSender {
@@ -98,11 +100,17 @@ impl PacketSender {
 
             parent_id: None,
             channels: channels.into_boxed_slice(),
+
+            send_queue_size: 0,
         }
     }
 
     pub fn pending_count(&self) -> usize {
         self.packet_send_queue.len()
+    }
+
+    pub fn send_queue_size(&self) -> usize {
+        self.send_queue_size
     }
 
     pub fn next_id(&self) -> u32 {
@@ -120,6 +128,7 @@ impl PacketSender {
         debug_assert!(data.len() <= self.max_alloc);
         debug_assert!((channel_id as usize) < self.channels.len());
 
+        self.send_queue_size += data.len();
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));
     }
 
@@ -130,6 +139,7 @@ impl PacketSender {
             match packet.mode {
                 SendMode::TimeSensitive => {
                     if packet.flush_id != flush_id {
+                        self.send_queue_size -= packet.data.len();
                         self.packet_send_queue.pop_front();
                     } else {
                         break;
@@ -151,6 +161,7 @@ impl PacketSender {
             }
 
             let packet = self.packet_send_queue.pop_front().unwrap();
+            self.send_queue_size -= packet.data.len();
 
             let sequence_id = self.next_id;
             let ref mut channel = self.channels[packet.channel_id as usize];

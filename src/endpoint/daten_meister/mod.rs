@@ -102,6 +102,10 @@ impl DatenMeister {
         self.send_rate_comp.rtt_s()
     }
 
+    pub fn send_queue_size(&self) -> usize {
+        self.packet_sender.send_queue_size()
+    }
+
     pub fn is_send_pending(&self) -> bool {
         self.packet_sender.pending_count() != 0 || self.pending_queue.len() != 0 || self.resend_queue.len() != 0
     }

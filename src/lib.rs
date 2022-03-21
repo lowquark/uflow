@@ -165,8 +165,7 @@
 //! send queue. (Packets sent using [`SendMode::TimeSensitive`] are an exception to this.) Thus, a
 //! sender can expect that packets will begin to accumulate in its send queue if the connection
 //! bandwidth is low, or if the receiver has stopped retrieving received packets (see
-//! [`poll_events()`](Peer::poll_events)). A future call will return the combined size of all
-//! pending outbound packets, so that a host may handle this situation appropriately.
+//! [`poll_events()`](Peer::poll_events)). The application can query the total size of pending packets in the send queue by calling [`send_queue_size()`](Peer::send_queue_size).
 //!
 //! # Connection Events and Receiving Data
 //!

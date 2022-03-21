@@ -488,6 +488,13 @@ impl Endpoint {
         }
     }
 
+    pub fn send_queue_size(&self) -> usize {
+        match self.state {
+            State::Connected(ref state) => state.daten_meister.send_queue_size(),
+            _ => 0
+        }
+    }
+
     fn enter_connected(&mut self,
                        local: frame::ConnectFrame,
                        remote: frame::ConnectFrame,
