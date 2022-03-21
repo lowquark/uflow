@@ -72,33 +72,37 @@ pub struct PacketSender {
     max_alloc: usize,
     alloc: usize,
 
-    parent_id: Option<u32>,
+    window_parent_id: Option<u32>,
     channels: Box<[Channel]>,
 
     send_queue_size: usize,
 }
 
 impl PacketSender {
-    pub fn new(channel_num: usize, max_alloc: usize, base_id: u32) -> Self {
+    pub fn new(channel_num: usize, max_alloc: usize, window_size: u32, base_id: u32) -> Self {
         debug_assert!(channel_num > 0);
         debug_assert!(channel_num <= MAX_CHANNELS);
+        debug_assert!(window_size > 0);
+        debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
+        debug_assert!(window_size & (window_size - 1) == 0);
 
         let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
 
-        let window: Vec<Option<WindowEntry>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
-        let channels: Vec<Channel> = (0..channel_num).map(|_| Channel::new()).collect();
+        let window: Vec<Option<WindowEntry>> = (0 .. window_size).map(|_| None).collect();
+        let channels: Vec<Channel> = (0 .. channel_num).map(|_| Channel::new()).collect();
 
         Self {
             packet_send_queue: VecDeque::new(),
 
             base_id: base_id,
             next_id: base_id,
+
             window: window.into_boxed_slice(),
 
             max_alloc: max_alloc_ceil,
             alloc: 0,
 
-            parent_id: None,
+            window_parent_id: None,
             channels: channels.into_boxed_slice(),
 
             send_queue_size: 0,
@@ -150,7 +154,7 @@ impl PacketSender {
         }
 
         if let Some(packet) = self.packet_send_queue.front() {
-            if packet_id::sub(self.next_id, self.base_id) >= MAX_PACKET_WINDOW_SIZE {
+            if packet_id::sub(self.next_id, self.base_id) as usize >= self.window.len() {
                 return None;
             }
 
@@ -167,7 +171,7 @@ impl PacketSender {
             let ref mut channel = self.channels[packet.channel_id as usize];
 
             let window_parent_lead =
-                if let Some(parent_id) = self.parent_id {
+                if let Some(parent_id) = self.window_parent_id {
                     let lead = packet_id::sub(sequence_id, parent_id);
                     debug_assert!(lead <= u16::MAX as u32);
                     lead as u16
@@ -184,17 +188,6 @@ impl PacketSender {
                     0
                 };
 
-            match packet.mode {
-                SendMode::Reliable => {
-                    self.parent_id = Some(sequence_id);
-                    channel.parent_id = Some(sequence_id);
-                }
-                _ => ()
-            }
-
-            self.next_id = packet_id::add(self.next_id, 1);
-            self.alloc += packet_alloc_size;
-
             let pending_packet = Rc::new(RefCell::new(PendingPacket::new(packet.data,
                                                                          packet.channel_id,
                                                                          sequence_id,
@@ -203,14 +196,26 @@ impl PacketSender {
 
             let pending_packet_clone = Rc::clone(&pending_packet);
 
-            let window_idx = (sequence_id % MAX_PACKET_WINDOW_SIZE) as usize;
-            debug_assert!(self.window[window_idx].is_none());
+            let window_idx = sequence_id as usize % self.window.len();
 
+            debug_assert!(self.window[window_idx].is_none());
             self.window[window_idx] = Some(WindowEntry {
                 packet: pending_packet,
                 alloc_size: packet_alloc_size,
                 channel_id: packet.channel_id
             });
+
+            self.next_id = packet_id::add(self.next_id, 1);
+
+            self.alloc += packet_alloc_size;
+
+            match packet.mode {
+                SendMode::Reliable => {
+                    self.window_parent_id = Some(sequence_id);
+                    channel.parent_id = Some(sequence_id);
+                }
+                _ => ()
+            }
 
             let resend = match packet.mode {
                 SendMode::TimeSensitive => false,
@@ -236,16 +241,15 @@ impl PacketSender {
         }
 
         while self.base_id != receiver_base_id {
-            let window_idx = (self.base_id % MAX_PACKET_WINDOW_SIZE) as usize;
-
+            let window_idx = self.base_id as usize % self.window.len();
             let ref mut window_entry = self.window[window_idx];
 
             if let Some(entry) = window_entry {
                 let ref mut channel = self.channels[entry.channel_id as usize];
 
-                if let Some(parent_id) = self.parent_id {
+                if let Some(parent_id) = self.window_parent_id {
                     if parent_id == self.base_id {
-                        self.parent_id = None;
+                        self.window_parent_id = None;
                     }
                 }
 
@@ -298,7 +302,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let mut tx = PacketSender::new(1, 10000, 0);
+        let mut tx = PacketSender::new(1, 10000, MAX_PACKET_WINDOW_SIZE, 0);
 
         tx.enqueue_packet(new_packet_data(0), 0, SendMode::TimeSensitive, 0);
         tx.enqueue_packet(new_packet_data(1), 0, SendMode::Unreliable, 0);
@@ -327,7 +331,7 @@ mod tests {
               w  c0 c1
         */
 
-        let mut tx = PacketSender::new(2, 10000, 0);
+        let mut tx = PacketSender::new(2, 10000, MAX_PACKET_WINDOW_SIZE, 0);
 
         tx.enqueue_packet(new_packet_data(0), 1, SendMode::Unreliable, 0);
         tx.enqueue_packet(new_packet_data(1), 1, SendMode::Reliable, 0);
@@ -367,7 +371,7 @@ mod tests {
               w  c0 c1
         */
 
-        let mut tx = PacketSender::new(2, 10000, 0);
+        let mut tx = PacketSender::new(2, 10000, MAX_PACKET_WINDOW_SIZE, 0);
 
         let mut flush_id = 0;
 

@@ -64,12 +64,15 @@ pub struct PacketReceiver {
 }
 
 impl PacketReceiver {
-    pub fn new(channel_num: usize, max_alloc: usize, base_id: u32) -> Self {
+    pub fn new(channel_num: usize, max_alloc: usize, window_size: u32, base_id: u32) -> Self {
         debug_assert!(channel_num <= MAX_CHANNELS);
+        debug_assert!(window_size > 0);
+        debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
+        debug_assert!(window_size & (window_size - 1) == 0);
 
-        let receive_window: Vec<Option<ReceiveEntry>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
-        let channels: Vec<Channel> = (0..channel_num).map(|_| Channel::new()).collect();
-        let channel_base_markers: Vec<Option<u8>> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| None).collect();
+        let receive_window: Vec<Option<ReceiveEntry>> = (0 .. window_size).map(|_| None).collect();
+        let channels: Vec<Channel> = (0 .. channel_num).map(|_| Channel::new()).collect();
+        let channel_base_markers: Vec<Option<u8>> = (0 .. window_size).map(|_| None).collect();
 
         Self {
             base_id: base_id,
@@ -88,8 +91,8 @@ impl PacketReceiver {
         self.base_id
     }
 
-    fn window_index(sequence_id: u32) -> usize {
-        (sequence_id % MAX_PACKET_WINDOW_SIZE) as usize
+    fn window_index(&self, sequence_id: u32) -> usize {
+        sequence_id as usize % self.receive_window.len()
     }
 
     pub fn handle_datagram(&mut self, datagram: frame::Datagram) {
@@ -115,9 +118,9 @@ impl PacketReceiver {
         let channel_lead = packet_id::sub(channel_base_id, base_id);
         let packet_lead = packet_id::sub(sequence_id, base_id);
 
-        debug_assert!(channel_lead <= MAX_PACKET_WINDOW_SIZE);
+        debug_assert!(channel_lead as usize <= self.receive_window.len());
 
-        if packet_lead >= MAX_PACKET_WINDOW_SIZE {
+        if packet_lead as usize >= self.receive_window.len() {
             // Packet not contained by transfer window
             return;
         }
@@ -127,7 +130,7 @@ impl PacketReceiver {
             return;
         }
 
-        let window_idx = Self::window_index(sequence_id);
+        let window_idx = self.window_index(sequence_id);
 
         // Add this datagram to the assembly window
         if let Some(packet) = self.assembly_window.try_add(window_idx, datagram) {
@@ -143,27 +146,26 @@ impl PacketReceiver {
             self.receive_window[window_idx] = Some(new_entry);
 
             // Advance end id if this packet is newer
-            if packet_id::sub(sequence_id, self.end_id) < MAX_PACKET_WINDOW_SIZE {
+            if (packet_id::sub(sequence_id, self.end_id) as usize) < self.receive_window.len() {
                 self.end_id = packet_id::add(sequence_id, 1);
             }
         }
     }
 
     fn set_channel_base_id(&mut self, channel_id: u8, new_id: u32) {
-        let ref mut channel = self.channels[channel_id as usize];
-
-        if let Some(base_id) = channel.base_id {
-            self.channel_base_markers[Self::window_index(base_id)] = None;
+        if let Some(base_id) = self.channels[channel_id as usize].base_id {
+            let window_idx = self.window_index(base_id);
+            self.channel_base_markers[window_idx] = None;
         }
 
-        debug_assert!(self.channel_base_markers[Self::window_index(new_id)].is_none());
-        self.channel_base_markers[Self::window_index(new_id)] = Some(channel_id);
+        debug_assert!(self.channel_base_markers[self.window_index(new_id)].is_none());
+        self.channel_base_markers[self.window_index(new_id)] = Some(channel_id);
 
-        channel.base_id = Some(new_id);
+        self.channels[channel_id as usize].base_id = Some(new_id);
     }
 
     fn try_unset_channel_base_id(&mut self, sequence_id: u32) {
-        let window_idx = Self::window_index(sequence_id);
+        let window_idx = self.window_index(sequence_id);
 
         if let Some(channel_id) = self.channel_base_markers[window_idx] {
             let ref mut channel = self.channels[channel_id as usize];
@@ -177,11 +179,11 @@ impl PacketReceiver {
         let new_base_delta = packet_id::sub(new_base_id, base_id);
 
         if new_base_delta != 0 {
-            assert!(new_base_delta <= MAX_PACKET_WINDOW_SIZE);
+            assert!(new_base_delta as usize <= self.receive_window.len());
 
             for i in 0 .. new_base_delta {
                 let sequence_id = packet_id::add(base_id, i);
-                self.assembly_window.clear(Self::window_index(sequence_id));
+                self.assembly_window.clear(self.window_index(sequence_id));
 
                 let next_sequence_id = packet_id::add(base_id, i + 1);
                 self.try_unset_channel_base_id(next_sequence_id);
@@ -204,7 +206,7 @@ impl PacketReceiver {
 
         let mut channel_flags = if self.channels.len() == 64 { 0xFFFFFFFFFFFFFFFF } else { (1u64 << self.channels.len()) - 1 };
 
-        debug_assert!(slot_num <= MAX_PACKET_WINDOW_SIZE);
+        debug_assert!(slot_num as usize <= self.receive_window.len());
 
         // println!("-- receive() base_id: {} end_id: {} --", self.base_id, self.end_id);
 
@@ -216,7 +218,8 @@ impl PacketReceiver {
 
             let sequence_id = packet_id::add(base_id, i);
 
-            let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
+            let receive_window_size = self.receive_window.len();
+            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
 
             if let Some(entry) = receive_entry {
                 // println!("[{}] ch: {} ch_lead: {} win_lead: {} data[0..4]: {:?}", sequence_id, entry.channel_id, entry.channel_parent_lead, entry.window_parent_lead, entry.data.as_ref().map(|data| &data[0..4]));
@@ -229,7 +232,7 @@ impl PacketReceiver {
                         let ref mut channel = self.channels[channel_id as usize];
                         let channel_base_id = channel.base_id.unwrap_or(base_id);
 
-                        debug_assert!(packet_id::sub(channel_base_id, base_id) <= MAX_PACKET_WINDOW_SIZE);
+                        debug_assert!(packet_id::sub(channel_base_id, base_id) as usize <= receive_window_size);
 
                         let channel_parent_lead = entry.channel_parent_lead as u32;
                         let channel_delta = packet_id::sub(sequence_id, channel_base_id);
@@ -262,7 +265,7 @@ impl PacketReceiver {
         for i in 0 .. slot_num {
             let sequence_id = packet_id::add(base_id, i);
 
-            let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
+            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
 
             if let Some(entry) = receive_entry {
                 let window_parent_lead = entry.window_parent_lead as u32;
@@ -289,14 +292,14 @@ impl PacketReceiver {
     pub fn resynchronize(&mut self, sender_next_id: u32) {
         let sender_delta = packet_id::sub(sender_next_id, self.base_id);
 
-        if sender_delta > MAX_PACKET_WINDOW_SIZE {
+        if sender_delta as usize > self.receive_window.len() {
             return;
         }
 
         for i in 0 .. sender_delta {
             let sequence_id = packet_id::add(self.base_id, i);
 
-            let ref mut receive_entry = self.receive_window[Self::window_index(sequence_id)];
+            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
 
             if let Some(_) = receive_entry {
                 // This packet awaits delivery. Stop advancement here.
@@ -367,7 +370,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, 0);
+        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(0, 0, 0, 0));
@@ -392,7 +395,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, 0);
+        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 0, 0));
@@ -417,7 +420,7 @@ mod tests {
               w  c0        w  c0
         */
 
-        let mut rx = PacketReceiver::new(1, 100000, 0);
+        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 1, 1));
@@ -444,7 +447,7 @@ mod tests {
               w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 1, 2, 2));
@@ -476,7 +479,7 @@ mod tests {
               w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, 1);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 1);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 1, 2, 2));
@@ -509,7 +512,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 1, 1, 1));
@@ -566,7 +569,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(2, 0, 2, 0));
@@ -617,7 +620,7 @@ mod tests {
               w  c0 c1        w  c0 c1        w  c0 c1
         */
 
-        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         rx.handle_datagram(new_packet_datagram(1, 0, 1, 2));
@@ -649,7 +652,7 @@ mod tests {
 
     #[test]
     fn max_stall() {
-        let mut rx = PacketReceiver::new(2, 100000, 0);
+        let mut rx = PacketReceiver::new(2, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         for sequence_id in 1 .. MAX_PACKET_WINDOW_SIZE {
@@ -682,7 +685,7 @@ mod tests {
     fn fill_window_n_times() {
         let n = 4;
 
-        let mut rx = PacketReceiver::new(1, 100000, 0);
+        let mut rx = PacketReceiver::new(1, 100000, MAX_PACKET_WINDOW_SIZE, 0);
         let mut sink = TestPacketSink::new();
 
         let mut tx_id = 0;

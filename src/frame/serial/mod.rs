@@ -19,7 +19,7 @@ const DATA_FRAME_ID: u8 = 4;
 const SYNC_FRAME_ID: u8 = 5;
 const ACK_FRAME_ID: u8 = 6;
 
-const CONNECT_FRAME_PAYLOAD_SIZE: usize = 18;
+const CONNECT_FRAME_PAYLOAD_SIZE: usize = 22;
 
 const CONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
 
@@ -63,26 +63,37 @@ fn read_connect_payload(data: &[u8]) -> Option<Frame> {
 
     let channel_count_sup = data[5];
 
-    let max_receive_rate = ((data[6] as u32) << 24) |
-                           ((data[7] as u32) << 16) |
-                           ((data[8] as u32) <<  8) |
-                           ((data[9] as u32)      );
+    let frame_window_size = ((data[6] as u16) << 8) |
+                            ((data[7] as u16)     );
 
-    let max_packet_size = ((data[10] as u32) << 24) |
-                          ((data[11] as u32) << 16) |
-                          ((data[12] as u32) <<  8) |
-                          ((data[13] as u32)      );
+    let packet_window_size = ((data[8] as u16) << 8) |
+                             ((data[9] as u16)     );
 
-    let max_receive_alloc = ((data[14] as u32) << 24) |
-                            ((data[15] as u32) << 16) |
-                            ((data[16] as u32) <<  8) |
-                            ((data[17] as u32)      );
+    let max_receive_rate = ((data[10] as u32) << 24) |
+                           ((data[11] as u32) << 16) |
+                           ((data[12] as u32) <<  8) |
+                           ((data[13] as u32)      );
+
+    let max_packet_size = ((data[14] as u32) << 24) |
+                          ((data[15] as u32) << 16) |
+                          ((data[16] as u32) <<  8) |
+                          ((data[17] as u32)      );
+
+    let max_receive_alloc = ((data[18] as u32) << 24) |
+                            ((data[19] as u32) << 16) |
+                            ((data[20] as u32) <<  8) |
+                            ((data[21] as u32)      );
 
     Some(Frame::ConnectFrame(ConnectFrame {
         version,
         nonce,
+
         channel_count_sup,
+        frame_window_size,
+        packet_window_size,
+
         max_receive_rate,
+
         max_packet_size,
         max_receive_alloc,
     }))
@@ -380,6 +391,10 @@ fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
         (frame.nonce >>  8) as u8,
         (frame.nonce      ) as u8,
         frame.channel_count_sup,
+        (frame.frame_window_size >> 8) as u8,
+        (frame.frame_window_size     ) as u8,
+        (frame.packet_window_size >> 8) as u8,
+        (frame.packet_window_size     ) as u8,
         (frame.max_receive_rate >> 24) as u8,
         (frame.max_receive_rate >> 16) as u8,
         (frame.max_receive_rate >>  8) as u8,
@@ -625,8 +640,13 @@ mod tests {
         let f = Frame::ConnectFrame(ConnectFrame {
             version: 0x7F,
             nonce: 0x18273645,
+
             channel_count_sup: 3,
+            frame_window_size: 0xFEDC,
+            packet_window_size: 0xCDEF,
+
             max_receive_rate: 0x98765432,
+
             max_packet_size: 0x01234567,
             max_receive_alloc: 0xABCDEF01,
         });
@@ -771,8 +791,13 @@ mod tests {
             let f = Frame::ConnectFrame(ConnectFrame {
                 version: rand::random::<u8>(),
                 nonce: rand::random::<u32>(),
+
                 channel_count_sup: rand::random::<u8>(),
+                frame_window_size: rand::random::<u16>(),
+                packet_window_size: rand::random::<u16>(),
+
                 max_receive_rate: rand::random::<u32>(),
+
                 max_packet_size: rand::random::<u32>(),
                 max_receive_alloc: rand::random::<u32>(),
             });

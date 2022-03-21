@@ -36,7 +36,7 @@ pub struct FrameAckQueue {
 }
 
 impl FrameAckQueue {
-    pub fn new(base_id: u32, size: u32) -> Self {
+    pub fn new(size: u32, base_id: u32) -> Self {
         Self {
             entries: std::collections::VecDeque::new(),
             receive_window: ReceiveWindow::new(base_id, size),

@@ -3,7 +3,6 @@ use super::FrameSink;
 
 use crate::SendMode;
 use crate::MAX_FRAME_SIZE;
-use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::frame;
 
 use std::time;
@@ -37,16 +36,22 @@ pub struct Config {
     pub tx_channel_count: usize,
     pub rx_channel_count: usize,
 
-    pub tx_alloc_limit: usize,
-    pub rx_alloc_limit: usize,
-
     pub tx_frame_base_id: u32,
     pub rx_frame_base_id: u32,
+
+    pub tx_frame_window_size: u32,
+    pub rx_frame_window_size: u32,
 
     pub tx_packet_base_id: u32,
     pub rx_packet_base_id: u32,
 
+    pub tx_packet_window_size: u32,
+    pub rx_packet_window_size: u32,
+
     pub tx_bandwidth_limit: u32,
+
+    pub tx_alloc_limit: usize,
+    pub rx_alloc_limit: usize,
 
     pub keepalive: bool,
 }
@@ -76,13 +81,26 @@ pub struct DatenMeister {
 impl DatenMeister {
     pub fn new(config: Config) -> Self {
         Self {
-            packet_sender: packet_sender::PacketSender::new(config.tx_channel_count, config.tx_alloc_limit, config.tx_packet_base_id),
-            pending_queue: pending_queue::PendingQueue::new(),
-            resend_queue: resend_queue::ResendQueue::new(),
-            frame_queue: frame_queue::FrameQueue::new(config.tx_frame_base_id, MAX_FRAME_WINDOW_SIZE, MAX_FRAME_WINDOW_SIZE),
+            packet_sender: packet_sender::PacketSender::new(config.tx_channel_count,
+                                                            config.tx_alloc_limit,
+                                                            config.tx_packet_window_size,
+                                                            config.tx_packet_base_id),
 
-            packet_receiver: packet_receiver::PacketReceiver::new(config.rx_channel_count, config.rx_alloc_limit, config.rx_packet_base_id),
-            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_base_id, MAX_FRAME_WINDOW_SIZE),
+            pending_queue: pending_queue::PendingQueue::new(),
+
+            resend_queue: resend_queue::ResendQueue::new(),
+
+            frame_queue: frame_queue::FrameQueue::new(config.tx_frame_base_id,
+                                                      config.tx_frame_window_size,
+                                                      config.tx_frame_window_size),
+
+            packet_receiver: packet_receiver::PacketReceiver::new(config.rx_channel_count,
+                                                                  config.rx_alloc_limit,
+                                                                  config.rx_packet_window_size,
+                                                                  config.rx_packet_base_id),
+
+            frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_window_size,
+                                                                 config.rx_frame_base_id),
 
             send_rate_comp: send_rate::SendRateComp::new(config.tx_bandwidth_limit),
 
@@ -397,6 +415,7 @@ mod tests {
     use crate::frame::Datagram;
 
     use crate::MAX_FRAGMENT_SIZE;
+    use crate::MAX_FRAME_WINDOW_SIZE;
     use crate::MAX_PACKET_WINDOW_SIZE;
 
     use std::collections::VecDeque;
@@ -429,16 +448,22 @@ mod tests {
                 tx_channel_count: 1,
                 rx_channel_count: 1,
 
-                tx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
-                rx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
+                tx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
+                rx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
 
                 tx_frame_base_id: 0,
                 rx_frame_base_id: 0,
+
+                tx_packet_window_size: MAX_PACKET_WINDOW_SIZE,
+                rx_packet_window_size: MAX_PACKET_WINDOW_SIZE,
 
                 tx_packet_base_id: 0,
                 rx_packet_base_id: 0,
 
                 tx_bandwidth_limit: 100_000,
+
+                tx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
+                rx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
 
                 keepalive: true,
             };

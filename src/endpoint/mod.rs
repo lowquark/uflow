@@ -1,20 +1,21 @@
 
-mod daten_meister;
-
-use crate::MAX_PACKET_SIZE;
-use crate::MAX_CHANNELS;
-use crate::PROTOCOL_VERSION;
-use crate::frame;
-use crate::SendMode;
 use crate::Event;
+use crate::MAX_CHANNELS;
+use crate::MAX_FRAME_WINDOW_SIZE;
+use crate::MAX_PACKET_SIZE;
+use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::PROTOCOL_VERSION;
+use crate::SendMode;
+use crate::frame;
 
 use frame::serial::Serialize;
-use daten_meister::DatenMeister;
 
 use rand;
 
 use std::time;
 use std::collections::VecDeque;
+
+mod daten_meister;
 
 pub trait FrameSink {
     fn send(&mut self, frame_data: &[u8]);
@@ -30,6 +31,22 @@ pub struct Config {
     /// *Note*: The number of channels used by an endpoint to send data may differ from the
     /// opposing endpoint.
     pub channel_count: usize,
+
+    /// The size of the frame window, in sequence IDs. This value restricts the maximum number of
+    /// frames which may be sent in a single round-trip time (RTT).
+    ///
+    /// Must be a power of 2, and less than or equal to [`MAX_FRAME_WINDOW_SIZE`].
+    ///
+    /// *Note*: Because each sent frame is limited to a size of `INTERNET_MTU` bytes, the maximum
+    /// send rate of the endpoint is given by `frame_window_size * INTERNET_MTU / rtt`, where `rtt`
+    /// is the current connection RTT.
+    pub frame_window_size: usize,
+
+    /// The size of the frame window, in sequence IDs. This value restricts the maximum number of
+    /// packets which may be sent in a single RTT.
+    ///
+    /// Must be a power of 2, and less than or equal to [`MAX_PACKET_WINDOW_SIZE`].
+    pub packet_window_size: usize,
 
     /// The maximum send rate, in bytes per second. The endpoint will ensure that its outgoing
     /// bandwidth does not exceed this value.
@@ -70,6 +87,8 @@ pub struct Config {
 impl Default for Config {
     /// Creates an endpoint configuration with the following parameters:
     ///   * Number of channels: 1
+    ///   * Frame window size: 4096,
+    ///   * Packet window size: 4096,
     ///   * Maximum outgoing bandwidth: 10MB/s
     ///   * Maximum incoming bandwidth: 10MB/s
     ///   * Maximum packet size: 1MB
@@ -78,6 +97,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             channel_count: 1,
+            frame_window_size: 4096,
+            packet_window_size: 4096,
             max_send_rate: 10_000_000,
             max_receive_rate: 10_000_000,
             max_packet_size: 1_000_000,
@@ -94,6 +115,18 @@ impl Config {
         self
     }
 
+    /// Sets `frame_window_size` to the provided value.
+    pub fn frame_window_size(mut self, value: usize) -> Config {
+        self.frame_window_size = value;
+        self
+    }
+
+    /// Sets `packet_window_size` to the provided value.
+    pub fn packet_window_size(mut self, value: usize) -> Config {
+        self.packet_window_size = value;
+        self
+    }
+
     /// Sets `max_send_rate` to the provided value.
     pub fn max_send_rate(mut self, value: usize) -> Config {
         self.max_send_rate = value;
@@ -103,6 +136,12 @@ impl Config {
     /// Sets `max_receive_rate` to the provided value.
     pub fn max_receive_rate(mut self, value: usize) -> Config {
         self.max_receive_rate = value;
+        self
+    }
+
+    /// Sets `max_packet_size` to the provided value.
+    pub fn max_packet_size(mut self, value: usize) -> Config {
+        self.max_receive_alloc = value;
         self
     }
 
@@ -122,6 +161,12 @@ impl Config {
     pub fn is_valid(&self) -> bool {
         self.channel_count > 0 &&
         self.channel_count <= MAX_CHANNELS &&
+        self.frame_window_size > 0 &&
+        self.frame_window_size <= MAX_FRAME_WINDOW_SIZE as usize &&
+        self.frame_window_size & (self.frame_window_size - 1) == 0 &&
+        self.packet_window_size > 0 &&
+        self.packet_window_size <= MAX_PACKET_WINDOW_SIZE as usize &&
+        self.packet_window_size & (self.packet_window_size - 1) == 0 &&
         self.max_send_rate > 0 &&
         self.max_receive_rate > 0 &&
         self.max_packet_size > 0 &&
@@ -149,7 +194,7 @@ struct ConnectingState {
 }
 
 struct ConnectedState {
-    daten_meister: DatenMeister,
+    daten_meister: daten_meister::DatenMeister,
 
     disconnect_flush: bool,
 }
@@ -211,10 +256,16 @@ impl Endpoint {
 
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
+
             channel_count_sup: (cfg.channel_count - 1) as u8,
+            frame_window_size: cfg.frame_window_size as u16,
+            packet_window_size: cfg.packet_window_size as u16,
+
             max_receive_rate: cfg.max_receive_rate.min(u32::MAX as usize) as u32,
             max_packet_size: cfg.max_packet_size.min(u32::MAX as usize) as u32,
+
             max_receive_alloc: cfg.max_receive_alloc.min(u32::MAX as usize) as u32,
+
             nonce: rand::random::<u32>(),
         };
 
@@ -298,10 +349,16 @@ impl Endpoint {
         }
     }
 
-    fn validate_handshake(remote_info: &frame::ConnectFrame, max_packet_size: usize) -> bool {
-        remote_info.version == PROTOCOL_VERSION &&
-        remote_info.channel_count_sup as usize <= MAX_CHANNELS - 1 &&
-        remote_info.max_receive_alloc as usize >= max_packet_size
+    fn validate_handshake(connect_frame_remote: &frame::ConnectFrame, max_packet_size: usize) -> bool {
+        connect_frame_remote.version == PROTOCOL_VERSION &&
+        connect_frame_remote.channel_count_sup as usize <= MAX_CHANNELS - 1 &&
+        connect_frame_remote.max_receive_alloc as usize >= max_packet_size &&
+        connect_frame_remote.frame_window_size != 0 &&
+        connect_frame_remote.frame_window_size as u32 <= MAX_FRAME_WINDOW_SIZE &&
+        connect_frame_remote.frame_window_size & (connect_frame_remote.frame_window_size - 1) == 0 &&
+        connect_frame_remote.packet_window_size != 0 &&
+        connect_frame_remote.packet_window_size as u32 <= MAX_PACKET_WINDOW_SIZE &&
+        connect_frame_remote.packet_window_size & (connect_frame_remote.packet_window_size - 1) == 0
     }
 
     pub fn handle_frame(&mut self, frame: frame::Frame, sink: &mut impl FrameSink) {
@@ -506,21 +563,27 @@ impl Endpoint {
             tx_channel_count: local.channel_count_sup as usize + 1,
             rx_channel_count: remote.channel_count_sup as usize + 1,
 
-            tx_alloc_limit: remote.max_receive_alloc as usize,
-            rx_alloc_limit: local.max_receive_alloc as usize,
+            tx_frame_window_size: local.frame_window_size as u32,
+            rx_frame_window_size: remote.frame_window_size as u32,
 
             tx_frame_base_id: local.nonce,
             rx_frame_base_id: remote.nonce,
+
+            tx_packet_window_size: local.frame_window_size as u32,
+            rx_packet_window_size: remote.frame_window_size as u32,
 
             tx_packet_base_id: local.nonce & packet_id::MASK,
             rx_packet_base_id: remote.nonce & packet_id::MASK,
 
             tx_bandwidth_limit: max_send_rate.min(remote.max_receive_rate),
 
+            tx_alloc_limit: remote.max_receive_alloc as usize,
+            rx_alloc_limit: local.max_receive_alloc as usize,
+
             keepalive: self.keepalive,
         };
 
-        let mut daten_meister = DatenMeister::new(config);
+        let mut daten_meister = daten_meister::DatenMeister::new(config);
 
         for send in initial_sends.into_iter() {
             daten_meister.send(send.data, send.channel_id, send.mode);

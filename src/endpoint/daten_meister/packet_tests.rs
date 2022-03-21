@@ -2,9 +2,10 @@
 use super::packet_sender;
 use super::packet_receiver;
 
+use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::SendMode;
 use crate::frame;
 use crate::packet_id;
-use crate::SendMode;
 
 use std::collections::VecDeque;
 
@@ -65,14 +66,15 @@ fn random_transfer() {
     use crate::MAX_CHANNELS;
 
     const NUM_CHANNELS: usize = MAX_CHANNELS;
-    const NUM_PACKETS: usize = 1000;
+    const NUM_PACKETS: usize = 1024;
     const MAX_PACKET_SIZE: usize = 5000;
     const MAX_ALLOC_SIZE: usize = MAX_PACKET_SIZE*NUM_PACKETS;
+    const WINDOW_SIZE: u32 = 1024;
 
     let base_id = packet_id::sub(0u32, NUM_PACKETS as u32/2);
 
-    let mut sender = packet_sender::PacketSender::new(NUM_CHANNELS, MAX_ALLOC_SIZE, base_id);
-    let mut receiver = packet_receiver::PacketReceiver::new(NUM_CHANNELS, MAX_ALLOC_SIZE, base_id);
+    let mut sender = packet_sender::PacketSender::new(NUM_CHANNELS, MAX_ALLOC_SIZE, WINDOW_SIZE, base_id);
+    let mut receiver = packet_receiver::PacketReceiver::new(NUM_CHANNELS, MAX_ALLOC_SIZE, WINDOW_SIZE, base_id);
 
     let mut sent_packet_ids = [0u32; NUM_CHANNELS];
     let mut sent_packets = VecDeque::new();
@@ -121,8 +123,8 @@ fn random_transfer() {
 }
 
 fn test_single_transfer(packet_size: usize, max_alloc: usize) {
-    let mut sender = packet_sender::PacketSender::new(1, max_alloc, 0);
-    let mut receiver = packet_receiver::PacketReceiver::new(1, max_alloc, 0);
+    let mut sender = packet_sender::PacketSender::new(1, max_alloc, MAX_PACKET_WINDOW_SIZE, 0);
+    let mut receiver = packet_receiver::PacketReceiver::new(1, max_alloc, MAX_PACKET_WINDOW_SIZE, 0);
 
     let packet_data = random_packet_data(packet_size);
     sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable, 0);
