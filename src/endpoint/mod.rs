@@ -1,4 +1,5 @@
 
+use crate::CHANNEL_COUNT;
 use crate::Event;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_SIZE;
@@ -209,6 +210,10 @@ impl Endpoint {
                 "send failed: packet of size {} exceeds maximum size {}",
                 data.len(),
                 self.max_packet_size);
+
+        assert!((channel_id as usize) < CHANNEL_COUNT,
+                "send failed: channel ID {} is invalid",
+                channel_id);
 
         match self.state {
             State::Connecting(ref mut state) => {

@@ -21,6 +21,8 @@ impl Client {
     /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
     /// [`Client`](Self) object.
     ///
+    /// # Error Handling
+    ///
     /// Any errors resulting from socket initialization are forwarded to the caller.
     pub fn bind<A: net::ToSocketAddrs>(addr: A) -> Result<Self, std::io::Error> {
         let socket = net::UdpSocket::bind(addr)?;
@@ -48,8 +50,10 @@ impl Client {
     /// Initiates a connection to a remote host at the specified address, and returns a
     /// [`Peer`](peer::Peer) object representing the connection.
     ///
-    /// Any errors resulting from address resolution are forwarded to the caller. Panics if the
-    /// given endpoint configuration is not valid.
+    /// # Error Handling
+    ///
+    /// Any errors resulting from address resolution are forwarded to the caller. This function
+    /// will panic if the given endpoint configuration is not valid.
     pub fn connect<A: net::ToSocketAddrs>(&mut self, addr: A, cfg: endpoint::Config) -> Result<peer::Peer, std::io::Error> {
         assert!(cfg.is_valid(), "invalid endpoint config");
 
@@ -62,8 +66,9 @@ impl Client {
         return Ok(peer::Peer::new(address, endpoint_ref));
     }
 
-    /// Processes UDP frames received since the previous call to [`step()`](Self::step). Current,
-    /// non-zombie [`Peer`](peer::Peer) objects will be updated as relevant data is received. Call
+    /// Processes UDP frames received since the previous call to [`step()`](Self::step).
+    ///
+    /// Current [`Peer`](peer::Peer) objects will be updated as relevant data is received. Call
     /// [`Peer::poll_events()`](peer::Peer::poll_events) after calling this function to retrieve
     /// incoming packets and connection status updates for an individual peer.
     pub fn step(&mut self) {
@@ -87,7 +92,7 @@ impl Client {
     ///
     /// *Note*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
-    /// frames are sent. So, this function should be called relatively frequently (at least once
+    /// frames are sent. Thus, this function should be called relatively frequently (at least once
     /// per connection round-trip time) to ensure that data is transferred smoothly. Regular
     /// intervals are best, but there is no penalty to making two calls in short succession.
     pub fn flush(&mut self) {

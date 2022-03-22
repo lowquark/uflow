@@ -130,7 +130,7 @@ impl PacketSender {
     pub fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode, flush_id: u32) {
         debug_assert!(data.len() <= MAX_PACKET_SIZE);
         debug_assert!(data.len() <= self.max_alloc);
-        debug_assert!((channel_id as usize) < self.channels.len());
+        debug_assert!((channel_id as usize) < CHANNEL_COUNT);
 
         self.send_queue_size += data.len();
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));

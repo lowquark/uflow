@@ -27,10 +27,10 @@ impl Peer {
     /// Enqueues a packet for delivery to the remote host. The packet will be sent on the given
     /// channel according to the specified mode.
     ///
-    /// # Panics
+    /// # Error Handling
     ///
-    /// This function will panic if `channel_id` does not refer to a valid channel, or if
-    /// `data.len()` exceeds the [maximum packet
+    /// This function will panic if `channel_id` does not refer to a valid channel (i.e.
+    /// `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the configured [maximum packet
     /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
@@ -69,14 +69,14 @@ impl Peer {
         self.endpoint_ref.borrow_mut().disconnect_now();
     }
 
-    /// Returns the address of the remote host.
+    /// Returns the socket address of the remote host.
     pub fn address(&self) -> net::SocketAddr {
         self.address
     }
 
-    /// Returns the current round-trip time estimate (RTT), in seconds.
+    /// Returns the current estimate of the round-trip time (RTT) in seconds.
     ///
-    /// If an RTT estimate has not yet been computed, `None` is returned instead.
+    /// If the RTT has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
         self.endpoint_ref.borrow().rtt_s()
     }

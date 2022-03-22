@@ -1,10 +1,10 @@
 
 #![warn(missing_docs)]
 
-//! `uflow` is a non-blocking, connection-based layer over UDP that provides a drop-tolerant packet
-//! streaming interface, designed primarily for use in real-time, multiplayer games. It manages
-//! connection state, packet sequencing, fragmentation/reassembly, reliable delivery, and
-//! congestion control to produce a simple and robust data link for real-time applications.
+//! `uflow` is a non-blocking, connection-based layer over UDP that provides an ordered and
+//! drop-tolerant packet streaming interface for real-time applications. It manages connection
+//! state, packet sequencing, fragmentation/reassembly, reliable delivery, and congestion control
+//! to create a simple and robust solution for low-latency internet communication.
 //!
 //! # Hosting a Server
 //!
