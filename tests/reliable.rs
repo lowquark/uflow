@@ -163,8 +163,7 @@ fn server_thread() -> Vec<md5::Digest> {
 fn client_thread() -> Vec<md5::Digest> {
     let mut client = uflow::Client::bind_any_ipv4().unwrap();
 
-    let cfg = uflow::EndpointConfig::default()
-        .max_send_rate(10_000_000);
+    let cfg = uflow::EndpointConfig::default();
 
     let mut server_peer = client.connect("127.0.0.1:9001", cfg).expect("Invalid address");
 

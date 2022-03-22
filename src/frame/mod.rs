@@ -63,9 +63,6 @@ pub struct ConnectFrame {
     pub version: u8,
     pub nonce: u32,
 
-    pub frame_window_size: u16,
-    pub packet_window_size: u16,
-
     pub max_receive_rate: u32,
 
     pub max_packet_size: u32,
