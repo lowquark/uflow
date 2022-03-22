@@ -1,6 +1,5 @@
 
 use crate::Event;
-use crate::CHANNEL_COUNT;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
@@ -24,14 +23,6 @@ pub trait FrameSink {
 /// Parameters used to configure either endpoint of a `uflow` connection.
 #[derive(Clone,Debug)]
 pub struct Config {
-    /// The number of channels used to send packets.
-    ///
-    /// Must be greater than 0, and less than or equal to [`CHANNEL_COUNT`].
-    ///
-    /// *Note*: The number of channels used by an endpoint to send data may differ from the
-    /// opposing endpoint.
-    pub channel_count: usize,
-
     /// The size of the frame window, in sequence IDs. This value restricts the maximum number of
     /// frames which may be sent in a single round-trip time (RTT).
     ///
@@ -102,7 +93,6 @@ impl Default for Config {
     ///   * Keepalive: true
     fn default() -> Self {
         Self {
-            channel_count: 1,
             frame_window_size: 4096,
             packet_window_size: 4096,
             max_send_rate: 10_000_000,
@@ -115,12 +105,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Sets `channel_count` to the provided value.
-    pub fn channel_count(mut self, value: usize) -> Config {
-        self.channel_count = value;
-        self
-    }
-
     /// Sets `frame_window_size` to the provided value.
     pub fn frame_window_size(mut self, value: usize) -> Config {
         self.frame_window_size = value;
@@ -165,8 +149,6 @@ impl Config {
 
     /// Returns `true` if each parameter has a valid value.
     pub fn is_valid(&self) -> bool {
-        self.channel_count > 0 &&
-        self.channel_count <= CHANNEL_COUNT &&
         self.frame_window_size > 0 &&
         self.frame_window_size <= MAX_FRAME_WINDOW_SIZE as usize &&
         self.frame_window_size & (self.frame_window_size - 1) == 0 &&
@@ -250,7 +232,6 @@ pub struct Endpoint {
 
     watchdog_time: time::Instant,
 
-    channel_count: usize,
     max_packet_size: usize,
     keepalive: bool,
     was_connected: bool,
@@ -263,7 +244,6 @@ impl Endpoint {
         let connect_frame = frame::ConnectFrame {
             version: PROTOCOL_VERSION,
 
-            channel_count_sup: (cfg.channel_count - 1) as u8,
             frame_window_size: cfg.frame_window_size as u16,
             packet_window_size: cfg.packet_window_size as u16,
 
@@ -293,7 +273,6 @@ impl Endpoint {
 
             watchdog_time: time::Instant::now(),
 
-            channel_count: cfg.channel_count,
             max_packet_size: cfg.max_packet_size,
             keepalive: cfg.keepalive,
 
@@ -306,8 +285,6 @@ impl Endpoint {
                 "send failed: packet of size {} exceeds maximum size {}",
                 data.len(),
                 self.max_packet_size);
-
-        assert!(channel_id < self.channel_count, "send failed: invalid channel ID {}", channel_id);
 
         match self.state {
             State::Connecting(ref mut state) => {
@@ -357,7 +334,6 @@ impl Endpoint {
 
     fn validate_handshake(connect_frame_remote: &frame::ConnectFrame, max_packet_size: usize) -> bool {
         connect_frame_remote.version == PROTOCOL_VERSION &&
-        connect_frame_remote.channel_count_sup as usize <= CHANNEL_COUNT - 1 &&
         connect_frame_remote.max_receive_alloc as usize >= max_packet_size &&
         connect_frame_remote.frame_window_size != 0 &&
         connect_frame_remote.frame_window_size as u32 <= MAX_FRAME_WINDOW_SIZE &&
@@ -466,7 +442,10 @@ impl Endpoint {
         }
     }
 
-    pub fn flush(&mut self, sink: &mut impl FrameSink) {
+    pub fn step(&mut self, sink: &mut impl FrameSink) {
+    }
+
+    pub fn flush_data(&mut self, sink: &mut impl FrameSink) {
         let now = time::Instant::now();
 
         match self.state {
@@ -566,9 +545,6 @@ impl Endpoint {
         use crate::packet_id;
 
         let config = daten_meister::Config {
-            tx_channel_count: local.channel_count_sup as usize + 1,
-            rx_channel_count: remote.channel_count_sup as usize + 1,
-
             tx_frame_window_size: local.frame_window_size as u32,
             rx_frame_window_size: remote.frame_window_size as u32,
 

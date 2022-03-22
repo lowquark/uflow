@@ -1,13 +1,10 @@
 
 fn main() {
-    // The server will send data on two transmission channels
-    let cfg = uflow::EndpointConfig {
-        channel_count: 2,
-        .. Default::default()
-    };
-
     // Create a server object bound locally on port 8888, with a maximum of 8 concurrent connections
-    let mut server = uflow::Server::bind("127.0.0.1:8888", 8, cfg).unwrap();
+    let address = "127.0.0.1:8888";
+    let max_peer_count = 8;
+    let peer_config = uflow::EndpointConfig::default();
+    let mut server = uflow::Server::bind(address, max_peer_count, peer_config).unwrap();
 
     // List of active connections
     let mut clients = Vec::new();
@@ -39,7 +36,7 @@ fn main() {
                         let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
                         let reversed_string: std::string::String = packet_data_utf8.chars().rev().collect();
 
-                        println!("[{:?}]: received \"{}\"", client_peer.address(), packet_data_utf8);
+                        println!("[{:?}] received \"{}\"", client_peer.address(), packet_data_utf8);
 
                         // Echo the packet reliably on channel 0
                         client_peer.send(packet_data, 0, uflow::SendMode::Reliable);

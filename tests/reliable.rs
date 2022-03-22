@@ -104,8 +104,7 @@ fn router_thread() {
 }
 
 fn server_thread() -> Vec<md5::Digest> {
-    let cfg = uflow::EndpointConfig::default()
-        .channel_count(NUM_CHANNELS);
+    let cfg = uflow::EndpointConfig::default();
 
     let mut server = uflow::Server::bind("127.0.0.1:8888", 1, cfg).unwrap();
     let mut peers = Vec::new();
@@ -165,7 +164,6 @@ fn client_thread() -> Vec<md5::Digest> {
     let mut client = uflow::Client::bind_any_ipv4().unwrap();
 
     let cfg = uflow::EndpointConfig::default()
-        .channel_count(NUM_CHANNELS)
         .max_send_rate(10_000_000);
 
     let mut server_peer = client.connect("127.0.0.1:9001", cfg).expect("Invalid address");

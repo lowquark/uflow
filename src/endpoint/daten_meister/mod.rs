@@ -33,9 +33,6 @@ pub trait PacketSink {
 }
 
 pub struct Config {
-    pub tx_channel_count: usize,
-    pub rx_channel_count: usize,
-
     pub tx_frame_base_id: u32,
     pub rx_frame_base_id: u32,
 
@@ -432,9 +429,6 @@ mod tests {
     impl TestApparatus {
         fn new() -> Self {
             let config = Config {
-                tx_channel_count: 1,
-                rx_channel_count: 1,
-
                 tx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
                 rx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
 
