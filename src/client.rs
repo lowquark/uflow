@@ -77,15 +77,17 @@ impl Client {
             }
         }
 
+        self.step_timeouts();
+
         self.endpoints.retain(|_, endpoint| !endpoint.borrow().is_zombie());
     }
 
     /// Sends pending outbound frames (acknowledgements, keep-alives, packet data, etc.) for each
     /// peer.
     ///
-    /// *Note*: Internally, this function uses the [leaky bucket
+    /// *Note*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
-    /// frames are sent. Thus, this function should be called relatively frequently (at least once
+    /// frames are sent. So, this function should be called relatively frequently (at least once
     /// per connection round-trip time) to ensure that data is transferred smoothly. Regular
     /// intervals are best, but there is no penalty to making two calls in short succession.
     pub fn flush(&mut self) {
@@ -106,6 +108,12 @@ impl Client {
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
 
             endpoint.borrow_mut().handle_frame(frame, data_sink);
+        }
+    }
+
+    fn step_timeouts(&mut self) {
+        for (_, endpoint) in self.endpoints.iter_mut() {
+            endpoint.borrow_mut().step_timeouts();
         }
     }
 }

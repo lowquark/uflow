@@ -442,49 +442,26 @@ impl Endpoint {
         }
     }
 
-    pub fn step(&mut self, sink: &mut impl FrameSink) {
-    }
-
-    pub fn flush_data(&mut self, sink: &mut impl FrameSink) {
+    pub fn step_timeouts(&mut self) {
         let now = time::Instant::now();
 
         match self.state {
-            State::Connecting(ref mut state) => {
+            State::Connecting(_) => {
                 if now - self.watchdog_time > CONNECTING_WATCHDOG_TIMEOUT {
                     self.enter_zombie();
                     return;
                 }
-
-                if !state.connect_ack_received {
-                    if state.last_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
-                        state.last_send_time = Some(now);
-                        sink.send(&frame::Frame::ConnectFrame(state.connect_frame.clone()).write());
-                    }
-                }
             }
-            State::Connected(ref mut state) => {
+            State::Connected(_) => {
                 if now - self.watchdog_time > CONNECTED_WATCHDOG_TIMEOUT {
                     self.enter_zombie();
                     return;
                 }
-
-                state.daten_meister.flush(sink);
-
-                if state.disconnect_flush {
-                    if !state.daten_meister.is_send_pending() {
-                        self.enter_disconnecting();
-                    }
-                }
             }
-            State::Disconnecting(ref mut state) => {
+            State::Disconnecting(_) => {
                 if now - self.watchdog_time > DISCONNECTING_WATCHDOG_TIMEOUT {
                     self.enter_zombie();
                     return;
-                }
-
-                if state.last_send_time.map_or(true, |time| now - time > DISCONNECT_INTERVAL) {
-                    state.last_send_time = Some(now);
-                    sink.send(&frame::Frame::DisconnectFrame(frame::DisconnectFrame { }).write());
                 }
             }
             State::Disconnected => {
@@ -495,6 +472,38 @@ impl Endpoint {
             }
             State::Zombie => {
             }
+        }
+    }
+
+    pub fn flush(&mut self, sink: &mut impl FrameSink) {
+        let now = time::Instant::now();
+
+        match self.state {
+            State::Connecting(ref mut state) => {
+                if !state.connect_ack_received {
+                    if state.last_send_time.map_or(true, |time| now - time > CONNECT_INTERVAL) {
+                        state.last_send_time = Some(now);
+                        sink.send(&frame::Frame::ConnectFrame(state.connect_frame.clone()).write());
+                    }
+                }
+            }
+            State::Connected(ref mut state) => {
+                state.daten_meister.flush(sink);
+
+                if state.disconnect_flush {
+                    if !state.daten_meister.is_send_pending() {
+                        self.enter_disconnecting();
+                        return;
+                    }
+                }
+            }
+            State::Disconnecting(ref mut state) => {
+                if state.last_send_time.map_or(true, |time| now - time > DISCONNECT_INTERVAL) {
+                    state.last_send_time = Some(now);
+                    sink.send(&frame::Frame::DisconnectFrame(frame::DisconnectFrame { }).write());
+                }
+            }
+            _ => (),
         }
     }
 
