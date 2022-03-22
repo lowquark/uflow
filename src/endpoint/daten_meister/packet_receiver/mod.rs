@@ -10,6 +10,9 @@ use crate::packet_id;
 mod assembly_window;
 
 pub fn datagram_is_valid(dg: &frame::Datagram) -> bool {
+    if dg.channel_id as usize >= CHANNEL_COUNT {
+        return false;
+    }
     if dg.channel_parent_lead != 0 {
         if dg.window_parent_lead == 0 || dg.channel_parent_lead < dg.window_parent_lead {
             return false;
@@ -24,16 +27,19 @@ pub fn datagram_is_valid(dg: &frame::Datagram) -> bool {
     if dg.data.len() > MAX_FRAGMENT_SIZE {
         return false;
     }
-
     return true;
 }
 
-// TODO: Consider separating this into channel-advancement related entries and window-advancement
-// related entries
-struct ReceiveEntry {
+struct ChannelAdvEntry {
     channel_id: u8,
-    window_parent_lead: u16,
     channel_parent_lead: u16,
+}
+
+struct WindowAdvEntry {
+    window_parent_lead: u16,
+}
+
+struct DataEntry {
     data: Option<Box<[u8]>>,
 }
 
@@ -67,11 +73,15 @@ pub struct PacketReceiver {
 
     assembly_window: assembly_window::AssemblyWindow,
 
-    receive_window: Box<[Option<ReceiveEntry>]>,
-    receive_window_flags: Box<[u64]>,
-    receive_window_data_flags: Box<[u64]>,
     receive_window_size: u32,
     receive_window_mask: u32,
+
+    channel_entries: Box<[ChannelAdvEntry]>,
+    window_entries: Box<[WindowAdvEntry]>,
+    data_entries: Box<[DataEntry]>,
+
+    entry_flags: Box<[u64]>,
+    data_flags: Box<[u64]>,
 
     channels: Box<[Channel]>,
     channel_base_markers: Box<[Option<u8>]>,
@@ -86,9 +96,15 @@ impl PacketReceiver {
 
         debug_assert!(packet_id::is_valid(base_id));
 
-        let receive_window: Vec<Option<ReceiveEntry>> = (0 .. window_size).map(|_| None).collect();
-        let receive_window_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
-        let receive_window_data_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
+        let channel_entries: Vec<ChannelAdvEntry> =
+            (0 .. window_size).map(|_| ChannelAdvEntry { channel_id: 0, channel_parent_lead: 0 }).collect();
+        let window_entries: Vec<WindowAdvEntry> =
+            (0 .. window_size).map(|_| WindowAdvEntry { window_parent_lead: 0 }).collect();
+        let data_entries: Vec<DataEntry> =
+            (0 .. window_size).map(|_| DataEntry { data: None }).collect();
+
+        let entry_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
+        let data_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
 
         let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
         let channel_base_markers: Vec<Option<u8>> = (0 .. window_size).map(|_| None).collect();
@@ -99,11 +115,15 @@ impl PacketReceiver {
 
             assembly_window: assembly_window::AssemblyWindow::new(max_alloc),
 
-            receive_window: receive_window.into_boxed_slice(),
-            receive_window_flags,
-            receive_window_data_flags,
             receive_window_size: window_size,
             receive_window_mask: window_size - 1,
+
+            channel_entries: channel_entries.into_boxed_slice(),
+            window_entries: window_entries.into_boxed_slice(),
+            data_entries: data_entries.into_boxed_slice(),
+
+            entry_flags,
+            data_flags,
 
             channels: channels.into_boxed_slice(),
             channel_base_markers: channel_base_markers.into_boxed_slice(),
@@ -122,11 +142,6 @@ impl PacketReceiver {
 
         if !datagram_is_valid(&datagram) {
             // Datagram has invalid contents
-            return;
-        }
-
-        if channel_idx >= self.channels.len() {
-            // Packet references non-existent channel
             return;
         }
 
@@ -155,20 +170,23 @@ impl PacketReceiver {
         // Add this datagram to the assembly window
         if let Some(packet) = self.assembly_window.try_add(window_idx, datagram) {
             // Assembly window has produced a packet, add to receive window
-            let new_entry = ReceiveEntry {
+            self.channel_entries[window_idx] = ChannelAdvEntry {
                 channel_id: packet.channel_id,
-                window_parent_lead: packet.window_parent_lead,
                 channel_parent_lead: packet.channel_parent_lead,
+            };
+
+            self.window_entries[window_idx] = WindowAdvEntry {
+                window_parent_lead: packet.window_parent_lead,
+            };
+
+            self.data_entries[window_idx] = DataEntry {
                 data: packet.data,
             };
 
-            debug_assert!(self.receive_window[window_idx].is_none());
-            self.receive_window[window_idx] = Some(new_entry);
-
-            // Set corresponding bits in receive_window_flags and receive_window_data_flags to
+            // Set corresponding bits in entry_flags and data_flags to
             // indicate an entry with data is present at the given sequence ID
-            self.receive_window_flags[window_idx / 64] |= 1 << (window_idx % 64);
-            self.receive_window_data_flags[window_idx / 64] |= 1 << (window_idx % 64);
+            self.entry_flags[window_idx / 64] |= 1 << (window_idx % 64);
+            self.data_flags[window_idx / 64] |= 1 << (window_idx % 64);
 
             // Advance end id if this packet is newer
             if packet_id::sub(sequence_id, self.end_id) < self.receive_window_size {
@@ -228,16 +246,7 @@ impl PacketReceiver {
             let flag_bit = 1 << (window_idx % 64);
             let flags_index = window_idx / 64;
 
-            self.receive_window_flags[flags_index] &= !flag_bit;
-
-            id = packet_id::add(id, 1);
-        }
-
-        let mut id = self.base_id;
-        while id != new_base_id {
-            let window_idx = window_index!(self, id);
-
-            self.receive_window[window_idx] = None;
+            self.entry_flags[flags_index] &= !flag_bit;
 
             id = packet_id::add(id, 1);
         }
@@ -276,8 +285,6 @@ impl PacketReceiver {
         //  self.channel_ready_flags
         //);
 
-        // TODO: What if the channel receive pass only examined an array of
-        // { channel_id, channel_parent_lead, data } ?
         let mut sequence_id = base_id;
 
         while sequence_id != end_id {
@@ -291,9 +298,8 @@ impl PacketReceiver {
             let flag_bit = 1 << (window_idx % 64);
             let flags_index = window_idx / 64;
 
-            if self.receive_window_data_flags[flags_index] & flag_bit != 0 {
-                // If a data flag is set, that window entry exists and has data
-                let ref mut entry = self.receive_window[window_idx].as_mut().unwrap();
+            if self.data_flags[flags_index] & flag_bit != 0 {
+                let ref mut channel_entry = self.channel_entries[window_idx];
 
                 //println!(
                 //  "[{}] ch: {} ch_lead: {} win_lead: {} data[0..4]: {:?}",
@@ -304,7 +310,7 @@ impl PacketReceiver {
                 //  entry.data.as_ref().map(|data| &data[0..4])
                 //);
 
-                let channel_id = entry.channel_id;
+                let channel_id = channel_entry.channel_id;
                 let channel_id_bit = 1u64 << channel_id;
 
                 if self.channel_ready_flags & channel_id_bit != 0 {
@@ -313,13 +319,13 @@ impl PacketReceiver {
                     let channel_base_id = channel.base_id.unwrap_or(base_id);
                     debug_assert!(packet_id::sub(channel_base_id, base_id) <= self.receive_window_size);
 
-                    let channel_parent_lead = entry.channel_parent_lead as u32;
+                    let channel_parent_lead = channel_entry.channel_parent_lead as u32;
                     let channel_delta = packet_id::sub(sequence_id, channel_base_id);
 
                     if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
-                        sink.send(entry.data.take().unwrap());
+                        sink.send(self.data_entries[window_idx].data.take().unwrap());
 
-                        self.receive_window_data_flags[flags_index] &= !flag_bit;
+                        self.data_flags[flags_index] &= !flag_bit;
 
                         channel.packet_count -= 1;
                         if channel.packet_count == 0 {
@@ -345,8 +351,6 @@ impl PacketReceiver {
             sequence_id = packet_id::add(sequence_id, 1);
         }
 
-        // TODO: What if this window advancement pass only examined an array of
-        // { window_parent_lead } ?
         let mut new_base_id = base_id;
         let mut sequence_id = base_id;
 
@@ -358,11 +362,10 @@ impl PacketReceiver {
 
             let next_id = packet_id::add(sequence_id, 1);
 
-            if self.receive_window_flags[flags_index] & flag_bit != 0 {
-                // If a receive window flag is set, that window entry exists
-                let ref mut entry = self.receive_window[window_idx].as_ref().unwrap();
+            if self.entry_flags[flags_index] & flag_bit != 0 {
+                let ref mut window_entry = self.window_entries[window_idx];
 
-                let window_parent_lead = entry.window_parent_lead as u32;
+                let window_parent_lead = window_entry.window_parent_lead as u32;
                 let window_delta = packet_id::sub(sequence_id, new_base_id);
 
                 if window_parent_lead == 0 || window_parent_lead > window_delta {
@@ -396,19 +399,13 @@ impl PacketReceiver {
 
         let mut sequence_id = base_id;
 
-        loop {
-            if sequence_id == sender_next_id {
-                // No complete packets exist. Match with sender.
-                break;
-            }
-
+        while sequence_id != sender_next_id {
             let window_idx = window_index!(self, sequence_id);
 
             let flag_bit = 1 << (window_idx % 64);
             let flags_index = window_idx / 64;
 
-            if self.receive_window_flags[flags_index] & flag_bit != 0 {
-                debug_assert!(self.receive_window[window_idx].is_some());
+            if self.entry_flags[flags_index] & flag_bit != 0 {
                 // This packet awaits delivery. Stop advancement here.
                 break;
             }

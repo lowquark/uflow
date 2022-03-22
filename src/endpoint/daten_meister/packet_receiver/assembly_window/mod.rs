@@ -68,9 +68,9 @@ pub struct AssemblyWindow {
 
 impl AssemblyWindow {
     pub fn new(max_alloc: usize) -> Self {
-        let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
+        let window: Vec<WindowEntry> = (0 .. MAX_PACKET_WINDOW_SIZE).map(|_| WindowEntry::Open).collect();
 
-        let window: Vec<WindowEntry> = (0..MAX_PACKET_WINDOW_SIZE).map(|_| WindowEntry::Open).collect();
+        let max_alloc_ceil = ((max_alloc + MAX_FRAGMENT_SIZE - 1) / MAX_FRAGMENT_SIZE) * MAX_FRAGMENT_SIZE;
 
         Self {
             window: window.into_boxed_slice(),
@@ -81,7 +81,7 @@ impl AssemblyWindow {
     }
 
     pub fn try_add(&mut self, idx: usize, datagram: frame::Datagram) -> Option<Packet> {
-        match &mut self.window[idx] {
+        match self.window[idx] {
             WindowEntry::Open => {
                 // New packet
 
@@ -183,15 +183,13 @@ impl AssemblyWindow {
     }
 
     pub fn clear(&mut self, idx: usize) {
-        let ref mut window_entry = self.window[idx];
-
-        match window_entry {
+        match self.window[idx] {
             WindowEntry::Open => {
             }
             WindowEntry::Closed(ref alloc_size) => {
                 self.alloc -= alloc_size;
             }
-            WindowEntry::Active(entry) => {
+            WindowEntry::Active(ref entry) => {
                 self.alloc -= entry.alloc_size;
             }
         }

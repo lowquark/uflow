@@ -24,32 +24,28 @@ impl FragmentBuffer {
 
     pub fn write(&mut self, idx: usize, data: Box<[u8]>) {
         debug_assert!(idx < self.num_fragments);
+        debug_assert!(data.len() == MAX_FRAGMENT_SIZE || (idx == self.num_fragments - 1 && data.len() <= MAX_FRAGMENT_SIZE));
 
         let bitfield_idx = idx / 64;
+        let bitfield_bit = 1 << (idx % 64);
+
         let ref mut bitfield = self.fragment_bitfields[bitfield_idx];
 
-        let bit = idx % 64;
+        if *bitfield & bitfield_bit == 0 {
+            *bitfield |= bitfield_bit;
 
-        if *bitfield & (1 << bit) == 0 {
             let begin_idx = idx * MAX_FRAGMENT_SIZE;
+            let end_idx = begin_idx + data.len();
 
-            let end_idx = 
-                if idx == self.num_fragments - 1 {
-                    begin_idx + data.len()
-                } else {
-                    begin_idx + MAX_FRAGMENT_SIZE
-                };
+            self.buffer[begin_idx .. end_idx].copy_from_slice(&data);
 
-            self.buffer[begin_idx..end_idx].copy_from_slice(&data);
-
-            *bitfield |= 1 << bit;
             self.fragments_remaining -= 1;
             self.total_size += data.len();
         }
     }
 
     pub fn finalize(mut self) -> Box<[u8]> {
-        assert!(self.total_size <= self.buffer.len());
+        debug_assert!(self.total_size <= self.buffer.len());
         let ptr = self.buffer.as_mut_ptr();
         std::mem::forget(self.buffer);
         unsafe { Box::from_raw(std::slice::from_raw_parts_mut(ptr, self.total_size)) }
@@ -68,7 +64,7 @@ mod tests {
     fn single_fragment() {
         let mut buf = FragmentBuffer::new(1);
 
-        let fragment_data = (0..MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
+        let fragment_data = (0 .. MAX_FRAGMENT_SIZE).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
 
         buf.write(0, fragment_data.clone());
 
@@ -80,7 +76,7 @@ mod tests {
     fn multiple_fragments() {
         let mut buf = FragmentBuffer::new(5);
 
-        let packet_data = (0..MAX_FRAGMENT_SIZE*5).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
+        let packet_data = (0 .. MAX_FRAGMENT_SIZE*5).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
 
         for i in 0 .. 5 {
             assert_eq!(buf.is_finished(), false);
@@ -114,9 +110,9 @@ mod tests {
 
         let mut buf = FragmentBuffer::new(MAX_FRAGMENTS);
 
-        let packet_data = (0..MAX_FRAGMENT_SIZE*MAX_FRAGMENTS).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
+        let packet_data = (0 .. MAX_FRAGMENT_SIZE*MAX_FRAGMENTS).map(|i| i as u8).collect::<Vec<_>>().into_boxed_slice();
 
-        let mut indices = (0..MAX_FRAGMENTS).map(|i| i as u16).collect::<Vec<_>>();
+        let mut indices = (0 .. MAX_FRAGMENTS).map(|i| i as u16).collect::<Vec<_>>();
 
         for i in 0 ..= MAX_FRAGMENTS - 2 {
             let j = i + rand::random::<usize>() % (MAX_FRAGMENTS - i);
