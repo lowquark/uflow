@@ -28,6 +28,8 @@ pub fn datagram_is_valid(dg: &frame::Datagram) -> bool {
     return true;
 }
 
+// TODO: Consider separating this into channel-advancement related entries and window-advancement
+// related entries
 struct ReceiveEntry {
     channel_id: u8,
     window_parent_lead: u16,
@@ -41,14 +43,22 @@ struct Channel {
     // ID. Once the receive window catches up, the channel's base ID is unset, meaning the
     // channel's base ID is the same as that of the receive window.
     base_id: Option<u32>,
+    packet_count: u32,
 }
 
 impl Channel {
     fn new() -> Self {
         Self {
             base_id: None,
+            packet_count: 0,
         }
     }
+}
+
+macro_rules! window_index {
+    ($self:ident, $sequence_id:ident) => {
+        ($sequence_id & $self.receive_window_mask) as usize
+    };
 }
 
 pub struct PacketReceiver {
@@ -58,9 +68,14 @@ pub struct PacketReceiver {
     assembly_window: assembly_window::AssemblyWindow,
 
     receive_window: Box<[Option<ReceiveEntry>]>,
+    receive_window_flags: Box<[u64]>,
+    receive_window_data_flags: Box<[u64]>,
+    receive_window_size: u32,
+    receive_window_mask: u32,
 
     channels: Box<[Channel]>,
     channel_base_markers: Box<[Option<u8>]>,
+    channel_ready_flags: u64,
 }
 
 impl PacketReceiver {
@@ -69,7 +84,12 @@ impl PacketReceiver {
         debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
         debug_assert!(window_size & (window_size - 1) == 0);
 
+        debug_assert!(packet_id::is_valid(base_id));
+
         let receive_window: Vec<Option<ReceiveEntry>> = (0 .. window_size).map(|_| None).collect();
+        let receive_window_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
+        let receive_window_data_flags = vec![0u64; (window_size as usize + 63)/64].into_boxed_slice();
+
         let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
         let channel_base_markers: Vec<Option<u8>> = (0 .. window_size).map(|_| None).collect();
 
@@ -80,18 +100,19 @@ impl PacketReceiver {
             assembly_window: assembly_window::AssemblyWindow::new(max_alloc),
 
             receive_window: receive_window.into_boxed_slice(),
+            receive_window_flags,
+            receive_window_data_flags,
+            receive_window_size: window_size,
+            receive_window_mask: window_size - 1,
 
             channels: channels.into_boxed_slice(),
             channel_base_markers: channel_base_markers.into_boxed_slice(),
+            channel_ready_flags: 0,
         }
     }
 
     pub fn base_id(&self) -> u32 {
         self.base_id
-    }
-
-    fn window_index(&self, sequence_id: u32) -> usize {
-        sequence_id as usize % self.receive_window.len()
     }
 
     pub fn handle_datagram(&mut self, datagram: frame::Datagram) {
@@ -117,9 +138,9 @@ impl PacketReceiver {
         let channel_lead = packet_id::sub(channel_base_id, base_id);
         let packet_lead = packet_id::sub(sequence_id, base_id);
 
-        debug_assert!(channel_lead as usize <= self.receive_window.len());
+        debug_assert!(channel_lead <= self.receive_window_size);
 
-        if packet_lead as usize >= self.receive_window.len() {
+        if packet_lead >= self.receive_window_size {
             // Packet not contained by transfer window
             return;
         }
@@ -129,7 +150,7 @@ impl PacketReceiver {
             return;
         }
 
-        let window_idx = self.window_index(sequence_id);
+        let window_idx = window_index!(self, sequence_id);
 
         // Add this datagram to the assembly window
         if let Some(packet) = self.assembly_window.try_add(window_idx, datagram) {
@@ -144,32 +165,49 @@ impl PacketReceiver {
             debug_assert!(self.receive_window[window_idx].is_none());
             self.receive_window[window_idx] = Some(new_entry);
 
+            // Set corresponding bits in receive_window_flags and receive_window_data_flags to
+            // indicate an entry with data is present at the given sequence ID
+            self.receive_window_flags[window_idx / 64] |= 1 << (window_idx % 64);
+            self.receive_window_data_flags[window_idx / 64] |= 1 << (window_idx % 64);
+
             // Advance end id if this packet is newer
-            if (packet_id::sub(sequence_id, self.end_id) as usize) < self.receive_window.len() {
+            if packet_id::sub(sequence_id, self.end_id) < self.receive_window_size {
                 self.end_id = packet_id::add(sequence_id, 1);
+            }
+
+            channel.packet_count += 1;
+
+            // Set corresponding bit in channel_ready_flags to indicate a packet is ready on this
+            // channel
+            let channel_parent_lead = packet.channel_parent_lead as u32;
+            let channel_delta = packet_id::sub(sequence_id, channel_base_id);
+
+            if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
+                self.channel_ready_flags |= 1 << channel_idx;
             }
         }
     }
 
     fn set_channel_base_id(&mut self, channel_id: u8, new_id: u32) {
-        if let Some(base_id) = self.channels[channel_id as usize].base_id {
-            let window_idx = self.window_index(base_id);
-            self.channel_base_markers[window_idx] = None;
+        let ref mut channel = self.channels[channel_id as usize];
+
+        if let Some(base_id) = channel.base_id {
+            self.channel_base_markers[window_index!(self, base_id)] = None;
         }
 
-        debug_assert!(self.channel_base_markers[self.window_index(new_id)].is_none());
-        self.channel_base_markers[self.window_index(new_id)] = Some(channel_id);
+        let ref mut base_marker = self.channel_base_markers[window_index!(self, new_id)];
 
-        self.channels[channel_id as usize].base_id = Some(new_id);
+        debug_assert!(base_marker.is_none());
+        *base_marker = Some(channel_id);
+
+        channel.base_id = Some(new_id);
     }
 
     fn try_unset_channel_base_id(&mut self, sequence_id: u32) {
-        let window_idx = self.window_index(sequence_id);
+        let ref mut base_marker = self.channel_base_markers[window_index!(self, sequence_id)];
 
-        if let Some(channel_id) = self.channel_base_markers[window_idx] {
-            let ref mut channel = self.channels[channel_id as usize];
-            channel.base_id = None;
-            self.channel_base_markers[window_idx] = None;
+        if let Some(channel_id) = base_marker.take() {
+            self.channels[channel_id as usize].base_id = None;
         }
     }
 
@@ -178,11 +216,11 @@ impl PacketReceiver {
         let new_base_delta = packet_id::sub(new_base_id, base_id);
 
         if new_base_delta != 0 {
-            assert!(new_base_delta as usize <= self.receive_window.len());
+            debug_assert!(new_base_delta <= self.receive_window_size);
 
             for i in 0 .. new_base_delta {
                 let sequence_id = packet_id::add(base_id, i);
-                self.assembly_window.clear(self.window_index(sequence_id));
+                self.assembly_window.clear(window_index!(self, sequence_id));
 
                 let next_sequence_id = packet_id::add(base_id, i + 1);
                 self.try_unset_channel_base_id(next_sequence_id);
@@ -201,84 +239,126 @@ impl PacketReceiver {
     // Advances the transfer window if no reliable packets would be skipped.
     pub fn receive(&mut self, sink: &mut impl PacketSink) {
         let base_id = self.base_id;
-        let slot_num = packet_id::sub(self.end_id, base_id);
+        let end_id = self.end_id;
 
-        let mut channel_flags = if self.channels.len() == 64 { 0xFFFFFFFFFFFFFFFF } else { (1u64 << self.channels.len()) - 1 };
+        debug_assert!(packet_id::sub(end_id, base_id) <= self.receive_window_size);
 
-        debug_assert!(slot_num as usize <= self.receive_window.len());
+        //println!(
+        //  "-- receive() base_id: {} end_id: {} channel_ready_flags: {:016X} --",
+        //  self.base_id,
+        //  self.end_id,
+        //  self.channel_ready_flags
+        //);
 
-        // println!("-- receive() base_id: {} end_id: {} --", self.base_id, self.end_id);
+        // TODO: What if the channel receive pass only examined an array of
+        // { channel_id, channel_parent_lead, data } ?
+        let mut sequence_id = base_id;
 
-        for i in 0 .. slot_num {
-            if channel_flags == 0 {
-                // println!("channel_flags == 0, breaking");
+        loop {
+            if sequence_id == end_id {
                 break;
             }
 
-            let sequence_id = packet_id::add(base_id, i);
+            if self.channel_ready_flags == 0 {
+                //println!("channel_ready_flags == 0, breaking");
+                break;
+            }
 
-            let receive_window_size = self.receive_window.len();
-            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
+            let window_idx = window_index!(self, sequence_id);
 
-            if let Some(entry) = receive_entry {
-                // println!("[{}] ch: {} ch_lead: {} win_lead: {} data[0..4]: {:?}", sequence_id, entry.channel_id, entry.channel_parent_lead, entry.window_parent_lead, entry.data.as_ref().map(|data| &data[0..4]));
+            let flag_bit = 1 << (window_idx % 64);
+            let flags_index = window_idx / 64;
+
+            if self.receive_window_data_flags[flags_index] & flag_bit != 0 {
+                // If a data flag is set, that window entry exists and has data
+                let ref mut entry = self.receive_window[window_idx].as_mut().unwrap();
+
+                //println!(
+                //  "[{}] ch: {} ch_lead: {} win_lead: {} data[0..4]: {:?}",
+                //  sequence_id,
+                //  entry.channel_id,
+                //  entry.channel_parent_lead,
+                //  entry.window_parent_lead,
+                //  entry.data.as_ref().map(|data| &data[0..4])
+                //);
 
                 let channel_id = entry.channel_id;
-                let channel_bit = 1u64 << channel_id;
+                let channel_id_bit = 1u64 << channel_id;
 
-                if channel_flags & channel_bit != 0 {
-                    if entry.data.is_some() {
-                        let ref mut channel = self.channels[channel_id as usize];
-                        let channel_base_id = channel.base_id.unwrap_or(base_id);
+                if self.channel_ready_flags & channel_id_bit != 0 {
+                    let ref mut channel = self.channels[channel_id as usize];
 
-                        debug_assert!(packet_id::sub(channel_base_id, base_id) as usize <= receive_window_size);
+                    let channel_base_id = channel.base_id.unwrap_or(base_id);
+                    debug_assert!(packet_id::sub(channel_base_id, base_id) <= self.receive_window_size);
 
-                        let channel_parent_lead = entry.channel_parent_lead as u32;
-                        let channel_delta = packet_id::sub(sequence_id, channel_base_id);
+                    let channel_parent_lead = entry.channel_parent_lead as u32;
+                    let channel_delta = packet_id::sub(sequence_id, channel_base_id);
 
-                        if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
-                            sink.send(entry.data.take().unwrap());
+                    if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
+                        sink.send(entry.data.take().unwrap());
 
-                            // TODO: This only needs to be performed once per channel with packets
-                            // delivered
-                            self.set_channel_base_id(channel_id, packet_id::add(sequence_id, 1));
-                        } else {
-                            // Cease to consider delivering packets from this channel
+                        self.receive_window_data_flags[flags_index] &= !flag_bit;
 
-                            // Note: If any packets are deliverable past this one (parent_lead = 0),
-                            // that is an error on the sender's part. However, ignoring all future
-                            // packets on this channel permits faster iteration and a possible early
-                            // exit.
-
-                            channel_flags &= !channel_bit;
+                        channel.packet_count -= 1;
+                        if channel.packet_count == 0 {
+                            self.channel_ready_flags &= !channel_id_bit;
                         }
+
+                        // TODO: Base ID markers only need to be updated once per receive()
+                        self.set_channel_base_id(channel_id, packet_id::add(sequence_id, 1));
+                    } else {
+                        // Cease to consider delivering packets from this channel
+
+                        // Note: If any packets are deliverable past this one (parent_lead = 0),
+                        // that is an error on the sender's part. However, ignoring all future
+                        // packets on this channel permits faster iteration and a possible early
+                        // exit.
+
+                        self.channel_ready_flags &= !channel_id_bit;
                     }
                 }
             } else {
-                // println!("[{}] None", sequence_id);
+                //println!("[{}] None", sequence_id);
             }
+
+            sequence_id = packet_id::add(sequence_id, 1);
         }
 
+        // TODO: What if this window advancement pass only examined an array of
+        // { window_parent_lead } ?
         let mut new_base_id = base_id;
+        let mut sequence_id = base_id;
 
-        for i in 0 .. slot_num {
-            let sequence_id = packet_id::add(base_id, i);
+        loop {
+            if sequence_id == end_id {
+                break;
+            }
 
-            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
+            let window_idx = window_index!(self, sequence_id);
 
-            if let Some(entry) = receive_entry {
+            let flag_bit = 1 << (window_idx % 64);
+            let flags_index = window_idx / 64;
+
+            if self.receive_window_flags[flags_index] & flag_bit != 0 {
+                // If a receive window flag is set, that window entry exists
+                let ref mut entry = self.receive_window[window_idx].as_ref().unwrap();
+
                 let window_parent_lead = entry.window_parent_lead as u32;
                 let window_delta = packet_id::sub(sequence_id, new_base_id);
 
                 if window_parent_lead == 0 || window_parent_lead > window_delta {
                     // println!("Forget sequence ID {}", sequence_id);
                     new_base_id = packet_id::add(sequence_id, 1);
-                    *receive_entry = None;
+
+                    self.receive_window[window_idx] = None;
+                    self.receive_window_flags[flags_index] &= !flag_bit;
                 } else {
                     // Cease to consider advancing the window
                     break;
                 }
             }
+
+            sequence_id = packet_id::add(sequence_id, 1);
         }
 
         self.advance_window(new_base_id);
@@ -291,16 +371,15 @@ impl PacketReceiver {
     pub fn resynchronize(&mut self, sender_next_id: u32) {
         let sender_delta = packet_id::sub(sender_next_id, self.base_id);
 
-        if sender_delta as usize > self.receive_window.len() {
+        if sender_delta > self.receive_window_size {
             return;
         }
 
         for i in 0 .. sender_delta {
             let sequence_id = packet_id::add(self.base_id, i);
+            let window_idx = window_index!(self, sequence_id);
 
-            let ref mut receive_entry = self.receive_window[self.window_index(sequence_id)];
-
-            if let Some(_) = receive_entry {
+            if self.receive_window[window_idx].is_some() {
                 // This packet awaits delivery. Stop advancement here.
                 self.advance_window(sequence_id);
                 return;

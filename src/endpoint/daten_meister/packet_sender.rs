@@ -69,11 +69,11 @@ pub struct PacketSender {
     next_id: u32,
     window: Box<[Option<WindowEntry>]>,
 
-    max_alloc: usize,
-    alloc: usize,
-
     window_parent_id: Option<u32>,
     channels: Box<[Channel]>,
+
+    max_alloc: usize,
+    alloc: usize,
 
     send_queue_size: usize,
 }
@@ -84,10 +84,13 @@ impl PacketSender {
         debug_assert!(window_size <= MAX_PACKET_WINDOW_SIZE);
         debug_assert!(window_size & (window_size - 1) == 0);
 
-        let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
+        debug_assert!(packet_id::is_valid(base_id));
 
         let window: Vec<Option<WindowEntry>> = (0 .. window_size).map(|_| None).collect();
+
         let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
+
+        let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
 
         Self {
             packet_send_queue: VecDeque::new(),
@@ -97,11 +100,11 @@ impl PacketSender {
 
             window: window.into_boxed_slice(),
 
-            max_alloc: max_alloc_ceil,
-            alloc: 0,
-
             window_parent_id: None,
             channels: channels.into_boxed_slice(),
+
+            max_alloc: max_alloc_ceil,
+            alloc: 0,
 
             send_queue_size: 0,
         }
