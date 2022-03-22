@@ -62,12 +62,20 @@ impl PacketSendEntry {
     }
 }
 
+macro_rules! window_index {
+    ($self:ident, $sequence_id:expr) => {
+        ($sequence_id & $self.window_mask) as usize
+    };
+}
+
 pub struct PacketSender {
     packet_send_queue: VecDeque<PacketSendEntry>,
 
     base_id: u32,
     next_id: u32,
     window: Box<[Option<WindowEntry>]>,
+    window_size: u32,
+    window_mask: u32,
 
     window_parent_id: Option<u32>,
     channels: Box<[Channel]>,
@@ -90,15 +98,16 @@ impl PacketSender {
 
         let channels: Vec<Channel> = (0 .. CHANNEL_COUNT).map(|_| Channel::new()).collect();
 
-        let max_alloc_ceil = (max_alloc + MAX_FRAGMENT_SIZE - 1)/MAX_FRAGMENT_SIZE*MAX_FRAGMENT_SIZE;
+        let max_alloc_ceil = ((max_alloc + MAX_FRAGMENT_SIZE - 1) / MAX_FRAGMENT_SIZE) * MAX_FRAGMENT_SIZE;
 
         Self {
             packet_send_queue: VecDeque::new(),
 
             base_id: base_id,
             next_id: base_id,
-
             window: window.into_boxed_slice(),
+            window_size: window_size,
+            window_mask: window_size - 1,
 
             window_parent_id: None,
             channels: channels.into_boxed_slice(),
@@ -154,7 +163,7 @@ impl PacketSender {
         }
 
         if let Some(packet) = self.packet_send_queue.front() {
-            if packet_id::sub(self.next_id, self.base_id) as usize >= self.window.len() {
+            if packet_id::sub(self.next_id, self.base_id) >= self.window_size {
                 return None;
             }
 
@@ -196,7 +205,7 @@ impl PacketSender {
 
             let pending_packet_clone = Rc::clone(&pending_packet);
 
-            let window_idx = sequence_id as usize % self.window.len();
+            let window_idx = window_index!(self, sequence_id);
 
             debug_assert!(self.window[window_idx].is_none());
             self.window[window_idx] = Some(WindowEntry {
@@ -233,38 +242,34 @@ impl PacketSender {
     // Responds to a receive window acknowledgement. All packet data beyond the new receive window
     // is forgotten, thereby freeing transfer window & allocation space for new packets.
     pub fn acknowledge(&mut self, receiver_base_id: u32) {
-        let window_size = packet_id::sub(self.next_id, self.base_id);
-        let ack_delta = packet_id::sub(receiver_base_id, self.base_id);
+        let receiver_delta = packet_id::sub(receiver_base_id, self.base_id);
+        let span = packet_id::sub(self.next_id, self.base_id);
 
-        if ack_delta > window_size {
+        if receiver_delta > span {
             return;
         }
 
         while self.base_id != receiver_base_id {
-            let window_idx = self.base_id as usize % self.window.len();
-            let ref mut window_entry = self.window[window_idx];
+            let window_idx = window_index!(self, self.base_id);
+            let ref mut entry = self.window[window_idx].as_ref().unwrap();
 
-            if let Some(entry) = window_entry {
-                let ref mut channel = self.channels[entry.channel_id as usize];
+            let ref mut channel = self.channels[entry.channel_id as usize];
 
-                if let Some(parent_id) = self.window_parent_id {
-                    if parent_id == self.base_id {
-                        self.window_parent_id = None;
-                    }
+            if let Some(parent_id) = self.window_parent_id {
+                if parent_id == self.base_id {
+                    self.window_parent_id = None;
                 }
-
-                if let Some(parent_id) = channel.parent_id {
-                    if parent_id == self.base_id {
-                        channel.parent_id = None;
-                    }
-                }
-
-                self.alloc -= entry.alloc_size;
-
-                *window_entry = None;
-            } else {
-                panic!();
             }
+
+            if let Some(parent_id) = channel.parent_id {
+                if parent_id == self.base_id {
+                    channel.parent_id = None;
+                }
+            }
+
+            self.alloc -= entry.alloc_size;
+
+            self.window[window_idx] = None;
 
             self.base_id = packet_id::add(self.base_id, 1);
         }

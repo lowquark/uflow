@@ -56,7 +56,7 @@ impl Channel {
 }
 
 macro_rules! window_index {
-    ($self:ident, $sequence_id:ident) => {
+    ($self:ident, $sequence_id:expr) => {
         ($sequence_id & $self.receive_window_mask) as usize
     };
 }
@@ -204,35 +204,61 @@ impl PacketReceiver {
     }
 
     fn try_unset_channel_base_id(&mut self, sequence_id: u32) {
-        let ref mut base_marker = self.channel_base_markers[window_index!(self, sequence_id)];
+        let window_idx = window_index!(self, sequence_id);
 
+        let ref mut base_marker = self.channel_base_markers[window_idx];
         if let Some(channel_id) = base_marker.take() {
             self.channels[channel_id as usize].base_id = None;
         }
     }
 
     fn advance_window(&mut self, new_base_id: u32) {
-        let base_id = self.base_id;
-        let new_base_delta = packet_id::sub(new_base_id, base_id);
+        let new_base_delta = packet_id::sub(new_base_id, self.base_id);
 
-        if new_base_delta != 0 {
-            debug_assert!(new_base_delta <= self.receive_window_size);
+        debug_assert!(new_base_delta <= self.receive_window_size);
 
-            for i in 0 .. new_base_delta {
-                let sequence_id = packet_id::add(base_id, i);
-                self.assembly_window.clear(window_index!(self, sequence_id));
-
-                let next_sequence_id = packet_id::add(base_id, i + 1);
-                self.try_unset_channel_base_id(next_sequence_id);
-            }
-
-            let end_delta = packet_id::sub(self.end_id, base_id);
-            if end_delta < new_base_delta {
-                self.end_id = new_base_id;
-            }
-
-            self.base_id = new_base_id;
+        if packet_id::sub(self.end_id, self.base_id) < new_base_delta {
+            self.end_id = new_base_id;
         }
+
+        let mut id = self.base_id;
+        while id != new_base_id {
+            let window_idx = window_index!(self, id);
+
+            let flag_bit = 1 << (window_idx % 64);
+            let flags_index = window_idx / 64;
+
+            self.receive_window_flags[flags_index] &= !flag_bit;
+
+            id = packet_id::add(id, 1);
+        }
+
+        let mut id = self.base_id;
+        while id != new_base_id {
+            let window_idx = window_index!(self, id);
+
+            self.receive_window[window_idx] = None;
+
+            id = packet_id::add(id, 1);
+        }
+
+        let mut id = self.base_id;
+        while id != new_base_id {
+            let window_idx = window_index!(self, id);
+
+            self.assembly_window.clear(window_idx);
+
+            id = packet_id::add(id, 1);
+        }
+
+        let mut id = self.base_id;
+        while id != new_base_id {
+            id = packet_id::add(id, 1);
+
+            self.try_unset_channel_base_id(id);
+        }
+
+        self.base_id = new_base_id;
     }
 
     // Delivers as many received packets as possible, and advances channel base IDs accordingly.
@@ -254,11 +280,7 @@ impl PacketReceiver {
         // { channel_id, channel_parent_lead, data } ?
         let mut sequence_id = base_id;
 
-        loop {
-            if sequence_id == end_id {
-                break;
-            }
-
+        while sequence_id != end_id {
             if self.channel_ready_flags == 0 {
                 //println!("channel_ready_flags == 0, breaking");
                 break;
@@ -307,12 +329,11 @@ impl PacketReceiver {
                         // TODO: Base ID markers only need to be updated once per receive()
                         self.set_channel_base_id(channel_id, packet_id::add(sequence_id, 1));
                     } else {
-                        // Cease to consider delivering packets from this channel
+                        // Cease to consider delivering packets from this channel until new,
+                        // deliverable packets have arrived
 
                         // Note: If any packets are deliverable past this one (parent_lead = 0),
-                        // that is an error on the sender's part. However, ignoring all future
-                        // packets on this channel permits faster iteration and a possible early
-                        // exit.
+                        // that is an error on the sender's part
 
                         self.channel_ready_flags &= !channel_id_bit;
                     }
@@ -329,15 +350,13 @@ impl PacketReceiver {
         let mut new_base_id = base_id;
         let mut sequence_id = base_id;
 
-        loop {
-            if sequence_id == end_id {
-                break;
-            }
-
+        while sequence_id != end_id {
             let window_idx = window_index!(self, sequence_id);
 
             let flag_bit = 1 << (window_idx % 64);
             let flags_index = window_idx / 64;
+
+            let next_id = packet_id::add(sequence_id, 1);
 
             if self.receive_window_flags[flags_index] & flag_bit != 0 {
                 // If a receive window flag is set, that window entry exists
@@ -348,17 +367,14 @@ impl PacketReceiver {
 
                 if window_parent_lead == 0 || window_parent_lead > window_delta {
                     // println!("Forget sequence ID {}", sequence_id);
-                    new_base_id = packet_id::add(sequence_id, 1);
-
-                    self.receive_window[window_idx] = None;
-                    self.receive_window_flags[flags_index] &= !flag_bit;
+                    new_base_id = next_id;
                 } else {
                     // Cease to consider advancing the window
                     break;
                 }
             }
 
-            sequence_id = packet_id::add(sequence_id, 1);
+            sequence_id = next_id;
         }
 
         self.advance_window(new_base_id);
@@ -369,25 +385,38 @@ impl PacketReceiver {
     // comes first. Any incomplete or dropped packets are skipped, and as a result, the sender must
     // ensure that all reliable packets have been received in full prior to issuing the request.
     pub fn resynchronize(&mut self, sender_next_id: u32) {
-        let sender_delta = packet_id::sub(sender_next_id, self.base_id);
+        debug_assert!(packet_id::is_valid(sender_next_id));
+
+        let base_id = self.base_id;
+        let sender_delta = packet_id::sub(sender_next_id, base_id);
 
         if sender_delta > self.receive_window_size {
             return;
         }
 
-        for i in 0 .. sender_delta {
-            let sequence_id = packet_id::add(self.base_id, i);
+        let mut sequence_id = base_id;
+
+        loop {
+            if sequence_id == sender_next_id {
+                // No complete packets exist. Match with sender.
+                break;
+            }
+
             let window_idx = window_index!(self, sequence_id);
 
-            if self.receive_window[window_idx].is_some() {
+            let flag_bit = 1 << (window_idx % 64);
+            let flags_index = window_idx / 64;
+
+            if self.receive_window_flags[flags_index] & flag_bit != 0 {
+                debug_assert!(self.receive_window[window_idx].is_some());
                 // This packet awaits delivery. Stop advancement here.
-                self.advance_window(sequence_id);
-                return;
+                break;
             }
+
+            sequence_id = packet_id::add(sequence_id, 1);
         }
 
-        // No complete packets exist. Match with sender.
-        self.advance_window(sender_next_id);
+        self.advance_window(sequence_id);
     }
 }
 
