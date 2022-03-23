@@ -22,9 +22,10 @@
 
 * Implemented a channel tracking mechanism for received packets which
   elliminates any need to specify the number of channels during connection
-  initialization
+  initialization (and removed the associated `EndpointConfig` parameter)
 
-* Optimized packet reordering/delivery for sparsely populated receive windows
+* Optimized packet reordering/delivery for sparsely populated receive windows,
+  unnecessary iteration, and otherwise cache-efficiency
 
 * Removed the mostly redundant setters of `EndpointConfig`
 
