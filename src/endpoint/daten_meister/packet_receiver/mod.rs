@@ -85,7 +85,9 @@ pub struct PacketReceiver {
 
     channels: Box<[Channel]>,
     channel_base_markers: Box<[Option<u8>]>,
+
     channel_ready_flags: u64,
+    window_ready_flag: bool,
 }
 
 impl PacketReceiver {
@@ -127,7 +129,9 @@ impl PacketReceiver {
 
             channels: channels.into_boxed_slice(),
             channel_base_markers: channel_base_markers.into_boxed_slice(),
+
             channel_ready_flags: 0,
+            window_ready_flag: false,
         }
     }
 
@@ -195,13 +199,20 @@ impl PacketReceiver {
 
             channel.packet_count += 1;
 
-            // Set corresponding bit in channel_ready_flags to indicate a packet is ready on this
-            // channel
+            // Set corresponding bit in channel_ready_flags if this packet may be received
             let channel_parent_lead = packet.channel_parent_lead as u32;
             let channel_delta = packet_id::sub(sequence_id, channel_base_id);
 
             if channel_parent_lead == 0 || channel_parent_lead > channel_delta {
                 self.channel_ready_flags |= 1 << channel_idx;
+            }
+
+            // Set window ready flag if this packet will cause the window to advance
+            let window_parent_lead = packet.window_parent_lead as u32;
+            let window_delta = packet_id::sub(sequence_id, base_id);
+
+            if window_parent_lead == 0 || window_parent_lead > window_delta {
+                self.window_ready_flag = true;
             }
         }
     }
@@ -351,36 +362,43 @@ impl PacketReceiver {
             sequence_id = packet_id::add(sequence_id, 1);
         }
 
-        let mut new_base_id = base_id;
-        let mut sequence_id = base_id;
+        if self.window_ready_flag {
+            self.window_ready_flag = false;
 
-        while sequence_id != end_id {
-            let window_idx = window_index!(self, sequence_id);
+            let mut new_base_id = base_id;
+            let mut sequence_id = base_id;
 
-            let flag_bit = 1 << (window_idx % 64);
-            let flags_index = window_idx / 64;
+            while sequence_id != end_id {
+                let window_idx = window_index!(self, sequence_id);
 
-            let next_id = packet_id::add(sequence_id, 1);
+                let flag_bit = 1 << (window_idx % 64);
+                let flags_index = window_idx / 64;
 
-            if self.entry_flags[flags_index] & flag_bit != 0 {
-                let ref mut window_entry = self.window_entries[window_idx];
+                let next_id = packet_id::add(sequence_id, 1);
 
-                let window_parent_lead = window_entry.window_parent_lead as u32;
-                let window_delta = packet_id::sub(sequence_id, new_base_id);
+                if self.entry_flags[flags_index] & flag_bit != 0 {
+                    let ref mut window_entry = self.window_entries[window_idx];
 
-                if window_parent_lead == 0 || window_parent_lead > window_delta {
-                    // println!("Forget sequence ID {}", sequence_id);
-                    new_base_id = next_id;
-                } else {
-                    // Cease to consider advancing the window
-                    break;
+                    let window_parent_lead = window_entry.window_parent_lead as u32;
+                    let window_delta = packet_id::sub(sequence_id, new_base_id);
+
+                    if window_parent_lead == 0 || window_parent_lead > window_delta {
+                        // println!("Forget sequence ID {}", sequence_id);
+                        new_base_id = next_id;
+                        // Window advancement implies that this packet has been delivered
+                        debug_assert!(self.data_flags[flags_index] & flag_bit == 0);
+                        debug_assert!(self.data_entries[window_idx].data.is_none());
+                    } else {
+                        // Cease to consider advancing the window
+                        break;
+                    }
                 }
+
+                sequence_id = next_id;
             }
 
-            sequence_id = next_id;
+            self.advance_window(new_base_id);
         }
-
-        self.advance_window(new_base_id);
     }
 
     // Responds to a resynchronization request sent by the sender. Advances the transfer window to
