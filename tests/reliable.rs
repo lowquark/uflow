@@ -114,7 +114,7 @@ fn server_thread() -> Vec<md5::Digest> {
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     'outer: loop {
-        server.step();
+        server.service();
 
         for peer in server.incoming() {
             peers.push(peer);
@@ -177,7 +177,7 @@ fn client_thread() -> Vec<md5::Digest> {
     let mut packet_ids = [0u32; NUM_CHANNELS];
 
     for _ in 0..num_steps {
-        client.step();
+        client.service();
 
         for event in server_peer.poll_events() {
             match event {
@@ -213,7 +213,7 @@ fn client_thread() -> Vec<md5::Digest> {
     server_peer.disconnect();
 
     'outer: loop {
-        client.step();
+        client.service();
 
         for event in server_peer.poll_events() {
             match event {

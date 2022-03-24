@@ -22,8 +22,7 @@ fn alloc_size(packet_size: usize) -> usize {
 }
 
 struct WindowEntry {
-    // The packet to be sent in this slot (never read, only deleted once window advances)
-    #[allow(dead_code)]
+    // The packet to be sent in this slot
     packet: PendingPacketRc,
     // How many allocation points this packet is worth
     alloc_size: usize,
@@ -83,7 +82,7 @@ pub struct PacketSender {
     max_alloc: usize,
     alloc: usize,
 
-    send_queue_size: usize,
+    total_size: usize,
 }
 
 impl PacketSender {
@@ -115,7 +114,7 @@ impl PacketSender {
             max_alloc: max_alloc_ceil,
             alloc: 0,
 
-            send_queue_size: 0,
+            total_size: 0,
         }
     }
 
@@ -123,8 +122,8 @@ impl PacketSender {
         self.packet_send_queue.len()
     }
 
-    pub fn send_queue_size(&self) -> usize {
-        self.send_queue_size
+    pub fn total_size(&self) -> usize {
+        self.total_size
     }
 
     pub fn next_id(&self) -> u32 {
@@ -141,7 +140,7 @@ impl PacketSender {
         debug_assert!(data.len() <= self.max_alloc);
         debug_assert!((channel_id as usize) < CHANNEL_COUNT);
 
-        self.send_queue_size += data.len();
+        self.total_size += data.len();
         self.packet_send_queue.push_back(PacketSendEntry::new(data, channel_id, mode, flush_id));
     }
 
@@ -152,7 +151,7 @@ impl PacketSender {
             match packet.mode {
                 SendMode::TimeSensitive => {
                     if packet.flush_id != flush_id {
-                        self.send_queue_size -= packet.data.len();
+                        self.total_size -= packet.data.len();
                         self.packet_send_queue.pop_front();
                     } else {
                         break;
@@ -174,7 +173,6 @@ impl PacketSender {
             }
 
             let packet = self.packet_send_queue.pop_front().unwrap();
-            self.send_queue_size -= packet.data.len();
 
             let sequence_id = self.next_id;
             let ref mut channel = self.channels[packet.channel_id as usize];
@@ -268,6 +266,7 @@ impl PacketSender {
             }
 
             self.alloc -= entry.alloc_size;
+            self.total_size -= entry.packet.borrow().size();
 
             self.window[window_idx] = None;
 

@@ -81,15 +81,16 @@ impl Peer {
         self.endpoint_ref.borrow().rtt_s()
     }
 
-    /// Returns the total size of all packets which have not yet been sent.
+    /// Returns the combined size of all packets awaiting delivery, in bytes.
     ///
-    /// Packets which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are always included in
-    /// this total, even if they would not be sent.
-    pub fn send_queue_size(&self) -> usize {
-        self.endpoint_ref.borrow().send_queue_size()
+    /// Packets which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this
+    /// total, even if they would not be sent.
+    pub fn pending_send_size(&self) -> usize {
+        self.endpoint_ref.borrow().pending_send_size()
     }
 
-    /// Returns `true` if the connection has been terminated or timed out.
+    /// Returns `true` if the connection has been terminated or timed out. Connections are never
+    /// reconnected once disconnected.
     pub fn is_disconnected(&self) -> bool {
         let endpoint_ref = self.endpoint_ref.borrow();
         return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();

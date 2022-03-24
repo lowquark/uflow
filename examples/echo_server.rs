@@ -11,7 +11,7 @@ fn main() {
 
     loop {
         // Process inbound UDP frames
-        server.step();
+        server.service();
 
         // Add each incoming connection to the client list
         for client_peer in server.incoming() {

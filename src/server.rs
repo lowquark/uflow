@@ -73,12 +73,13 @@ impl Server {
         std::mem::take(&mut self.incoming_peers).into_iter()
     }
 
-    /// Processes UDP frames received since the previous call to [`step()`](Self::step).
-    ///
-    /// Current [`Peer`](peer::Peer) objects will be updated as relevant data is received. Call
-    /// [`Peer::poll_events()`](peer::Peer::poll_events) after calling this function to retrieve
-    /// incoming packets and connection status updates for an individual peer.
-    pub fn step(&mut self) {
+    /// Reads as many UDP frames as possible from the internal socket, and updates the states of
+    /// active connections accordingly. Call [`Peer::poll_events()`](peer::Peer::poll_events) after
+    /// calling this function to retrieve incoming packets and connection status updates for an
+    /// individual peer.
+    pub fn service(&mut self) {
+        self.flush();
+
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {
@@ -95,7 +96,7 @@ impl Server {
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
-    /// Sends pending outbound frames (acknowledgements, keep-alives, packet data, etc.) for each
+    /// Sends pending outbound frames (packet data, acknowledgements, keep-alives, etc.) for each
     /// peer.
     ///
     /// *Note*: Internally, `uflow` uses the [leaky bucket
@@ -118,7 +119,6 @@ impl Server {
     fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
         if let Some(endpoint) = self.endpoints.get_mut(&address) {
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-
             endpoint.borrow_mut().handle_frame(frame, data_sink);
         } else {
             if self.endpoints.len() < self.max_peer_count as usize {

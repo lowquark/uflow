@@ -74,6 +74,10 @@ impl PendingPacket {
         self.ack_flags[fragment_id as usize] = true;
     }
 
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
+
     pub fn datagram<'a>(&'a self, fragment_id: u16) -> frame::DatagramRef<'a> {
         debug_assert!(fragment_id <= self.last_fragment_id);
 
