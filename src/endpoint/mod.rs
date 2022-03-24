@@ -365,7 +365,7 @@ impl Endpoint {
         }
     }
 
-    pub fn step_timeouts(&mut self) {
+    pub fn step(&mut self) {
         let now = time::Instant::now();
 
         match self.state {
@@ -375,7 +375,9 @@ impl Endpoint {
                     return;
                 }
             }
-            State::Connected(_) => {
+            State::Connected(ref mut state) => {
+                state.daten_meister.fill_flush_alloc();
+
                 if now - self.watchdog_time > CONNECTED_WATCHDOG_TIMEOUT {
                     self.enter_zombie();
                     return;

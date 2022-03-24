@@ -153,6 +153,22 @@ impl DatenMeister {
         self.packet_sender.acknowledge(frame.packet_window_base_id);
     }
 
+    pub fn fill_flush_alloc(&mut self) {
+        let now = time::Instant::now();
+
+        if let Some(time_last_flushed) = self.time_last_flushed {
+            let send_rate = self.send_rate_comp.send_rate();
+            let rtt_s = self.send_rate_comp.rtt_s();
+
+            let delta_time = (now - time_last_flushed).as_secs_f64();
+            let new_bytes = (send_rate * delta_time).round() as usize;
+            let alloc_max = ((send_rate * rtt_s.unwrap_or(0.0)).round() as usize).max(MAX_FRAME_SIZE);
+
+            self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
+        }
+        self.time_last_flushed = Some(now);
+    }
+
     pub fn flush(&mut self, sink: &mut impl FrameSink) {
         let now = time::Instant::now();
         let now_ms = (now - self.time_base).as_millis() as u64;
@@ -171,25 +187,8 @@ impl DatenMeister {
             }
         );
 
-        // Fill flush allocation according to send rate
-        self.fill_flush_alloc(now);
-
         // Send as many frames as possible
         self.emit_frames(now_ms, rtt_ms, rto_ms, sink);
-    }
-
-    fn fill_flush_alloc(&mut self, now: time::Instant) {
-        if let Some(time_last_flushed) = self.time_last_flushed {
-            let send_rate = self.send_rate_comp.send_rate();
-            let rtt_s = self.send_rate_comp.rtt_s();
-
-            let delta_time = (now - time_last_flushed).as_secs_f64();
-            let new_bytes = (send_rate * delta_time).round() as usize;
-            let alloc_max = ((send_rate * rtt_s.unwrap_or(0.0)).round() as usize).max(MAX_FRAME_SIZE);
-
-            self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
-        }
-        self.time_last_flushed = Some(now);
     }
 
     fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, rto_ms: u64, sink: &mut impl FrameSink) {
