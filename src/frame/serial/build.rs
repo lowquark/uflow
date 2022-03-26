@@ -20,7 +20,7 @@ use crate::packet_id;
 
 // If we allow a maximum of 64 packets per frame, and 8192 frames per transfer window, then there
 // are 16384 frames in the receive window, and a 20-bit sequence ID is sufficient to ensure no
-// packets are ambiguous within the receive window.
+// packets are ambiguous within it
 
 // C: Channel ID          [0, 2^6)
 // S: Sequence ID         [0, 2^20)

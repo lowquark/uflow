@@ -406,8 +406,6 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::MAX_FRAME_WINDOW_SIZE;
-    // TODO:
-    //use crate::MAX_FRAME_WINDOW_TAIL_SIZE;
 
     #[test]
     fn feedback_generation() {
