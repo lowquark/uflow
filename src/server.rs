@@ -101,8 +101,8 @@ impl Server {
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
-    /// Sends pending outbound frames (packet data, acknowledgements, keep-alives, etc.) for each
-    /// peer.
+    /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
+    /// possible for each peer.
     pub fn flush(&mut self) {
         for (&address, endpoint) in self.endpoints.iter_mut() {
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
