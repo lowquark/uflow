@@ -29,8 +29,6 @@
 
 * Removed the mostly redundant setters of `EndpointConfig`
 
-* Renamed `(Server|Client)::step()` to `(Server|Client)::service()`
-
 * Improved the windup behavior of traffic shaping through a more opportunistic
   leaky bucket algorithm—the result is compliant with RFC 5348, section 4.6
 
