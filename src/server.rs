@@ -80,11 +80,9 @@ impl Server {
     ///
     /// *Note*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
-    /// frames are sent. Thus, this function should be called relatively frequently (minimum least
-    /// once per connection round-trip time) to ensure that data is transferred smoothly.
-    pub fn service(&mut self) {
-        self.flush();
-
+    /// frames are sent. To ensure that data is transferred smoothly, this function should be
+    /// called relatively frequently (a minimum of once per connection round-trip time).
+    pub fn step(&mut self) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {

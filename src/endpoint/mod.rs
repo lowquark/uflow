@@ -207,7 +207,7 @@ impl Endpoint {
 
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         assert!(data.len() <= self.max_packet_size,
-                "send failed: packet of size {} exceeds maximum size {}",
+                "send failed: packet of size {} exceeds configured maximum of {}",
                 data.len(),
                 self.max_packet_size);
 

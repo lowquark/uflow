@@ -30,7 +30,7 @@ impl Peer {
     /// # Error Handling
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel (i.e.
-    /// `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the configured [maximum packet
+    /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the configured [maximum packet
     /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
@@ -43,9 +43,7 @@ impl Peer {
     /// the end.
     ///
     /// *Note 2*: Packets that have been received will not be acknowledged until this function is
-    /// called. The number of packets that may be queued prior to being delivered is limited by a
-    /// maximum transfer window, and by the [maximum receive
-    /// allocation](endpoint::Config#structfield.max_receive_alloc).
+    /// called.
     pub fn poll_events(&mut self) -> impl Iterator<Item = Event> {
         self.endpoint_ref.borrow_mut().poll_events()
     }

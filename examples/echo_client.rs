@@ -13,7 +13,7 @@ fn main() {
 
     loop {
         // Process inbound UDP frames
-        client.service();
+        client.step();
 
         // Handle events
         for event in server_peer.poll_events() {
