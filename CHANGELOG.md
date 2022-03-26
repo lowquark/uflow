@@ -3,9 +3,9 @@
 
 ## 0.6.0
 
-* Subtly altered the behavior of `(Server|Client)::step()` (and made calls to
-  `flush()` mandatory) in order to allow acknowledgements to indicate which
-  packets have been delivered without waiting for the next call to `step()`
+* Subtly altered the behavior of `(Server|Client)::step()` in order to allow
+  acknowledgements to indicate which packets have been delivered without
+  waiting for the next call to `step()`
 
 * Reduced the space of packet sequence IDs to a comfortable minimum of 20 bits,
   and optimized the data frame encoding so that certain packets containing less
@@ -16,8 +16,8 @@
 * Added a keepalive flag to `EndpointConfig`, allowing the application to
   specify whether or not to send keepalive frames
 
-* Implemented a peer query which returns the amount of data present in the send
-  queue, allowing the application to detect and terminate prohibitively slow
+* Added a method to `Peer` which returns the total amount of data awaiting
+  delivery, allowing the application to detect and terminate prohibitively slow
   connections
 
 * Implemented a channel tracking mechanism for received packets which
@@ -28,6 +28,11 @@
   unnecessary iteration, and otherwise cache-efficiency
 
 * Removed the mostly redundant setters of `EndpointConfig`
+
+* Renamed `(Server|Client)::step()` to `(Server|Client)::service()`
+
+* Improved the windup behavior of traffic shaping through a more opportunistic
+  leaky bucket algorithm—the result is compliant with RFC 5348, section 4.6
 
 ## 0.5.1
 
