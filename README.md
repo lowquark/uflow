@@ -16,8 +16,7 @@ by the venerable [ENet](http://enet.bespin.org) library.
   * Up to 64 independently sequenced packet streams
   * 4 intuitive packet transfer modes: *Time-Sensitive*, *Unreliable*,
     *Persistent*, and *Reliable*
-  * TCP-friendly, streaming congestion control implemented according to RFC
-    5348
+  * TCP-friendly, streaming congestion control implemented according to [RFC 5348](https://datatracker.ietf.org/doc/html/rfc5348)
   * Efficient frame encoding and transfer protocol with minimal packet overhead
   * CRC validation for all transmitted frames ([Polynomial: 0x132c00699](http://users.ece.cmu.edu/~koopman/crc/hd6.html))
   * 100% packet throughput and an unaffected delivery order under ideal network
