@@ -2,7 +2,6 @@
 use super::FrameSink;
 
 use crate::SendMode;
-use crate::MAX_FRAME_SIZE;
 use crate::frame;
 
 use std::time;
@@ -68,7 +67,7 @@ pub struct DatenMeister {
     time_last_flushed: Option<time::Instant>,
     sync_timeout_base_ms: u64,
 
-    flush_alloc: usize,
+    flush_alloc: isize,
     flush_id: u32,
 
     sync_reply: bool,
@@ -92,7 +91,7 @@ impl DatenMeister {
             time_last_flushed: None,
             sync_timeout_base_ms: 0,
 
-            flush_alloc: MAX_FRAME_SIZE,
+            flush_alloc: 0,
             flush_id: 0,
 
             sync_reply: false,
@@ -161,8 +160,8 @@ impl DatenMeister {
             let rtt_s = self.send_rate_comp.rtt_s();
 
             let delta_time = (now - time_last_flushed).as_secs_f64();
-            let new_bytes = (send_rate * delta_time).round() as usize;
-            let alloc_max = ((send_rate * rtt_s.unwrap_or(0.0)).round() as usize).max(MAX_FRAME_SIZE);
+            let new_bytes = (send_rate * delta_time).round() as isize;
+            let alloc_max = (send_rate * rtt_s.unwrap_or(0.0)).round() as isize;
 
             self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
         }
@@ -241,17 +240,17 @@ impl DatenMeister {
                 }
             }
 
-            if frame::serial::SYNC_FRAME_SIZE > self.flush_alloc {
+            if self.flush_alloc < 0 {
                 return Err(());
             }
 
             let frame = frame::Frame::SyncFrame(frame::SyncFrame { next_frame_id, next_packet_id });
 
             use frame::serial::Serialize;
-            let frame_data = frame.write();
+            let frame_bytes = frame.write();
 
-            sink.send(&frame_data);
-            self.flush_alloc -= frame_data.len();
+            sink.send(&frame_bytes);
+            self.flush_alloc -= frame_bytes.len() as isize;
             self.sync_timeout_base_ms = now_ms;
         }
 
@@ -270,11 +269,18 @@ impl DatenMeister {
 
         let emit_cb = |frame_bytes: Box<[u8]>| {
             sink.send(&frame_bytes);
-            *flush_alloc -= frame_bytes.len();
+            *flush_alloc -= frame_bytes.len() as isize;
             *sync_reply = false;
         };
 
-        let mut afe = emit::AckFrameEmitter::new(frame_window_base_id, packet_window_base_id, sync_reply_init, flush_alloc_init, emit_cb);
+        let mut afe = emit::AckFrameEmitter::new(frame_window_base_id, packet_window_base_id, flush_alloc_init, emit_cb);
+
+        if sync_reply_init {
+            match afe.push_dud() {
+                Err(_) => return Err(()),
+                Ok(_) => (),
+            }
+        }
 
         while let Some(ack_group) = self.frame_ack_queue.peek() {
             match afe.push(ack_group) {
@@ -300,7 +306,7 @@ impl DatenMeister {
         let emit_cb = |frame_bytes: Box<[u8]>| {
             sink.send(&frame_bytes);
             send_rate_comp.notify_frame_sent(now_ms);
-            *flush_alloc -= frame_bytes.len();
+            *flush_alloc -= frame_bytes.len() as isize;
             *sync_timeout_base_ms = now_ms;
         };
 
@@ -398,6 +404,7 @@ mod tests {
     use crate::frame::Datagram;
 
     use crate::MAX_FRAGMENT_SIZE;
+    use crate::MAX_FRAME_SIZE;
     use crate::MAX_FRAME_WINDOW_SIZE;
     use crate::MAX_PACKET_WINDOW_SIZE;
 
@@ -477,10 +484,10 @@ mod tests {
             self.dm.frame_queue.acknowledge_group(group, rtt_ms);
         }
 
-        fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, max_send_size: usize) -> VecDeque<Box<[u8]>> {
+        fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, flush_alloc: isize) -> VecDeque<Box<[u8]>> {
             let mut test_sink = TestSink::new();
 
-            self.dm.flush_alloc = max_send_size;
+            self.dm.flush_alloc = flush_alloc;
 
             self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, &mut test_sink);
 
@@ -751,7 +758,7 @@ mod tests {
             ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Persistent);
         }
 
-        let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE * MAX_FRAME_WINDOW_SIZE as usize);
+        let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE as isize * MAX_FRAME_WINDOW_SIZE as isize);
         assert_eq!(frames.len(), MAX_FRAME_WINDOW_SIZE as usize);
 
         now_ms += MIN_SYNC_TIMEOUT_MS;
@@ -814,22 +821,22 @@ mod tests {
         let p0 = (0 .. 400).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
         ta.enqueue_packet(p0.clone(), 0, SendMode::Persistent);
 
-        let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE);
+        let frames = ta.emit_frames(0, rtt_ms, MAX_FRAME_SIZE as isize);
         assert_eq!(frames.len(), 1);
 
-        let frames = ta.emit_frames(1, rtt_ms, MAX_FRAME_SIZE);
+        let frames = ta.emit_frames(1, rtt_ms, MAX_FRAME_SIZE as isize);
         assert_eq!(frames.len(), 0);
 
         let resend_times = [ rtt_ms, 3*rtt_ms, 7*rtt_ms, 11*rtt_ms, 15*rtt_ms, 19*rtt_ms, 23*rtt_ms ];
 
         for &now_ms in resend_times.iter() {
-            let frames = ta.emit_frames(now_ms - 1, rtt_ms, MAX_FRAME_SIZE);
+            let frames = ta.emit_frames(now_ms - 1, rtt_ms, MAX_FRAME_SIZE as isize);
             assert_eq!(frames.len(), 0);
 
-            let frames = ta.emit_frames(now_ms    , rtt_ms, MAX_FRAME_SIZE);
+            let frames = ta.emit_frames(now_ms    , rtt_ms, MAX_FRAME_SIZE as isize);
             assert_eq!(frames.len(), 1);
 
-            let frames = ta.emit_frames(now_ms + 1, rtt_ms, MAX_FRAME_SIZE);
+            let frames = ta.emit_frames(now_ms + 1, rtt_ms, MAX_FRAME_SIZE as isize);
             assert_eq!(frames.len(), 0);
         }
     }
@@ -911,7 +918,7 @@ mod tests {
                 ta.enqueue_packet(Vec::new().into_boxed_slice(), 0, SendMode::Unreliable);
             }
 
-            let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE);
+            let frames = ta.emit_frames(now_ms, rtt_ms, MAX_FRAME_SIZE as isize);
             assert_eq!(frames.len(), 1);
 
             use frame::serial::Serialize;

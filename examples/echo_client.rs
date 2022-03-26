@@ -40,7 +40,7 @@ fn main() {
         if send_counter == 10 {
             let packet_data: Box<[u8]> = format!("Hello world {}!", message_counter).as_bytes().into();
 
-            server_peer.send(packet_data, 0, uflow::SendMode::Reliable);
+            server_peer.send(packet_data, 0, uflow::SendMode::Unreliable);
 
             send_counter = 0;
             message_counter += 1;

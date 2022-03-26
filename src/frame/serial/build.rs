@@ -4,13 +4,11 @@ use super::AckGroup;
 
 use super::DATA_FRAME_ID;
 use super::DATA_FRAME_MAX_DATAGRAM_COUNT;
-use super::DATA_FRAME_OVERHEAD;
 use super::DATAGRAM_HEADER_SIZE_MICRO;
 use super::DATAGRAM_HEADER_SIZE_SMALL;
 use super::DATAGRAM_HEADER_SIZE_LARGE;
 
 use super::ACK_FRAME_ID;
-use super::ACK_FRAME_OVERHEAD;
 use super::ACK_GROUP_SIZE;
 
 use super::FRAME_CRC_SIZE;
@@ -52,7 +50,6 @@ pub struct DataFrameBuilder {
 }
 
 impl DataFrameBuilder {
-    pub const INITIAL_SIZE: usize = DATA_FRAME_OVERHEAD;
     pub const MAX_COUNT: usize = DATA_FRAME_MAX_DATAGRAM_COUNT;
 
     pub fn new(sequence_id: u32, nonce: bool) -> Self {
@@ -192,8 +189,6 @@ pub struct AckFrameBuilder {
 }
 
 impl AckFrameBuilder {
-    pub const INITIAL_SIZE: usize = ACK_FRAME_OVERHEAD;
-
     pub fn new(frame_window_base_id: u32, packet_window_base_id: u32) -> Self {
         let header = vec![
             ACK_FRAME_ID,

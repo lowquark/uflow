@@ -23,7 +23,8 @@ impl<'a> endpoint::FrameSink for UdpFrameSink<'a> {
     fn send(&mut self, frame_data: &[u8]) {
         //use crate::frame;
         //use frame::serial::Serialize;
-        //println!("{:?}", frame::Frame::read(&frame_data));
+        //let time_millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        //println!("{} {:?}", time_millis, frame::Frame::read(&frame_data));
         let _ = self.socket.send_to(frame_data, self.address);
     }
 }
