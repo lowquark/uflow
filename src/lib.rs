@@ -22,18 +22,17 @@
 //!     .expect("Failed to bind/configure socket");
 //! ```
 //!
-//! As a non-blocking interface, a server depends on periodic calls to [`Server::step()`] in
-//! order to handle inbound traffic and update connection states accordingly. In addition,
-//! [`Server::flush()`] must be called in order to send any pending outbound data on the network.
-//!
-//! Once the server has received a valid connection request, a [`Peer`] object will be created to
-//! represent the connection. New `Peer` objects may be obtained by calling
+//! As a non-blocking interface, a server depends on periodic calls to [`Server::step()`] to
+//! process inbound traffic, to update connection states, and for basic timekeeping. Once the
+//! server has received a valid connection request, a [`Peer`] object will be created to represent
+//! the connection. New `Peer` objects may be obtained by calling
 //! [`Server::incoming()`](Server::incoming), and stored wherever is most convenient.
 //!
 //! A `Peer` object functions as a handle for a given connection, and allows the application to
-//! transfer data to/from a particular host using a single object. However, sent packets will not
-//! be placed on the network until the next call to `Server::flush()`, and new events will not be
-//! delivered until the next call to `Server::step()`.
+//! transfer data to/from a particular host using a single object. However, events will not be
+//! received, and sent packets will not be placed on the network, until the next call to
+//! `Server::step()`. Alternatively, the application may call [`Server::flush()`] to send all
+//! pending outbound data to all connected hosts immediately.
 //!
 //! A basic server loop that extends the above example is shown below:
 //!
@@ -105,10 +104,10 @@
 //!     .expect("Invalid address");
 //! ```
 //!
-//! Like a server, a client depends on periodic calls to [`Client::step()`], and
-//! [`Client::flush()`] in order to exchange data and update connection states. Once a connection
-//! has been established, the corresponding `Peer` will generate a [`Connect`](Event::Connect)
-//! event. A basic client loop extending the above example is shown below:
+//! Like a server, a client depends on periodic calls to [`Client::step()`] in order to process
+//! inbound traffic, to update connection states, and for basic timekeeping. Once a connection has
+//! been established, the corresponding `Peer` will generate a [`Connect`](Event::Connect) event. A
+//! basic client loop extending the above example is shown below:
 //!
 //! ```
 //! # let mut client = uflow::Client::bind_any_ipv4()
@@ -206,7 +205,7 @@
 //! [`Peer::pending_send_size()`](Peer::pending_send_size), and if desired, an application can use
 //! this value to terminate excessively delayed connections. In addition, the application may send
 //! packets using [`SendMode::TimeSensitive`] to drop packets at the sender if they could not be
-//! sent immediately (i.e. during the next call to `flush()`). In the event that the total
+//! sent immediately (i.e. prior to the next call to `step()`). In the event that the total
 //! available bandwidth is limited, this prevents outdated packets from using any unnecessary
 //! bandwidth, and prioritizes sending newer packets in the queue.
 //!
@@ -281,7 +280,7 @@
 //! #     .expect("Invalid address");
 //! peer.disconnect();
 //!
-//! // ... calls to step() & flush() continue
+//! // ... calls to step() continue
 //! ```
 //!
 //! Alternatively, one may call [`Peer::disconnect_now()`], which sends no further packets and
@@ -346,10 +345,9 @@ pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGME
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SendMode {
     /// This packet will be sent at most once. If this packet cannot be sent immediately (i.e.
-    /// during the next call to [`Client::flush`](Client::flush) or
-    /// [`Server::flush`](Server::flush)), it will be discarded by the sender. If this packet has
-    /// not been received, but a subsequent packet has been received on the same channel, the
-    /// receiver may skip this packet.
+    /// prior to the next call to [`Client::step`] or [`Server::step`]), it will be discarded by
+    /// the sender. If this packet has not been received, but a subsequent packet has been received
+    /// on the same channel, the receiver may skip this packet.
     TimeSensitive,
     /// This packet will be sent exactly once. If this packet has not been received, but a
     /// subsequent packet has been received on the same channel, the receiver may skip this packet.

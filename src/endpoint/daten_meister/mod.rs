@@ -63,6 +63,10 @@ pub struct DatenMeister {
 
     send_rate_comp: send_rate::SendRateComp,
 
+    now_ms: u64,
+    rtt_ms: u64,
+    rto_ms: u64,
+
     time_base: time::Instant,
     time_last_flushed: Option<time::Instant>,
     sync_timeout_base_ms: u64,
@@ -86,6 +90,10 @@ impl DatenMeister {
             frame_ack_queue: frame_ack_queue::FrameAckQueue::new(config.rx_frame_window_size, config.rx_frame_base_id),
 
             send_rate_comp: send_rate::SendRateComp::new(config.tx_bandwidth_limit),
+
+            now_ms: 0,
+            rtt_ms: 0,
+            rto_ms: 0,
 
             time_base: time::Instant::now(),
             time_last_flushed: None,
@@ -152,9 +160,42 @@ impl DatenMeister {
         self.packet_sender.acknowledge(frame.packet_window_base_id);
     }
 
-    pub fn fill_flush_alloc(&mut self) {
+    pub fn step(&mut self) {
         let now = time::Instant::now();
 
+        let now_ms = (now - self.time_base).as_millis() as u64;
+        let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(INITIAL_RTT_ESTIMATE_MS);
+        let rto_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS);
+
+        // Store these values for subsequent flush()
+        self.now_ms = now_ms;
+        self.rtt_ms = rtt_ms;
+        self.rto_ms = rto_ms;
+
+        // Forget old frame data
+        self.frame_queue.forget_frames(now_ms.saturating_sub(rtt_ms*4), self.send_rate_comp.rtt_ms());
+
+        // Fill flush allocation
+        self.fill_flush_alloc(now);
+
+        // Ignore previous TimeSensitive packets
+        self.flush_id = self.flush_id.wrapping_add(1);
+
+        // Update send rate value
+        let ref mut frame_queue = self.frame_queue;
+        self.send_rate_comp.step(now_ms, frame_queue.get_feedback(now_ms),
+            |new_loss_rate: f64| {
+                frame_queue.reset_loss_rate(new_loss_rate);
+            }
+        );
+    }
+
+    pub fn flush(&mut self, sink: &mut impl FrameSink) {
+        // Send as many frames as possible
+        self.emit_frames(self.now_ms, self.rtt_ms, self.rto_ms, self.flush_id, sink);
+    }
+
+    fn fill_flush_alloc(&mut self, now: time::Instant) {
         if let Some(time_last_flushed) = self.time_last_flushed {
             let send_rate = self.send_rate_comp.send_rate();
             let rtt_s = self.send_rate_comp.rtt_s();
@@ -168,32 +209,7 @@ impl DatenMeister {
         self.time_last_flushed = Some(now);
     }
 
-    pub fn flush(&mut self, sink: &mut impl FrameSink) {
-        let now = time::Instant::now();
-        let now_ms = (now - self.time_base).as_millis() as u64;
-
-        let rtt_ms = self.send_rate_comp.rtt_ms().unwrap_or(INITIAL_RTT_ESTIMATE_MS);
-        let rto_ms = self.send_rate_comp.rto_ms().unwrap_or(INITIAL_RTO_ESTIMATE_MS);
-
-        // Forget old frame data
-        self.frame_queue.forget_frames(now_ms.saturating_sub(rtt_ms*4), self.send_rate_comp.rtt_ms());
-
-        // Update send rate value
-        let ref mut frame_queue = self.frame_queue;
-        self.send_rate_comp.step(now_ms, frame_queue.get_feedback(now_ms),
-            |new_loss_rate: f64| {
-                frame_queue.reset_loss_rate(new_loss_rate);
-            }
-        );
-
-        // Send as many frames as possible
-        self.emit_frames(now_ms, rtt_ms, rto_ms, sink);
-    }
-
-    fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, rto_ms: u64, sink: &mut impl FrameSink) {
-        let flush_id = self.flush_id;
-        self.flush_id = self.flush_id.wrapping_add(1);
-
+    fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, rto_ms: u64, flush_id: u32, sink: &mut impl FrameSink) {
         match self.emit_ack_frames(sink) {
             Err(_) => return,
             Ok(_) => (),
@@ -430,6 +446,7 @@ mod tests {
 
     struct TestApparatus {
         dm: DatenMeister,
+        flush_id: u32,
     }
 
     impl TestApparatus {
@@ -456,12 +473,13 @@ mod tests {
             };
 
             Self {
-                dm: DatenMeister::new(config)
+                dm: DatenMeister::new(config),
+                flush_id: 0,
             }
         }
 
         fn set_flush_id(&mut self, flush_id: u32) {
-            self.dm.flush_id = flush_id;
+            self.flush_id = flush_id;
         }
 
         fn receive_sync(&mut self, frame: frame::SyncFrame) {
@@ -489,7 +507,7 @@ mod tests {
 
             self.dm.flush_alloc = flush_alloc;
 
-            self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, &mut test_sink);
+            self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, self.flush_id, &mut test_sink);
 
             return test_sink.emitted;
         }

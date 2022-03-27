@@ -66,16 +66,18 @@ impl Client {
         return Ok(peer::Peer::new(address, endpoint_ref));
     }
 
-    /// Reads as many UDP frames as possible from the internal socket, and updates the states of
-    /// active connections accordingly. Call [`Peer::poll_events()`](peer::Peer::poll_events) after
-    /// calling this function to retrieve incoming packets and connection status updates for an
-    /// individual peer.
+    /// Flushes pending outbound frames, reads as many UDP frames as possible from the internal
+    /// socket, and updates the states of active connections. Call
+    /// [`Peer::poll_events()`](peer::Peer::poll_events) after calling this function to retrieve
+    /// incoming packets and connection status updates for an individual peer.
     ///
     /// *Note*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
     /// called relatively frequently (a minimum of once per connection round-trip time).
     pub fn step(&mut self) {
+        self.flush();
+
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {

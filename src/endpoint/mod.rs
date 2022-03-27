@@ -376,7 +376,7 @@ impl Endpoint {
                 }
             }
             State::Connected(ref mut state) => {
-                state.daten_meister.fill_flush_alloc();
+                state.daten_meister.step();
 
                 if now - self.watchdog_time > CONNECTED_WATCHDOG_TIMEOUT {
                     self.enter_zombie();
