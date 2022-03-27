@@ -32,6 +32,10 @@
 * Improved the windup behavior of traffic shaping through a more opportunistic
   leaky bucket algorithm—the result is compliant with RFC 5348, section 4.6
 
+* Removed time-tracking from calls to `(Server|Client)::flush()`, thereby
+  ensuring that redundant calls do not affect the flush allocation, and that
+  `step()` may first call `flush()` without producing erroneous resends
+
 ## 0.5.1
 
 Fixed bad protocol version ID

@@ -232,6 +232,7 @@ impl Endpoint {
                 self.enter_disconnecting();
             }
             State::Connected(ref mut state) => {
+                // XXX TODO: Need a timeout here
                 state.disconnect_flush = true;
             }
             State::Disconnecting(_) => {

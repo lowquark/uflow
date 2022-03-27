@@ -30,29 +30,25 @@ impl Peer {
     /// # Error Handling
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel (i.e.
-    /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the configured [maximum packet
+    /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
     /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
     }
 
-    /// Delivers all available events for this connection. See [`Event`](Event) for a list of
-    /// possible event types.
+    /// Delivers all available events for this connection.
     ///
-    /// *Note 1*: All events are considered delivered even if the iterator is not consumed until
-    /// the end.
-    ///
-    /// *Note 2*: Packets that have been received will not be acknowledged until this function is
-    /// called.
+    /// *Note*: All events are considered delivered, even if the iterator is not consumed until the
+    /// end.
     pub fn poll_events(&mut self) -> impl Iterator<Item = Event> {
         self.endpoint_ref.borrow_mut().poll_events()
     }
 
-    /// Terminates the connection, notifying the remote host. If currently connected, all pending
-    /// packets will be sent prior to disconnecting.
+    /// Explicitly terminates the connection, notifying the remote host in the process.
     ///
-    /// A [`Disconnect`](Event::Disconnect) event will be generated if a connection was previously
-    /// established.
+    /// If the `Peer` is currently connected, all pending packets will be sent prior to
+    /// disconnecting, and a [`Disconnect`](Event::Disconnect) event will be generated once the
+    /// disconnection is complete.
     pub fn disconnect(&self) {
         self.endpoint_ref.borrow_mut().disconnect();
     }
@@ -61,8 +57,8 @@ impl Peer {
 
     /// Immediately terminates the connection, without notifying the remote host.
     ///
-    /// A [`Disconnect`](Event::Disconnect) event will be generated if a connection was previously
-    /// established.
+    /// If the `Peer` is currently connected, a [`Disconnect`](Event::Disconnect) event will be
+    /// generated.
     pub fn disconnect_now(&self) {
         self.endpoint_ref.borrow_mut().disconnect_now();
     }
@@ -72,7 +68,7 @@ impl Peer {
         self.address
     }
 
-    /// Returns the current estimate of the round-trip time (RTT) in seconds.
+    /// Returns the current estimate of the round-trip time (RTT), in seconds.
     ///
     /// If the RTT has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
@@ -87,8 +83,9 @@ impl Peer {
         self.endpoint_ref.borrow().pending_send_size()
     }
 
-    /// Returns `true` if the connection has been terminated or timed out. Connections are never
-    /// reconnected once disconnected.
+    /// Returns `true` if the connection has been terminated or timed out.
+    ///
+    /// *Note*: Once disconnected, a `Peer` will never be reconnected.
     pub fn is_disconnected(&self) -> bool {
         let endpoint_ref = self.endpoint_ref.borrow();
         return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();

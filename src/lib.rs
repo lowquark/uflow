@@ -29,10 +29,10 @@
 //! [`Server::incoming()`](Server::incoming), and stored wherever is most convenient.
 //!
 //! A `Peer` object functions as a handle for a given connection, and allows the application to
-//! transfer data to/from a particular host using a single object. However, events will not be
-//! received, and sent packets will not be placed on the network, until the next call to
-//! `Server::step()`. Alternatively, the application may call [`Server::flush()`] to send all
-//! pending outbound data to all connected hosts immediately.
+//! transfer data to/from a particular host using a single object. However, no packets will be sent
+//! on the network, and no packets will be received from a peer until the next call to
+//! `Server::step()`. The application may call [`Server::flush()`] to send all pending outbound
+//! data immediately.
 //!
 //! A basic server loop that extends the above example is shown below:
 //!
@@ -165,14 +165,16 @@
 //! peer.send(packet_data.into(), channel_id, send_mode);
 //! ```
 //!
+//! Additional details relating to how packets are sent and received by `uflow` are described in
+//! the following subsections.
+//!
 //! ##### Packet Fragmentation and Aggregation
 //!
 //! All packets are aggregated into larger UDP frames, and are automatically divided into fragments
 //! so as to ensure no frame exceeds the internet MTU (1500 bytes). Fragments are transferred with
 //! the same send mode as their containing packet—that is, fragments will be resent if and only if
-//! the packet is marked with [`SendMode::Persistent`] or [`SendMode::Reliable`]. For sake of
-//! discussion, a packet is considered received once all of its constituent fragments have been
-//! received.
+//! the packet is marked with [`SendMode::Persistent`] or [`SendMode::Reliable`]. A packet is
+//! considered received once all of its constituent fragments have been received.
 //!
 //! ##### Channels
 //!
@@ -207,7 +209,7 @@
 //! packets using [`SendMode::TimeSensitive`] to drop packets at the sender if they could not be
 //! sent immediately (i.e. prior to the next call to `step()`). In the event that the total
 //! available bandwidth is limited, this prevents outdated packets from using any unnecessary
-//! bandwidth, and prioritizes sending newer packets in the queue.
+//! bandwidth, and prioritizes sending newer packets in the send queue.
 //!
 //! # Receiving Packets (and Other Events)
 //!
