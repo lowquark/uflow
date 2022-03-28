@@ -465,9 +465,9 @@ impl Endpoint {
         }
     }
 
-    pub fn pending_send_size(&self) -> usize {
+    pub fn send_buffer_size(&self) -> usize {
         match self.state {
-            State::Connected(ref state) => state.daten_meister.pending_send_size(),
+            State::Connected(ref state) => state.daten_meister.send_buffer_size(),
             _ => 0
         }
     }

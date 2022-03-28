@@ -75,12 +75,14 @@ impl Peer {
         self.endpoint_ref.borrow().rtt_s()
     }
 
-    /// Returns the combined size of all packets awaiting delivery, in bytes.
+    /// Returns the combined size of all outstanding packets (i.e. those which have not yet been
+    /// acknowledged by the receiver), in bytes.
     ///
-    /// Packets which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this
-    /// total, even if they would not be sent.
-    pub fn pending_send_size(&self) -> usize {
-        self.endpoint_ref.borrow().pending_send_size()
+    /// This figure represents the amount of memory allocated by outgoing packets. Thus, packets
+    /// which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this total,
+    /// even if they would not be sent.
+    pub fn send_buffer_size(&self) -> usize {
+        self.endpoint_ref.borrow().send_buffer_size()
     }
 
     /// Returns `true` if the connection has been terminated or timed out.

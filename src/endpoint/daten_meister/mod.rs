@@ -111,7 +111,7 @@ impl DatenMeister {
         self.send_rate_comp.rtt_s()
     }
 
-    pub fn pending_send_size(&self) -> usize {
+    pub fn send_buffer_size(&self) -> usize {
         self.packet_sender.total_size()
     }
 

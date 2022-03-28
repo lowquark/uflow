@@ -203,8 +203,8 @@
 //! begin to accumulate in its queue if the connection bandwidth is low, or if the receiver is not
 //! processing packets quickly enough.
 //!
-//! The total size of all pending packet data can be obtained by calling
-//! [`Peer::pending_send_size()`](Peer::pending_send_size), and if desired, an application can use
+//! The total size of all packets awaiting delivery can be obtained by calling
+//! [`Peer::send_buffer_size()`](Peer::send_buffer_size), and if desired, an application can use
 //! this value to terminate excessively delayed connections. In addition, the application may send
 //! packets using [`SendMode::TimeSensitive`] to drop packets at the sender if they could not be
 //! sent immediately (i.e. prior to the next call to `step()`). In the event that the total
