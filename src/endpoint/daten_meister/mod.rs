@@ -31,6 +31,7 @@ pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);
 }
 
+#[derive(Clone)]
 pub struct Config {
     pub tx_frame_base_id: u32,
     pub rx_frame_base_id: u32,
@@ -205,6 +206,9 @@ impl DatenMeister {
             let alloc_max = (send_rate * rtt_s.unwrap_or(0.0)).round() as isize;
 
             self.flush_alloc = self.flush_alloc.saturating_add(new_bytes).min(alloc_max);
+
+            //println!("dt: {}s, rtt: {:?}s, rate: {}B/s, new: {}B, max: {}B, val: {}B",
+            //       delta_time, rtt_s, send_rate, new_bytes, alloc_max, self.flush_alloc);
         }
         self.time_last_flushed = Some(now);
     }
@@ -424,23 +428,39 @@ mod tests {
     use crate::MAX_FRAME_WINDOW_SIZE;
     use crate::MAX_PACKET_WINDOW_SIZE;
 
-    use std::collections::VecDeque;
-
     struct TestSink {
-        emitted: VecDeque<Box<[u8]>>,
+        emitted: Vec<Box<[u8]>>,
     }
 
     impl TestSink {
         fn new() -> Self {
             Self {
-                emitted: VecDeque::new(),
+                emitted: Vec::new(),
             }
         }
     }
 
     impl FrameSink for TestSink {
         fn send(&mut self, frame_bytes: &[u8]) {
-            self.emitted.push_back(frame_bytes.into());
+            self.emitted.push(frame_bytes.into());
+        }
+    }
+
+    struct TestPacketSink {
+        emitted: Vec<Box<[u8]>>,
+    }
+
+    impl TestPacketSink {
+        fn new() -> Self {
+            Self {
+                emitted: Vec::new(),
+            }
+        }
+    }
+
+    impl PacketSink for TestPacketSink {
+        fn send(&mut self, packet_data: Box<[u8]>) {
+            self.emitted.push(packet_data);
         }
     }
 
@@ -472,14 +492,26 @@ mod tests {
                 keepalive: true,
             };
 
+            Self::new_config(config)
+        }
+
+        fn new_config(config: Config) -> Self {
             Self {
                 dm: DatenMeister::new(config),
                 flush_id: 0,
             }
         }
 
+        fn is_send_pending(&self) -> bool {
+            self.dm.is_send_pending()
+        }
+
         fn set_flush_id(&mut self, flush_id: u32) {
             self.flush_id = flush_id;
+        }
+
+        fn receive_data(&mut self, frame: frame::DataFrame) {
+            self.dm.handle_data_frame(frame);
         }
 
         fn receive_sync(&mut self, frame: frame::SyncFrame) {
@@ -494,6 +526,12 @@ mod tests {
             self.dm.send(data, channel_id, mode)
         }
 
+        fn receive_packets(&mut self) -> Vec<Box<[u8]>> {
+            let mut test_sink = TestPacketSink::new();
+            self.dm.receive(&mut test_sink);
+            return test_sink.emitted;
+        }
+
         fn acknowledge_packet_base_id(&mut self, base_id: u32) {
             self.dm.packet_sender.acknowledge(base_id)
         }
@@ -502,12 +540,24 @@ mod tests {
             self.dm.frame_queue.acknowledge_group(group, rtt_ms);
         }
 
-        fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, flush_alloc: isize) -> VecDeque<Box<[u8]>> {
+        fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, flush_alloc: isize) -> Vec<Box<[u8]>> {
             let mut test_sink = TestSink::new();
 
             self.dm.flush_alloc = flush_alloc;
 
             self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, self.flush_id, &mut test_sink);
+
+            return test_sink.emitted;
+        }
+
+        fn step(&mut self) {
+            self.dm.step();
+        }
+
+        fn flush(&mut self) -> Vec<Box<[u8]>> {
+            let mut test_sink = TestSink::new();
+
+            self.dm.flush(&mut test_sink);
 
             return test_sink.emitted;
         }
@@ -963,6 +1013,105 @@ mod tests {
 
         println!("max_id: {}", max_id);
         println!("packet_id::SPAN: {}", packet_id::SPAN);
+    }
+
+    fn bandwidth_trial(send_rate: u32) {
+        use frame::serial::Serialize;
+
+        let step_interval_ms = 20;
+        let target_time_s = 20.0;
+        let error_tolerance = 0.05;
+
+        let packet_size = (send_rate as f64 * target_time_s).round() as usize;
+
+        let config = Config {
+            tx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
+            rx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
+
+            tx_frame_base_id: 0,
+            rx_frame_base_id: 0,
+
+            tx_packet_window_size: MAX_PACKET_WINDOW_SIZE,
+            rx_packet_window_size: MAX_PACKET_WINDOW_SIZE,
+
+            tx_packet_base_id: 0,
+            rx_packet_base_id: 0,
+
+            tx_bandwidth_limit: send_rate,
+
+            tx_alloc_limit: packet_size,
+            rx_alloc_limit: packet_size,
+
+            keepalive: false,
+        };
+
+        let mut sender = TestApparatus::new_config(config.clone());
+        let mut receiver = TestApparatus::new_config(config);
+
+        let packet_data = (0 .. packet_size).map(|i| i as u8).collect::<Vec<u8>>().into_boxed_slice();
+        sender.enqueue_packet(packet_data.clone(), 0, SendMode::Unreliable);
+
+        let begin = std::time::Instant::now();
+
+        loop {
+            sender.step();
+            receiver.step();
+
+            if !sender.is_send_pending() {
+                break;
+            }
+
+            let frames = sender.flush();
+
+            for frame in frames.iter().map(|frame_bytes| frame::Frame::read(&frame_bytes)) {
+                match frame {
+                    Some(frame::Frame::DataFrame(data_frame)) => receiver.receive_data(data_frame),
+                    _ => panic!(),
+                }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(step_interval_ms));
+
+            let frames = receiver.flush();
+
+            for frame in frames.iter().map(|frame_bytes| frame::Frame::read(&frame_bytes)) {
+                match frame {
+                    Some(frame::Frame::AckFrame(ack_frame)) => sender.receive_ack(ack_frame),
+                    _ => panic!(),
+                }
+            }
+        }
+
+        let elapsed_time_s = begin.elapsed().as_secs_f64();
+
+        // Packet must have been received correctly (sanity check)
+        let packets = receiver.receive_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0], packet_data);
+
+        let error = (elapsed_time_s - target_time_s)/target_time_s;
+
+        println!("target rate: {}B/s", send_rate);
+        println!("step interval: {}ms", step_interval_ms);
+        println!("elapsed time: {:0.2}s", elapsed_time_s);
+        println!("target time: {:0.2}s", target_time_s);
+        println!("error: {:0.1}%", error*100.0);
+
+        assert!(error.abs() < error_tolerance);
+    }
+
+    // Ensure flush allocation can regulate 100kBps
+    #[test]
+    #[ignore]
+    fn send_rate_100k() {
+        bandwidth_trial(100000);
+    }
+
+    // Ensure flush allocation can regulate 1MBps
+    #[test]
+    #[ignore]
+    fn send_rate_1000k() {
+        bandwidth_trial(1000000);
     }
 }
 

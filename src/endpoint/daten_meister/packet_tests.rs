@@ -151,6 +151,7 @@ fn null_packet_transfer() {
 /// Ensures a packet of maximum size may be transferred.
 /// Uses the minimum possible allocation limit.
 #[test]
+#[ignore]
 fn max_packet_transfer() {
     use crate::MAX_PACKET_SIZE;
 
