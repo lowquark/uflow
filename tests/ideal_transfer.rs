@@ -47,7 +47,7 @@ fn server_thread() -> Vec<md5::Digest> {
                         println!("[server] client disconnected");
                         break 'outer;
                     }
-                    other => println!("[server] unexpected event: {:?}", other),
+                    other => panic!("[server] unexpected event: {:?}", other),
                 }
             }
         }
@@ -85,7 +85,7 @@ fn client_thread() -> Vec<md5::Digest> {
                 uflow::Event::Connect => {
                     println!("[client] connected to server");
                 }
-                other => println!("[client] unexpected event: {:?}", other),
+                other => panic!("[client] unexpected event: {:?}", other),
             }
         }
 
@@ -131,7 +131,7 @@ fn client_thread() -> Vec<md5::Digest> {
                     println!("[client] server disconnected");
                     break 'outer;
                 }
-                other => println!("[client] unexpected event: {:?}", other),
+                other => panic!("[client] unexpected event: {:?}", other),
             }
         }
 
