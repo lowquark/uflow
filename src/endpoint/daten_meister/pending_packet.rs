@@ -16,8 +16,7 @@ pub struct PendingPacket {
     channel_parent_lead: u16,
     last_fragment_id: u16,
 
-    // TODO: Use a bitfield
-    ack_flags: Vec<bool>,
+    ack_flags: Box<[u64]>,
 }
 
 impl PendingPacket {
@@ -38,7 +37,7 @@ impl PendingPacket {
             channel_parent_lead,
             last_fragment_id,
 
-            ack_flags: vec![false; num_fragments],
+            ack_flags: vec![0u64; (num_fragments + 63)/64].into_boxed_slice(),
         }
     }
 
@@ -67,11 +66,15 @@ impl PendingPacket {
     }
 
     pub fn fragment_acknowledged(&self, fragment_id: u16) -> bool {
-        self.ack_flags[fragment_id as usize]
+        let flag_bit = 1 << (fragment_id % 64) as u64;
+        let flags_index = (fragment_id / 64) as usize;
+        self.ack_flags[flags_index] & flag_bit != 0
     }
 
     pub fn acknowledge_fragment(&mut self, fragment_id: u16) {
-        self.ack_flags[fragment_id as usize] = true;
+        let flag_bit = 1 << (fragment_id % 64) as u64;
+        let flags_index = (fragment_id / 64) as usize;
+        self.ack_flags[flags_index] |= flag_bit;
     }
 
     pub fn size(&self) -> usize {
