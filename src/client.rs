@@ -6,15 +6,15 @@ use super::endpoint;
 use super::peer;
 use super::udp_frame_sink::UdpFrameSink;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 /// A polling-based socket object which manages outbound `uflow` connections.
 pub struct Client {
     socket: net::UdpSocket,
-    endpoints: HashMap<net::SocketAddr, Rc<RefCell<endpoint::Endpoint>>>,
+    endpoints: HashMap<net::SocketAddr, Arc<RwLock<endpoint::Endpoint>>>,
 }
 
 impl Client {
@@ -58,7 +58,7 @@ impl Client {
         assert!(cfg.is_valid(), "invalid endpoint config");
 
         let endpoint = endpoint::Endpoint::new(cfg);
-        let endpoint_ref = Rc::new(RefCell::new(endpoint));
+        let endpoint_ref = Arc::new(RwLock::new(endpoint));
 
         let address = addr.to_socket_addrs()?.next().expect("no useful socket addresses");
 
@@ -88,19 +88,22 @@ impl Client {
             }
         }
 
-        for (_, endpoint) in self.endpoints.iter_mut() {
-            endpoint.borrow_mut().step();
+        for (_, endpoint_ref) in self.endpoints.iter_mut() {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
+            endpoint.step();
         }
 
-        self.endpoints.retain(|_, endpoint| !endpoint.borrow().is_zombie());
+        self.endpoints.retain(|_, endpoint_ref| !endpoint_ref.read().unwrap().is_zombie());
     }
 
     /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
     /// possible for each peer.
     pub fn flush(&mut self) {
-        for (&address, endpoint) in self.endpoints.iter_mut() {
+        for (&address, endpoint_ref) in self.endpoints.iter_mut() {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-            endpoint.borrow_mut().flush(data_sink);
+
+            endpoint.flush(data_sink);
         }
     }
 
@@ -110,9 +113,11 @@ impl Client {
     }
 
     fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
-        if let Some(endpoint) = self.endpoints.get_mut(&address) {
+        if let Some(endpoint_ref) = self.endpoints.get_mut(&address) {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-            endpoint.borrow_mut().handle_frame(frame, data_sink);
+
+            endpoint.handle_frame(frame, data_sink);
         }
     }
 }

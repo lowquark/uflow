@@ -4,8 +4,8 @@ use crate::Event;
 use crate::SendMode;
 
 use std::net;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 /// An object representing a connection to a remote host.
 ///
@@ -13,11 +13,11 @@ use std::cell::RefCell;
 ///
 pub struct Peer {
     address: net::SocketAddr,
-    endpoint_ref: Rc<RefCell<endpoint::Endpoint>>,
+    endpoint_ref: Arc<RwLock<endpoint::Endpoint>>,
 }
 
 impl Peer {
-    pub(super) fn new(address: net::SocketAddr, endpoint_ref: Rc<RefCell<endpoint::Endpoint>>) -> Self {
+    pub(super) fn new(address: net::SocketAddr, endpoint_ref: Arc<RwLock<endpoint::Endpoint>>) -> Self {
         Self {
             address: address,
             endpoint_ref: endpoint_ref,
@@ -33,7 +33,8 @@ impl Peer {
     /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
     /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
-        self.endpoint_ref.borrow_mut().send(data, channel_id, mode);
+        let ref mut endpoint = self.endpoint_ref.write().unwrap();
+        endpoint.send(data, channel_id, mode);
     }
 
     /// Delivers all available events for this connection.
@@ -41,8 +42,11 @@ impl Peer {
     /// *Note*: All events are considered delivered, even if the iterator is not consumed until the
     /// end.
     pub fn poll_events(&mut self) -> impl Iterator<Item = Event> {
-        self.endpoint_ref.borrow_mut().poll_events()
+        let ref mut endpoint = self.endpoint_ref.write().unwrap();
+        endpoint.poll_events()
     }
+
+    // TODO: disconnect, disconnect_now should be &mut self (API breaking change)
 
     /// Explicitly terminates the connection, notifying the remote host in the process.
     ///
@@ -50,7 +54,8 @@ impl Peer {
     /// disconnecting, and a [`Disconnect`](Event::Disconnect) event will be generated once the
     /// disconnection is complete.
     pub fn disconnect(&self) {
-        self.endpoint_ref.borrow_mut().disconnect();
+        let ref mut endpoint = self.endpoint_ref.write().unwrap();
+        endpoint.disconnect();
     }
 
     // TODO: disconnect_noflush()?
@@ -60,7 +65,8 @@ impl Peer {
     /// If the `Peer` is currently connected, a [`Disconnect`](Event::Disconnect) event will be
     /// generated.
     pub fn disconnect_now(&self) {
-        self.endpoint_ref.borrow_mut().disconnect_now();
+        let ref mut endpoint = self.endpoint_ref.write().unwrap();
+        endpoint.disconnect_now();
     }
 
     /// Returns the socket address of the remote host.
@@ -72,7 +78,8 @@ impl Peer {
     ///
     /// If the RTT has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
-        self.endpoint_ref.borrow().rtt_s()
+        let ref endpoint = self.endpoint_ref.read().unwrap();
+        endpoint.rtt_s()
     }
 
     /// Returns the combined size of all outstanding packets (i.e. those which have not yet been
@@ -82,21 +89,22 @@ impl Peer {
     /// which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this total,
     /// even if they would not be sent.
     pub fn send_buffer_size(&self) -> usize {
-        self.endpoint_ref.borrow().send_buffer_size()
+        let ref endpoint = self.endpoint_ref.read().unwrap();
+        endpoint.send_buffer_size()
     }
 
     /// Returns `true` if the connection has been terminated or timed out.
     ///
     /// *Note*: Once disconnected, a `Peer` will never be reconnected.
     pub fn is_disconnected(&self) -> bool {
-        let endpoint_ref = self.endpoint_ref.borrow();
-        return endpoint_ref.is_zombie() || endpoint_ref.is_disconnected();
+        let ref endpoint = self.endpoint_ref.read().unwrap();
+        return endpoint.is_zombie() || endpoint.is_disconnected();
     }
 
     // Distinguishing zombie from disconnected is of no use to the application
     pub(super) fn is_zombie(&self) -> bool {
-        let endpoint_ref = self.endpoint_ref.borrow();
-        return endpoint_ref.is_zombie();
+        let ref endpoint = self.endpoint_ref.read().unwrap();
+        return endpoint.is_zombie();
     }
 }
 

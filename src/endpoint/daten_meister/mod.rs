@@ -416,6 +416,12 @@ impl DatenMeister {
     }
 }
 
+// Internal Rc objects are unique to this object
+unsafe impl Send for DatenMeister {}
+
+// Internal RefCell objects cannot be accessed through a &DatenMeister
+unsafe impl Sync for DatenMeister {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

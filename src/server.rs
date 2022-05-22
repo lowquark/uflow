@@ -6,10 +6,10 @@ use super::endpoint;
 use super::peer;
 use super::udp_frame_sink::UdpFrameSink;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 /// A polling-based socket object which manages inbound `uflow` connections.
 pub struct Server {
@@ -18,7 +18,7 @@ pub struct Server {
     max_peer_count: usize,
     peer_config: endpoint::Config,
 
-    endpoints: HashMap<net::SocketAddr, Rc<RefCell<endpoint::Endpoint>>>,
+    endpoints: HashMap<net::SocketAddr, Arc<RwLock<endpoint::Endpoint>>>,
     incoming_peers: Vec<peer::Peer>,
 }
 
@@ -95,20 +95,23 @@ impl Server {
             }
         }
 
-        for (_, endpoint) in self.endpoints.iter_mut() {
-            endpoint.borrow_mut().step();
+        for (_, endpoint_ref) in self.endpoints.iter_mut() {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
+            endpoint.step();
         }
 
-        self.endpoints.retain(|_, endpoint| !endpoint.borrow().is_zombie());
+        self.endpoints.retain(|_, endpoint_ref| !endpoint_ref.read().unwrap().is_zombie());
         self.incoming_peers.retain(|client| !client.is_zombie());
     }
 
     /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
     /// possible for each peer.
     pub fn flush(&mut self) {
-        for (&address, endpoint) in self.endpoints.iter_mut() {
+        for (&address, endpoint_ref) in self.endpoints.iter_mut() {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-            endpoint.borrow_mut().flush(data_sink);
+
+            endpoint.flush(data_sink);
         }
     }
 
@@ -118,18 +121,20 @@ impl Server {
     }
 
     fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame) {
-        if let Some(endpoint) = self.endpoints.get_mut(&address) {
+        if let Some(endpoint_ref) = self.endpoints.get_mut(&address) {
+            let ref mut endpoint = endpoint_ref.write().unwrap();
             let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
-            endpoint.borrow_mut().handle_frame(frame, data_sink);
+
+            endpoint.handle_frame(frame, data_sink);
         } else {
             if self.endpoints.len() < self.max_peer_count as usize {
+                let mut endpoint = endpoint::Endpoint::new(self.peer_config.clone());
                 let ref mut data_sink = UdpFrameSink::new(&self.socket, address);
 
-                let mut endpoint = endpoint::Endpoint::new(self.peer_config.clone());
                 endpoint.handle_frame(frame, data_sink);
 
-                let endpoint_ref = Rc::new(RefCell::new(endpoint));
-                self.endpoints.insert(address, Rc::clone(&endpoint_ref));
+                let endpoint_ref = Arc::new(RwLock::new(endpoint));
+                self.endpoints.insert(address, Arc::clone(&endpoint_ref));
                 self.incoming_peers.push(peer::Peer::new(address, endpoint_ref));
             }
         }
