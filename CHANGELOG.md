@@ -1,6 +1,13 @@
 
 # Changelog
 
+## 0.6.1
+
+* Subtly optimized memory usage of sender fragment acknowledgement flags
+
+* Switched to `Arc<RwLock<...>>` internally so as to allow `Peer` objects to be
+  processed by a separate thread from their containing `Client`/`Server`
+
 ## 0.6.0
 
 * Subtly altered the behavior of `(Server|Client)::step()` in order to allow
