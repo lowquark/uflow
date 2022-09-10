@@ -308,6 +308,7 @@ mod frame;
 mod packet_id;
 mod peer;
 mod server;
+mod server2;
 mod udp_frame_sink;
 
 pub use server::Server;
@@ -342,6 +343,8 @@ pub const MAX_FRAGMENT_SIZE: usize = MAX_FRAME_SIZE - frame::serial::DATA_FRAME_
 
 /// The absolute maximum size of a packet, in bytes.
 pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGMENTS;
+
+pub type PeerId = usize;
 
 /// A mode by which a packet is sent.
 #[derive(Clone,Copy,Debug,PartialEq)]
