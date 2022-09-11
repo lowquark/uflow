@@ -18,13 +18,18 @@ const DISCONNECT_ACK_FRAME_ID: u8 = 3;
 const DATA_FRAME_ID: u8 = 4;
 const SYNC_FRAME_ID: u8 = 5;
 const ACK_FRAME_ID: u8 = 6;
+const HANDSHAKE_SYN_FRAME_ID: u8 = 10;
+const HANDSHAKE_SYN_ACK_FRAME_ID: u8 = 11;
+const HANDSHAKE_ACK_FRAME_ID: u8 = 12;
+const HANDSHAKE_ERROR_FRAME_ID: u8 = 13;
 
+const HANDSHAKE_SYN_FRAME_PAYLOAD_SIZE: usize = 17; // TODO: Pad to 1500 bytes total
+const HANDSHAKE_SYN_ACK_FRAME_PAYLOAD_SIZE: usize = 20;
+const HANDSHAKE_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
+const HANDSHAKE_ERROR_FRAME_PAYLOAD_SIZE: usize = 1;
 const CONNECT_FRAME_PAYLOAD_SIZE: usize = 17;
-
 const CONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
-
 const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
-
 const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
 const DATAGRAM_HEADER_SIZE_MICRO: usize =  6;
@@ -48,6 +53,112 @@ pub const ACK_FRAME_OVERHEAD: usize = FRAME_OVERHEAD + ACK_FRAME_PAYLOAD_HEADER_
 
 pub const MAX_CHANNELS: usize = 64;
 pub const MAX_FRAGMENTS: usize = 1 << 16;
+
+fn read_handshake_syn_payload(data: &[u8]) -> Option<Frame> {
+    if data.len() != HANDSHAKE_SYN_FRAME_PAYLOAD_SIZE {
+        return None;
+    }
+
+    let version = data[0];
+
+    let nonce = ((data[1] as u32) << 24) |
+                ((data[2] as u32) << 16) |
+                ((data[3] as u32) <<  8) |
+                ((data[4] as u32)      );
+
+    let max_receive_rate = ((data[5] as u32) << 24) |
+                           ((data[6] as u32) << 16) |
+                           ((data[7] as u32) <<  8) |
+                           ((data[8] as u32)      );
+
+    let max_packet_size = ((data[9] as u32) << 24) |
+                          ((data[10] as u32) << 16) |
+                          ((data[11] as u32) <<  8) |
+                          ((data[12] as u32)      );
+
+    let max_receive_alloc = ((data[13] as u32) << 24) |
+                            ((data[14] as u32) << 16) |
+                            ((data[15] as u32) <<  8) |
+                            ((data[16] as u32)      );
+
+    Some(Frame::HandshakeSynFrame(HandshakeSynFrame {
+        version,
+        nonce,
+        max_receive_rate,
+        max_packet_size,
+        max_receive_alloc,
+    }))
+}
+
+fn read_handshake_syn_ack_payload(data: &[u8]) -> Option<Frame> {
+    if data.len() != HANDSHAKE_SYN_ACK_FRAME_PAYLOAD_SIZE {
+        return None;
+    }
+
+    let nonce_ack = ((data[0] as u32) << 24) |
+                    ((data[1] as u32) << 16) |
+                    ((data[2] as u32) <<  8) |
+                    ((data[3] as u32)      );
+
+    let nonce = ((data[4] as u32) << 24) |
+                ((data[5] as u32) << 16) |
+                ((data[6] as u32) <<  8) |
+                ((data[7] as u32)      );
+
+    let max_receive_rate = ((data[8] as u32) << 24) |
+                           ((data[9] as u32) << 16) |
+                           ((data[10] as u32) <<  8) |
+                           ((data[11] as u32)      );
+
+    let max_packet_size = ((data[12] as u32) << 24) |
+                          ((data[13] as u32) << 16) |
+                          ((data[14] as u32) <<  8) |
+                          ((data[15] as u32)      );
+
+    let max_receive_alloc = ((data[16] as u32) << 24) |
+                            ((data[17] as u32) << 16) |
+                            ((data[18] as u32) <<  8) |
+                            ((data[19] as u32)      );
+
+    Some(Frame::HandshakeSynAckFrame(HandshakeSynAckFrame {
+        nonce_ack,
+        nonce,
+        max_receive_rate,
+        max_packet_size,
+        max_receive_alloc,
+    }))
+}
+
+fn read_handshake_ack_payload(data: &[u8]) -> Option<Frame> {
+    if data.len() != HANDSHAKE_ACK_FRAME_PAYLOAD_SIZE {
+        return None;
+    }
+
+    let nonce_ack = ((data[0] as u32) << 24) |
+                    ((data[1] as u32) << 16) |
+                    ((data[2] as u32) <<  8) |
+                    ((data[3] as u32)      );
+
+    Some(Frame::HandshakeAckFrame(HandshakeAckFrame {
+        nonce_ack,
+    }))
+}
+
+fn read_handshake_error_payload(data: &[u8]) -> Option<Frame> {
+    if data.len() != HANDSHAKE_ERROR_FRAME_PAYLOAD_SIZE {
+        return None;
+    }
+
+    let error = match data[0] {
+        0 => HandshakeErrorType::Version,
+        1 => HandshakeErrorType::Full,
+        _ => return None,
+    };
+
+    Some(Frame::HandshakeErrorFrame(HandshakeErrorFrame {
+        error,
+    }))
+}
 
 fn read_connect_payload(data: &[u8]) -> Option<Frame> {
     if data.len() != CONNECT_FRAME_PAYLOAD_SIZE {
@@ -370,6 +481,135 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
 }
 
 
+fn write_handshake_syn(frame: &HandshakeSynFrame) -> Box<[u8]> {
+    let mut frame_bytes = Box::new([
+        HANDSHAKE_SYN_FRAME_ID,
+        frame.version,
+        (frame.nonce >> 24) as u8,
+        (frame.nonce >> 16) as u8,
+        (frame.nonce >>  8) as u8,
+        (frame.nonce      ) as u8,
+        (frame.max_receive_rate >> 24) as u8,
+        (frame.max_receive_rate >> 16) as u8,
+        (frame.max_receive_rate >>  8) as u8,
+        (frame.max_receive_rate      ) as u8,
+        (frame.max_packet_size >> 24) as u8,
+        (frame.max_packet_size >> 16) as u8,
+        (frame.max_packet_size >>  8) as u8,
+        (frame.max_packet_size      ) as u8,
+        (frame.max_receive_alloc >> 24) as u8,
+        (frame.max_receive_alloc >> 16) as u8,
+        (frame.max_receive_alloc >>  8) as u8,
+        (frame.max_receive_alloc      ) as u8,
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
+}
+
+fn write_handshake_syn_ack(frame: &HandshakeSynAckFrame) -> Box<[u8]> {
+    let mut frame_bytes = Box::new([
+        HANDSHAKE_SYN_ACK_FRAME_ID,
+        (frame.nonce_ack >> 24) as u8,
+        (frame.nonce_ack >> 16) as u8,
+        (frame.nonce_ack >>  8) as u8,
+        (frame.nonce_ack      ) as u8,
+        (frame.nonce >> 24) as u8,
+        (frame.nonce >> 16) as u8,
+        (frame.nonce >>  8) as u8,
+        (frame.nonce      ) as u8,
+        (frame.max_receive_rate >> 24) as u8,
+        (frame.max_receive_rate >> 16) as u8,
+        (frame.max_receive_rate >>  8) as u8,
+        (frame.max_receive_rate      ) as u8,
+        (frame.max_packet_size >> 24) as u8,
+        (frame.max_packet_size >> 16) as u8,
+        (frame.max_packet_size >>  8) as u8,
+        (frame.max_packet_size      ) as u8,
+        (frame.max_receive_alloc >> 24) as u8,
+        (frame.max_receive_alloc >> 16) as u8,
+        (frame.max_receive_alloc >>  8) as u8,
+        (frame.max_receive_alloc      ) as u8,
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
+}
+
+fn write_handshake_ack(frame: &HandshakeAckFrame) -> Box<[u8]> {
+    let mut frame_bytes = Box::new([
+        HANDSHAKE_ACK_FRAME_ID,
+        (frame.nonce_ack >> 24) as u8,
+        (frame.nonce_ack >> 16) as u8,
+        (frame.nonce_ack >>  8) as u8,
+        (frame.nonce_ack      ) as u8,
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
+}
+
+fn write_handshake_error(frame: &HandshakeErrorFrame) -> Box<[u8]> {
+    let mut frame_bytes = Box::new([
+        HANDSHAKE_ERROR_FRAME_ID,
+        match frame.error {
+            HandshakeErrorType::Version => 0,
+            HandshakeErrorType::Full => 1,
+        },
+        0,
+        0,
+        0,
+        0,
+    ]);
+
+    let frame_len = frame_bytes.len();
+    let data_bytes = &frame_bytes[0 .. frame_len - 4];
+
+    let crc = crc::compute(&data_bytes);
+    frame_bytes[frame_len - 4] = (crc >> 24) as u8;
+    frame_bytes[frame_len - 3] = (crc >> 16) as u8;
+    frame_bytes[frame_len - 2] = (crc >>  8) as u8;
+    frame_bytes[frame_len - 1] = (crc      ) as u8;
+
+    return frame_bytes;
+}
+
 fn write_connect(frame: &ConnectFrame) -> Box<[u8]> {
     let mut frame_bytes = Box::new([
         CONNECT_FRAME_ID,
@@ -557,6 +797,10 @@ impl Serialize for Frame {
         let payload_bytes = &frame_bytes[1 .. frame_len - 4];
 
         match frame_bytes[0] {
+            HANDSHAKE_SYN_FRAME_ID => read_handshake_syn_payload(payload_bytes),
+            HANDSHAKE_SYN_ACK_FRAME_ID => read_handshake_syn_ack_payload(payload_bytes),
+            HANDSHAKE_ACK_FRAME_ID => read_handshake_ack_payload(payload_bytes),
+            HANDSHAKE_ERROR_FRAME_ID => read_handshake_error_payload(payload_bytes),
             CONNECT_FRAME_ID => read_connect_payload(payload_bytes),
             CONNECT_ACK_FRAME_ID => read_connect_ack_payload(payload_bytes),
             DISCONNECT_FRAME_ID => read_disconnect_payload(payload_bytes),
@@ -570,6 +814,10 @@ impl Serialize for Frame {
 
     fn write(&self) -> Box<[u8]> {
         match self {
+            Frame::HandshakeSynFrame(frame) => write_handshake_syn(frame),
+            Frame::HandshakeSynAckFrame(frame) => write_handshake_syn_ack(frame),
+            Frame::HandshakeAckFrame(frame) => write_handshake_ack(frame),
+            Frame::HandshakeErrorFrame(frame) => write_handshake_error(frame),
             Frame::ConnectFrame(frame) => write_connect(frame),
             Frame::ConnectAckFrame(frame) => write_connect_ack(frame),
             Frame::DisconnectFrame(frame) => write_disconnect(frame),
@@ -616,6 +864,54 @@ mod tests {
             let bytes_trunc = &bytes[0 .. i];
             assert_eq!(Frame::read(&bytes_trunc), None);
         }
+    }
+
+    #[test]
+    fn handshake_syn_basic() {
+        let f = Frame::HandshakeSynFrame(HandshakeSynFrame {
+            version: 0x7F,
+            nonce: 0x18273645,
+            max_receive_rate: 0x98765432,
+            max_packet_size: 0x01234567,
+            max_receive_alloc: 0xABCDEF01,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn handshake_syn_ack_basic() {
+        let f = Frame::HandshakeSynAckFrame(HandshakeSynAckFrame {
+            nonce_ack: 0x03246387,
+            nonce: 0x18273645,
+            max_receive_rate: 0x98765432,
+            max_packet_size: 0x01234567,
+            max_receive_alloc: 0xABCDEF01,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn handshake_ack_basic() {
+        let f = Frame::HandshakeAckFrame(HandshakeAckFrame {
+            nonce_ack: 0x03246387,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
+    }
+
+    #[test]
+    fn handshake_error_basic() {
+        let f = Frame::HandshakeErrorFrame(HandshakeErrorFrame {
+            error: HandshakeErrorType::Full,
+        });
+        verify_consistent(&f);
+        verify_extra_bytes_fail(&f);
+        verify_truncation_fails(&f);
     }
 
     #[test]

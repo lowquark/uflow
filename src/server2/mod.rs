@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::endpoint;
 use crate::frame;
+use crate::frame::serial::Serialize;
 use crate::MAX_FRAME_SIZE;
 use crate::PeerId;
 use crate::PROTOCOL_VERSION;
@@ -119,8 +120,6 @@ impl Server {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {
-            use frame::serial::Serialize;
-
             if let Some(frame) = frame::Frame::read(&frame_data_buf[ .. frame_size]) {
                 self.handle_frame(address, frame, time_now);
             }
@@ -180,18 +179,16 @@ impl Server {
     }
 
     fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame, time_now: u64) {
-        /*
         match frame {
-            frame::HandshakeSynFrame(frame) => {
+            frame::Frame::HandshakeSynFrame(frame) => {
                 self.handle_syn(address, frame, time_now);
             }
-            frame::HandshakeAckFrame(frame) => {
+            frame::Frame::HandshakeAckFrame(frame) => {
                 self.handle_ack(address, frame);
             }
-            frame::HandshakeSynAckFrame(frame) => (),
+            frame::Frame::HandshakeSynAckFrame(_) => (),
             _ => (),
         }
-        */
 
         /*
         if let Some(endpoint) = self.endpoints.get_mut(&address) {
@@ -219,45 +216,36 @@ impl Server {
 
         if handshake.version != PROTOCOL_VERSION {
             // Bad version
-            let _error = frame::HandshakeErrorFrame {
+            let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Version,
-            };
+            });
 
-            // TODO: Serialize
-            let reply_bytes = vec![0x00].into_boxed_slice();
-
-            self.socket.send_to(&reply_bytes, addr);
-
+            self.socket.send_to(&reply.write(), addr);
             return;
         }
 
         if self.pending_set.len() >= self.config.max_pending_connections ||
            self.endpoints.len() >= self.config.max_active_connections {
             // No room in the inn
-            let _error = frame::HandshakeErrorFrame {
+            let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full,
-            };
+            });
 
-            // TODO: Serialize
-            let reply_bytes = vec![0x00].into_boxed_slice();
-
-            self.socket.send_to(&reply_bytes, addr);
-
+            self.socket.send_to(&reply.write(), addr);
             return;
         }
 
         let local_nonce = rand::random::<u32>();
 
-        let reply = frame::HandshakeSynAckFrame {
+        let reply = frame::Frame::HandshakeSynAckFrame(frame::HandshakeSynAckFrame {
             nonce_ack: handshake.nonce,
             nonce: local_nonce,
             max_receive_rate: self.config.peer_config.max_receive_rate.min(u32::MAX as usize) as u32,
             max_packet_size: self.config.peer_config.max_packet_size.min(u32::MAX as usize) as u32,
             max_receive_alloc: self.config.peer_config.max_receive_alloc.min(u32::MAX as usize) as u32,
-        };
+        });
 
-        // TODO: Serialize
-        let reply_bytes = vec![0x00].into_boxed_slice();
+        let reply_bytes = reply.write();
 
         self.socket.send_to(&reply_bytes, addr);
 

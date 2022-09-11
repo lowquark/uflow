@@ -150,6 +150,10 @@ pub struct AckFrame {
 
 #[derive(Clone,Debug,PartialEq)]
 pub enum Frame {
+    HandshakeSynFrame(HandshakeSynFrame),
+    HandshakeSynAckFrame(HandshakeSynAckFrame),
+    HandshakeAckFrame(HandshakeAckFrame),
+    HandshakeErrorFrame(HandshakeErrorFrame),
     ConnectFrame(ConnectFrame),
     ConnectAckFrame(ConnectAckFrame),
     DisconnectFrame(DisconnectFrame),
