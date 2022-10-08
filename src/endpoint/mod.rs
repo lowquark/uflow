@@ -15,7 +15,7 @@ use rand;
 use std::time;
 use std::collections::VecDeque;
 
-mod daten_meister;
+pub mod daten_meister;
 
 pub trait FrameSink {
     fn send(&mut self, frame_data: &[u8]);

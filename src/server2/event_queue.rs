@@ -1,13 +1,12 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::net::SocketAddr;
 use std::rc::Rc;
 
 use super::peer::Peer;
 
 #[derive(Copy, Clone, PartialEq)]
-pub enum EventKind {
+pub enum EventType {
     ResendHandshakeSynAck,
     ResendDisconnect,
     ClosedTimeout,
@@ -15,13 +14,13 @@ pub enum EventKind {
 
 pub struct Event {
     pub peer: Rc<RefCell<Peer>>,
-    pub kind: EventKind,
+    pub kind: EventType,
     pub time: u64,
     pub count: u8,
 }
 
 impl Event {
-    pub fn new(peer: Rc<RefCell<Peer>>, kind: EventKind, time: u64, count: u8) -> Self {
+    pub fn new(peer: Rc<RefCell<Peer>>, kind: EventType, time: u64, count: u8) -> Self {
         Self {
             peer,
             kind,

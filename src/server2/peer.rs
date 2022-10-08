@@ -1,11 +1,6 @@
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::collections::HashMap;
 use std::net;
-use std::rc::{Rc, Weak};
 
-use crate::endpoint::Endpoint;
+use crate::endpoint::daten_meister::DatenMeister;
 
 pub struct PendingState {
     pub local_nonce: u32,
@@ -17,7 +12,8 @@ pub struct PendingState {
 }
 
 pub struct ActiveState {
-    pub endpoint: Endpoint,
+    pub endpoint: DatenMeister,
+    pub disconnect_flush: bool,
 }
 
 pub enum State {
