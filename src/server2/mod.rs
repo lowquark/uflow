@@ -7,7 +7,7 @@ use std::net;
 use std::rc::Rc;
 use std::time;
 
-use crate::endpoint;
+use crate::EndpointConfig;
 use crate::endpoint::daten_meister;
 use crate::frame;
 use crate::frame::serial::Serialize;
@@ -20,7 +20,7 @@ use crate::MAX_PACKET_WINDOW_SIZE;
 pub struct Config {
     pub max_pending_connections: usize,
     pub max_active_connections: usize,
-    pub peer_config: endpoint::Config,
+    pub peer_config: EndpointConfig,
 }
 
 impl Config {
@@ -176,7 +176,6 @@ impl Server {
     /// possible for each peer.
     pub fn flush(&mut self) {
         let now_ms = self.now_ms();
-
         self.flush_active_peers(now_ms);
     }
 
@@ -260,6 +259,16 @@ impl Server {
         }
 
         if (handshake.max_receive_alloc as usize) < self.config.peer_config.max_packet_size {
+            // This connection may stall
+            let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
+                error: frame::HandshakeErrorType::Full, // TODO: Better error status
+            });
+            let _ = self.socket.send_to(&reply.write(), peer_addr);
+
+            return;
+        }
+
+        if (handshake.max_packet_size as usize) > self.config.peer_config.max_receive_alloc {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
@@ -357,8 +366,8 @@ impl Server {
                         let daten_meister = daten_meister::DatenMeister::new(config);
 
                         peer.state = peer::State::Active(peer::ActiveState {
-                            disconnect_flush: false,
                             endpoint: daten_meister,
+                            disconnect_flush: false,
                         });
 
                         self.active_peers.push(Rc::clone(&peer_rc));
@@ -384,13 +393,15 @@ impl Server {
         peer_addr: net::SocketAddr,
         now_ms: u64,
     ) {
+        // TODO: Consider effects of spamming this
+
         if let Some(peer_rc) = self.peers.get(&peer_addr) {
             let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
             let _ = self.socket.send_to(&reply.write(), peer_addr);
 
             let mut peer = peer_rc.borrow_mut();
 
-            // Signal remaining received packets
+            // Signal remaining received packets prior to endpoint destruction
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
@@ -485,9 +496,9 @@ impl Server {
         match peer.state {
             peer::State::Pending(ref state) => {
                 if event.kind == event_queue::EventType::ResendHandshakeSynAck {
-                    let _ = self.socket.send_to(&state.reply_bytes, peer.address);
-
                     if event.count > 0 {
+                        let _ = self.socket.send_to(&state.reply_bytes, peer.address);
+
                         event.count -= 1;
                         event.time = now_ms + 5000;
 
@@ -505,10 +516,10 @@ impl Server {
             }
             peer::State::Closing => {
                 if event.kind == event_queue::EventType::ResendDisconnect {
-                    let reply = frame::Frame::DisconnectFrame(frame::DisconnectFrame {});
-                    let _ = self.socket.send_to(&reply.write(), peer.address);
-
                     if event.count > 0 {
+                        let request = frame::Frame::DisconnectFrame(frame::DisconnectFrame {});
+                        let _ = self.socket.send_to(&request.write(), peer.address);
+
                         event.count -= 1;
                         event.time = now_ms + 5000;
 
@@ -575,12 +586,7 @@ impl Server {
 
                     if state.disconnect_flush && !state.endpoint.is_send_pending() {
                         // Signal remaining received packets
-                        match peer.state {
-                            peer::State::Active(ref mut state) => {
-                                state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
-                            }
-                            _ => (),
-                        }
+                        state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
 
                         // Attempt to close the connection
                         peer.state = peer::State::Closing;
