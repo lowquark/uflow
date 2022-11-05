@@ -14,6 +14,7 @@ pub struct PendingState {
 pub struct ActiveState {
     pub endpoint: DatenMeister,
     pub disconnect_flush: bool,
+    pub timeout_time_ms: u64,
 }
 
 pub enum State {

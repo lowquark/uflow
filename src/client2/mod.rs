@@ -50,8 +50,8 @@ pub enum ErrorType {
 pub enum Event {
     Connect,
     Disconnect,
-    Error(ErrorType),
     Receive(Box<[u8]>),
+    Error(ErrorType),
 }
 
 struct EventPacketSink<'a> {
@@ -573,9 +573,8 @@ impl Client {
     fn step_if_active(&mut self) {
         match self.state {
             State::Active(ref mut state) => {
+                // Process and signal received packets
                 state.endpoint.step();
-
-                // Signal received packets
                 state.endpoint.receive(&mut EventPacketSink::new(&mut self.events_out));
             }
             _ => (),

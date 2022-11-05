@@ -1,6 +1,3 @@
-mod event_queue;
-mod peer;
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net;
@@ -16,6 +13,19 @@ use crate::MAX_FRAME_SIZE;
 use crate::PROTOCOL_VERSION;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
+
+mod event_queue;
+mod peer;
+
+static HANDSHAKE_RESEND_INTERVAL_MS: u64 = 2000;
+static HANDSHAKE_RESEND_COUNT: u8 = 8;
+
+static ACTIVE_TIMEOUT_MS: u64 = 15000;
+
+static DISCONNECT_RESEND_INTERVAL_MS: u64 = 2000;
+static DISCONNECT_RESEND_COUNT: u8 = 8;
+
+static CLOSED_TIMEOUT_MS: u64 = 15000;
 
 pub struct Config {
     pub max_pending_connections: usize,
@@ -42,16 +52,16 @@ impl Default for Config {
 }
 
 pub enum ErrorType {
-    Timeout,
     HandshakeError,
     HandshakeTimeout,
+    Timeout,
 }
 
 pub enum Event {
     Connect(net::SocketAddr),
     Disconnect(net::SocketAddr),
-    Error(net::SocketAddr, ErrorType),
     Receive(net::SocketAddr, Box<[u8]>),
+    Error(net::SocketAddr, ErrorType),
 }
 
 struct EventPacketSink<'a> {
@@ -156,15 +166,10 @@ impl Server {
 
         self.flush_active_peers(now_ms);
 
-        let mut frame_data_buf = [0; MAX_FRAME_SIZE];
-
-        while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {
-            if let Some(frame) = frame::Frame::read(&frame_data_buf[..frame_size]) {
-                self.handle_frame(address, frame, now_ms);
-            }
-        }
+        self.handle_frames(now_ms);
 
         self.handle_events(now_ms);
+
         self.active_peers.retain(|peer| peer.borrow().is_active());
 
         self.step_active_peers();
@@ -195,34 +200,6 @@ impl Server {
     fn now_ms(&self) -> u64 {
         let now = time::Instant::now();
         (now - self.time_base).as_millis() as u64
-    }
-
-    fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame, now_ms: u64) {
-        match frame {
-            frame::Frame::HandshakeSynFrame(frame) => {
-                self.handle_handshake_syn(address, frame, now_ms);
-            }
-            frame::Frame::HandshakeAckFrame(frame) => {
-                self.handle_handshake_ack(address, frame);
-            }
-            frame::Frame::HandshakeSynAckFrame(_) => (),
-            frame::Frame::DisconnectFrame(_frame) => {
-                self.handle_disconnect(address, now_ms);
-            }
-            frame::Frame::DisconnectAckFrame(_frame) => {
-                self.handle_disconnect_ack(address);
-            }
-            frame::Frame::DataFrame(frame) => {
-                self.handle_data(address, frame);
-            }
-            frame::Frame::SyncFrame(frame) => {
-                self.handle_sync(address, frame);
-            }
-            frame::Frame::AckFrame(frame) => {
-                self.handle_ack(address, frame);
-            }
-            _ => (),
-        }
     }
 
     fn handle_handshake_syn(
@@ -322,8 +299,8 @@ impl Server {
         self.peer_events.push(event_queue::Event::new(
             Rc::clone(&peer_rc),
             event_queue::EventType::ResendHandshakeSynAck,
-            now_ms + 5000,
-            5,
+            now_ms + HANDSHAKE_RESEND_INTERVAL_MS,
+            HANDSHAKE_RESEND_COUNT,
         ));
 
         self.peers.insert(peer_addr, peer_rc);
@@ -333,6 +310,7 @@ impl Server {
         &mut self,
         peer_addr: net::SocketAddr,
         handshake: frame::HandshakeAckFrame,
+        now_ms: u64,
     ) {
         if let Some(peer_rc) = self.peers.get(&peer_addr) {
             let mut peer = peer_rc.borrow_mut();
@@ -368,6 +346,7 @@ impl Server {
                         peer.state = peer::State::Active(peer::ActiveState {
                             endpoint: daten_meister,
                             disconnect_flush: false,
+                            timeout_time_ms: now_ms + ACTIVE_TIMEOUT_MS,
                         });
 
                         self.active_peers.push(Rc::clone(&peer_rc));
@@ -375,12 +354,11 @@ impl Server {
                         // Signal connect
                         self.events_out.push(Event::Connect(peer_addr));
                     } else {
-                        // Bad handshake, forget peer
+                        // Bad handshake, forget peer and signal handshake error
+                        self.events_out.push(Event::Error(peer_addr, ErrorType::HandshakeError));
+
                         std::mem::drop(peer);
                         self.peers.remove(&peer_addr);
-
-                        // Signal handshake error
-                        self.events_out.push(Event::Error(peer_addr, ErrorType::HandshakeError));
                     }
                 }
                 _ => (),
@@ -418,7 +396,7 @@ impl Server {
             self.peer_events.push(event_queue::Event::new(
                 Rc::clone(&peer_rc),
                 event_queue::EventType::ClosedTimeout,
-                now_ms + 15000,
+                now_ms + CLOSED_TIMEOUT_MS,
                 0,
             ));
         }
@@ -433,19 +411,18 @@ impl Server {
 
             match peer.state {
                 peer::State::Closing => {
-                    // Forget peer now
+                    // Forget peer and signal disconnect
+                    self.events_out.push(Event::Disconnect(peer_addr));
+
                     std::mem::drop(peer);
                     self.peers.remove(&peer_addr);
-
-                    // Signal disconnect
-                    self.events_out.push(Event::Disconnect(peer_addr));
                 }
                 _ => (),
             }
         }
     }
 
-    fn handle_data(&mut self, peer_addr: net::SocketAddr, frame: frame::DataFrame) {
+    fn handle_data(&mut self, peer_addr: net::SocketAddr, frame: frame::DataFrame, now_ms: u64) {
         if let Some(peer_rc) = self.peers.get(&peer_addr) {
             let mut peer = peer_rc.borrow_mut();
 
@@ -454,13 +431,15 @@ impl Server {
                     state
                         .endpoint
                         .handle_data_frame(frame);
+
+                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
                 }
                 _ => (),
             }
         }
     }
 
-    fn handle_ack(&mut self, peer_addr: net::SocketAddr, frame: frame::AckFrame) {
+    fn handle_ack(&mut self, peer_addr: net::SocketAddr, frame: frame::AckFrame, now_ms: u64) {
         if let Some(peer_rc) = self.peers.get(&peer_addr) {
             let mut peer = peer_rc.borrow_mut();
 
@@ -469,13 +448,15 @@ impl Server {
                     state
                         .endpoint
                         .handle_ack_frame(frame);
+
+                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
                 }
                 _ => (),
             }
         }
     }
 
-    fn handle_sync(&mut self, peer_addr: net::SocketAddr, frame: frame::SyncFrame) {
+    fn handle_sync(&mut self, peer_addr: net::SocketAddr, frame: frame::SyncFrame, now_ms: u64) {
         if let Some(peer_rc) = self.peers.get(&peer_addr) {
             let mut peer = peer_rc.borrow_mut();
 
@@ -484,14 +465,55 @@ impl Server {
                     state
                         .endpoint
                         .handle_sync_frame(frame);
+
+                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
                 }
                 _ => (),
             }
         }
     }
 
+    fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame, now_ms: u64) {
+        match frame {
+            frame::Frame::HandshakeSynFrame(frame) => {
+                self.handle_handshake_syn(address, frame, now_ms);
+            }
+            frame::Frame::HandshakeAckFrame(frame) => {
+                self.handle_handshake_ack(address, frame, now_ms);
+            }
+            frame::Frame::HandshakeSynAckFrame(_) => (),
+            frame::Frame::HandshakeErrorFrame(_) => (),
+            frame::Frame::DisconnectFrame(_frame) => {
+                self.handle_disconnect(address, now_ms);
+            }
+            frame::Frame::DisconnectAckFrame(_frame) => {
+                self.handle_disconnect_ack(address);
+            }
+            frame::Frame::DataFrame(frame) => {
+                self.handle_data(address, frame, now_ms);
+            }
+            frame::Frame::SyncFrame(frame) => {
+                self.handle_sync(address, frame, now_ms);
+            }
+            frame::Frame::AckFrame(frame) => {
+                self.handle_ack(address, frame, now_ms);
+            }
+            _ => (),
+        }
+    }
+
+    fn handle_frames(&mut self, now_ms: u64) {
+        let mut frame_data_buf = [0; MAX_FRAME_SIZE];
+
+        while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {
+            if let Some(frame) = frame::Frame::read(&frame_data_buf[..frame_size]) {
+                self.handle_frame(address, frame, now_ms);
+            }
+        }
+    }
+
     fn handle_event(&mut self, now_ms: u64, mut event: event_queue::Event) {
-        let peer = event.peer.borrow_mut();
+        let peer = event.peer.borrow();
 
         match peer.state {
             peer::State::Pending(ref state) => {
@@ -500,17 +522,14 @@ impl Server {
                         let _ = self.socket.send_to(&state.reply_bytes, peer.address);
 
                         event.count -= 1;
-                        event.time = now_ms + 5000;
+                        event.time = now_ms + HANDSHAKE_RESEND_INTERVAL_MS;
 
                         std::mem::drop(peer);
-
                         self.peer_events.push(event);
                     } else {
-                        // Forget peer
-                        self.peers.remove(&peer.address);
-
-                        // Signal handshake timeout
+                        // Forget peer and signal handshake timeout
                         self.events_out.push(Event::Error(peer.address, ErrorType::HandshakeTimeout));
+                        self.peers.remove(&peer.address);
                     }
                 }
             }
@@ -521,17 +540,14 @@ impl Server {
                         let _ = self.socket.send_to(&request.write(), peer.address);
 
                         event.count -= 1;
-                        event.time = now_ms + 5000;
+                        event.time = now_ms + DISCONNECT_RESEND_INTERVAL_MS;
 
                         std::mem::drop(peer);
-
                         self.peer_events.push(event);
                     } else {
-                        // Forget peer
-                        self.peers.remove(&peer.address);
-
-                        // Signal timeout
+                        // Forget peer and signal timeout
                         self.events_out.push(Event::Error(peer.address, ErrorType::Timeout));
+                        self.peers.remove(&peer.address);
                     }
                 }
             }
@@ -555,6 +571,25 @@ impl Server {
 
             self.handle_event(now_ms, event);
         }
+
+        for peer_rc in self.active_peers.iter() {
+            let mut peer = peer_rc.borrow_mut();
+            let peer_addr = peer.address;
+
+            match peer.state {
+                peer::State::Active(ref mut state) => {
+                    if now_ms >= state.timeout_time_ms {
+                        // Signal remaining received packets
+                        state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+
+                        // Forget peer and signal timeout
+                        self.events_out.push(Event::Error(peer_addr, ErrorType::Timeout));
+                        self.peers.remove(&peer.address);
+                    }
+                }
+                _ => (),
+            }
+        }
     }
 
     fn step_active_peers(&mut self) {
@@ -564,9 +599,8 @@ impl Server {
 
             match peer.state {
                 peer::State::Active(ref mut state) => {
+                    // Process and signal received packets
                     state.endpoint.step();
-
-                    // Signal received packets
                     state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
                 }
                 _ => (),
@@ -594,8 +628,8 @@ impl Server {
                         self.peer_events.push(event_queue::Event::new(
                             Rc::clone(&peer_rc),
                             event_queue::EventType::ResendDisconnect,
-                            now_ms + 5000,
-                            5,
+                            now_ms + DISCONNECT_RESEND_INTERVAL_MS,
+                            DISCONNECT_RESEND_COUNT,
                         ));
                     }
                 }
