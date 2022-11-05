@@ -197,6 +197,10 @@ impl Server {
         }
     }
 
+    pub fn peer(&self, peer_addr: &net::SocketAddr) -> Option<&Rc<RefCell<peer::Peer>>> {
+        self.peers.get(peer_addr)
+    }
+
     fn now_ms(&self) -> u64 {
         let now = time::Instant::now();
         (now - self.time_base).as_millis() as u64

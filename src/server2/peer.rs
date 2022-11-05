@@ -1,6 +1,8 @@
 use std::net;
 
 use crate::endpoint::daten_meister::DatenMeister;
+use crate::SendMode;
+use crate::CHANNEL_COUNT;
 
 pub struct PendingState {
     pub local_nonce: u32,
@@ -41,6 +43,57 @@ impl Peer {
         match self.state {
             State::Active(_) => true,
             _ => false,
+        }
+    }
+
+    /// Enqueues a packet for delivery to the remote host. The packet will be sent on the given
+    /// channel according to the specified mode.
+    ///
+    /// # Error Handling
+    ///
+    /// This function will panic if `channel_id` does not refer to a valid channel (i.e.
+    /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
+    /// size](endpoint::Config#structfield.max_packet_size).
+    pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
+        /* TODO:
+        assert!(data.len() <= self.config.peer_config.max_packet_size,
+                "send failed: packet of size {} exceeds configured maximum of {}",
+                data.len(),
+                self.config.peer_config.max_packet_size);
+        */
+
+        assert!(channel_id < CHANNEL_COUNT,
+                "send failed: channel ID {} is invalid",
+                channel_id);
+
+        match self.state {
+            State::Active(ref mut state) => {
+                state.endpoint.send(data, channel_id as u8, mode);
+            }
+            _ => (),
+        }
+    }
+
+    /// Returns the current estimate of the round-trip time (RTT), in seconds.
+    ///
+    /// If the RTT has not yet been computed, `None` is returned instead.
+    pub fn rtt_s(&self) -> Option<f64> {
+        match self.state {
+            State::Active(ref state) => state.endpoint.rtt_s(),
+            _ => None,
+        }
+    }
+
+    /// Returns the combined size of all outstanding packets (i.e. those which have not yet been
+    /// acknowledged by the server), in bytes.
+    ///
+    /// This figure represents the amount of memory allocated by outgoing packets. Thus, packets
+    /// which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this total,
+    /// even if they would not be sent.
+    pub fn send_buffer_size(&self) -> usize {
+        match self.state {
+            State::Active(ref state) => state.endpoint.send_buffer_size(),
+            _ => 0,
         }
     }
 }
