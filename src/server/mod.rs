@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time;
 
 use crate::endpoint_config::EndpointConfig;
-use crate::daten_meister;
+use crate::half_connection;
 use crate::frame;
 use crate::frame::serial::Serialize;
 use crate::udp_frame_sink::UdpFrameSink;
@@ -80,7 +80,7 @@ impl<'a> EventPacketSink<'a> {
     }
 }
 
-impl<'a> daten_meister::PacketSink for EventPacketSink<'a> {
+impl<'a> half_connection::PacketSink for EventPacketSink<'a> {
     fn send(&mut self, packet_data: Box<[u8]>) {
         self.event_queue.push(Event::Receive(self.address, packet_data));
     }
@@ -326,7 +326,7 @@ impl Server {
                     if handshake.nonce_ack == state.local_nonce {
                         use crate::packet_id;
 
-                        let config = daten_meister::Config {
+                        let config = half_connection::Config {
                             tx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
                             rx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
 
@@ -347,10 +347,10 @@ impl Server {
                             keepalive: self.config.peer_config.keepalive,
                         };
 
-                        let daten_meister = daten_meister::DatenMeister::new(config);
+                        let half_connection = half_connection::HalfConnection::new(config);
 
                         peer.state = peer::State::Active(peer::ActiveState {
-                            endpoint: daten_meister,
+                            half_connection,
                             disconnect_flush: false,
                             timeout_time_ms: now_ms + ACTIVE_TIMEOUT_MS,
                         });
@@ -385,10 +385,10 @@ impl Server {
 
             let mut peer = peer_rc.borrow_mut();
 
-            // Signal remaining received packets prior to endpoint destruction
+            // Signal remaining received packets prior to connection destruction
             match peer.state {
                 peer::State::Active(ref mut state) => {
-                    state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                    state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
                 }
                 _ => (),
             }
@@ -435,7 +435,7 @@ impl Server {
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     state
-                        .endpoint
+                        .half_connection
                         .handle_data_frame(frame);
 
                     state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
@@ -452,7 +452,7 @@ impl Server {
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     state
-                        .endpoint
+                        .half_connection
                         .handle_ack_frame(frame);
 
                     state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
@@ -469,7 +469,7 @@ impl Server {
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     state
-                        .endpoint
+                        .half_connection
                         .handle_sync_frame(frame);
 
                     state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
@@ -586,7 +586,7 @@ impl Server {
                 peer::State::Active(ref mut state) => {
                     if now_ms >= state.timeout_time_ms {
                         // Signal remaining received packets
-                        state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                        state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
 
                         // Forget peer and signal timeout
                         self.events_out.push(Event::Error(peer_addr, ErrorType::Timeout));
@@ -606,8 +606,8 @@ impl Server {
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     // Process and signal received packets
-                    state.endpoint.step();
-                    state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                    state.half_connection.step();
+                    state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
                 }
                 _ => (),
             }
@@ -622,11 +622,11 @@ impl Server {
             match peer.state {
                 peer::State::Active(ref mut state) => {
                     let ref mut data_sink = UdpFrameSink::new(&self.socket, peer_addr);
-                    state.endpoint.flush(data_sink);
+                    state.half_connection.flush(data_sink);
 
-                    if state.disconnect_flush && !state.endpoint.is_send_pending() {
+                    if state.disconnect_flush && !state.half_connection.is_send_pending() {
                         // Signal remaining received packets
-                        state.endpoint.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                        state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
 
                         // Attempt to close the connection
                         peer.state = peer::State::Closing;

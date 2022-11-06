@@ -55,7 +55,7 @@ pub struct Config {
     pub keepalive: bool,
 }
 
-pub struct DatenMeister {
+pub struct HalfConnection {
     packet_sender: packet_sender::PacketSender,
     pending_queue: pending_queue::PendingQueue,
     resend_queue: resend_queue::ResendQueue,
@@ -81,7 +81,7 @@ pub struct DatenMeister {
     sync_keepalive: bool,
 }
 
-impl DatenMeister {
+impl HalfConnection {
     pub fn new(config: Config) -> Self {
         Self {
             packet_sender: packet_sender::PacketSender::new(config.tx_packet_window_size, config.tx_packet_base_id, config.tx_alloc_limit),
@@ -419,10 +419,10 @@ impl DatenMeister {
 }
 
 // Internal Rc objects are unique to this object
-unsafe impl Send for DatenMeister {}
+unsafe impl Send for HalfConnection {}
 
-// Internal RefCell objects cannot be accessed through a &DatenMeister
-unsafe impl Sync for DatenMeister {}
+// Internal RefCell objects cannot be accessed through a &HalfConnection
+unsafe impl Sync for HalfConnection {}
 
 #[cfg(test)]
 mod tests {
@@ -473,7 +473,7 @@ mod tests {
     }
 
     struct TestApparatus {
-        dm: DatenMeister,
+        hc: HalfConnection,
         flush_id: u32,
     }
 
@@ -505,13 +505,13 @@ mod tests {
 
         fn new_config(config: Config) -> Self {
             Self {
-                dm: DatenMeister::new(config),
+                hc: HalfConnection::new(config),
                 flush_id: 0,
             }
         }
 
         fn is_send_pending(&self) -> bool {
-            self.dm.is_send_pending()
+            self.hc.is_send_pending()
         }
 
         fn set_flush_id(&mut self, flush_id: u32) {
@@ -519,53 +519,53 @@ mod tests {
         }
 
         fn receive_data(&mut self, frame: frame::DataFrame) {
-            self.dm.handle_data_frame(frame);
+            self.hc.handle_data_frame(frame);
         }
 
         fn receive_sync(&mut self, frame: frame::SyncFrame) {
-            self.dm.handle_sync_frame(frame);
+            self.hc.handle_sync_frame(frame);
         }
 
         fn receive_ack(&mut self, frame: frame::AckFrame) {
-            self.dm.handle_ack_frame(frame);
+            self.hc.handle_ack_frame(frame);
         }
 
         fn enqueue_packet(&mut self, data: Box<[u8]>, channel_id: u8, mode: SendMode) {
-            self.dm.send(data, channel_id, mode)
+            self.hc.send(data, channel_id, mode)
         }
 
         fn receive_packets(&mut self) -> Vec<Box<[u8]>> {
             let mut test_sink = TestPacketSink::new();
-            self.dm.receive(&mut test_sink);
+            self.hc.receive(&mut test_sink);
             return test_sink.emitted;
         }
 
         fn acknowledge_packet_base_id(&mut self, base_id: u32) {
-            self.dm.packet_sender.acknowledge(base_id)
+            self.hc.packet_sender.acknowledge(base_id)
         }
 
         fn acknowledge_frame_group(&mut self, group: frame::AckGroup, rtt_ms: Option<u64>) {
-            self.dm.frame_queue.acknowledge_group(group, rtt_ms);
+            self.hc.frame_queue.acknowledge_group(group, rtt_ms);
         }
 
         fn emit_frames(&mut self, now_ms: u64, rtt_ms: u64, flush_alloc: isize) -> Vec<Box<[u8]>> {
             let mut test_sink = TestSink::new();
 
-            self.dm.flush_alloc = flush_alloc;
+            self.hc.flush_alloc = flush_alloc;
 
-            self.dm.emit_frames(now_ms, rtt_ms, 4*rtt_ms, self.flush_id, &mut test_sink);
+            self.hc.emit_frames(now_ms, rtt_ms, 4*rtt_ms, self.flush_id, &mut test_sink);
 
             return test_sink.emitted;
         }
 
         fn step(&mut self) {
-            self.dm.step();
+            self.hc.step();
         }
 
         fn flush(&mut self) -> Vec<Box<[u8]>> {
             let mut test_sink = TestSink::new();
 
-            self.dm.flush(&mut test_sink);
+            self.hc.flush(&mut test_sink);
 
             return test_sink.emitted;
         }

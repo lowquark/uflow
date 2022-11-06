@@ -1,6 +1,6 @@
 use std::net;
 
-use crate::daten_meister::DatenMeister;
+use crate::half_connection::HalfConnection;
 use crate::SendMode;
 use crate::CHANNEL_COUNT;
 
@@ -14,7 +14,7 @@ pub struct PendingState {
 }
 
 pub struct ActiveState {
-    pub endpoint: DatenMeister,
+    pub half_connection: HalfConnection,
     pub disconnect_flush: bool,
     pub timeout_time_ms: u64,
 }
@@ -68,7 +68,7 @@ impl Peer {
 
         match self.state {
             State::Active(ref mut state) => {
-                state.endpoint.send(data, channel_id as u8, mode);
+                state.half_connection.send(data, channel_id as u8, mode);
             }
             _ => (),
         }
@@ -79,7 +79,7 @@ impl Peer {
     /// If the RTT has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
         match self.state {
-            State::Active(ref state) => state.endpoint.rtt_s(),
+            State::Active(ref state) => state.half_connection.rtt_s(),
             _ => None,
         }
     }
@@ -92,7 +92,7 @@ impl Peer {
     /// even if they would not be sent.
     pub fn send_buffer_size(&self) -> usize {
         match self.state {
-            State::Active(ref state) => state.endpoint.send_buffer_size(),
+            State::Active(ref state) => state.half_connection.send_buffer_size(),
             _ => 0,
         }
     }

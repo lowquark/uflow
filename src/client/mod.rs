@@ -3,7 +3,7 @@ use std::time;
 
 use crate::CHANNEL_COUNT;
 use crate::endpoint_config::EndpointConfig;
-use crate::daten_meister;
+use crate::half_connection;
 use crate::frame;
 use crate::frame::serial::Serialize;
 use crate::udp_frame_sink::UdpFrameSink;
@@ -68,7 +68,7 @@ impl<'a> EventPacketSink<'a> {
     }
 }
 
-impl<'a> daten_meister::PacketSink for EventPacketSink<'a> {
+impl<'a> half_connection::PacketSink for EventPacketSink<'a> {
     fn send(&mut self, packet_data: Box<[u8]>) {
         self.event_queue.push(Event::Receive(packet_data));
     }
@@ -92,7 +92,7 @@ pub struct PendingState {
 
 pub struct ActiveState {
     local_nonce: u32,
-    endpoint: daten_meister::DatenMeister,
+    half_connection: half_connection::HalfConnection,
     disconnect_flush: bool,
     timeout_time_ms: u64,
 }
@@ -258,7 +258,7 @@ impl Client {
                 state.initial_sends.push(SendEntry { data, channel_id: channel_id as u8, mode });
             }
             State::Active(ref mut state) => {
-                state.endpoint.send(data, channel_id as u8, mode);
+                state.half_connection.send(data, channel_id as u8, mode);
             }
             _ => (),
         }
@@ -297,7 +297,7 @@ impl Client {
     /// If the RTT has not yet been computed, `None` is returned instead.
     pub fn rtt_s(&self) -> Option<f64> {
         match self.state {
-            State::Active(ref state) => state.endpoint.rtt_s(),
+            State::Active(ref state) => state.half_connection.rtt_s(),
             _ => None,
         }
     }
@@ -310,7 +310,7 @@ impl Client {
     /// even if they would not be sent.
     pub fn send_buffer_size(&self) -> usize {
         match self.state {
-            State::Active(ref state) => state.endpoint.send_buffer_size(),
+            State::Active(ref state) => state.half_connection.send_buffer_size(),
             _ => 0,
         }
     }
@@ -340,7 +340,7 @@ impl Client {
 
                     use crate::packet_id;
 
-                    let config = daten_meister::Config {
+                    let config = half_connection::Config {
                         tx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
                         rx_frame_window_size: MAX_FRAME_WINDOW_SIZE,
 
@@ -361,11 +361,11 @@ impl Client {
                         keepalive: self.config.peer_config.keepalive,
                     };
 
-                    let mut daten_meister = daten_meister::DatenMeister::new(config);
+                    let mut half_connection = half_connection::HalfConnection::new(config);
 
                     let initial_sends = std::mem::take(&mut state.initial_sends);
                     for initial_send in initial_sends.into_iter() {
-                        daten_meister.send(initial_send.data, initial_send.channel_id, initial_send.mode);
+                        half_connection.send(initial_send.data, initial_send.channel_id, initial_send.mode);
                     }
 
                     // Initialize connection and signal connect
@@ -373,7 +373,7 @@ impl Client {
 
                     self.state = State::Active(ActiveState {
                         local_nonce: state.local_nonce,
-                        endpoint: daten_meister,
+                        half_connection,
                         disconnect_flush: false,
                         timeout_time_ms: ACTIVE_TIMEOUT_MS,
                     });
@@ -433,10 +433,10 @@ impl Client {
         let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
         let _ = self.socket.send(&reply.write());
 
-        // Signal remaining received packets prior to endpoint destruction
+        // Signal remaining received packets prior to connection destruction
         match self.state {
             State::Active(ref mut state) => {
-                state.endpoint.receive(&mut EventPacketSink::new(&mut self.events_out));
+                state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
             }
             _ => (),
         }
@@ -464,7 +464,7 @@ impl Client {
     fn handle_data(&mut self, now_ms: u64, frame: frame::DataFrame) {
         match self.state {
             State::Active(ref mut state) => {
-                state.endpoint.handle_data_frame(frame);
+                state.half_connection.handle_data_frame(frame);
                 state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
             }
             _ => (),
@@ -474,7 +474,7 @@ impl Client {
     fn handle_sync(&mut self, now_ms: u64, frame: frame::SyncFrame) {
         match self.state {
             State::Active(ref mut state) => {
-                state.endpoint.handle_sync_frame(frame);
+                state.half_connection.handle_sync_frame(frame);
                 state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
             }
             _ => (),
@@ -484,7 +484,7 @@ impl Client {
     fn handle_ack(&mut self, now_ms: u64, frame: frame::AckFrame) {
         match self.state {
             State::Active(ref mut state) => {
-                state.endpoint.handle_ack_frame(frame);
+                state.half_connection.handle_ack_frame(frame);
                 state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
             }
             _ => (),
@@ -581,8 +581,8 @@ impl Client {
         match self.state {
             State::Active(ref mut state) => {
                 // Process and signal received packets
-                state.endpoint.step();
-                state.endpoint.receive(&mut EventPacketSink::new(&mut self.events_out));
+                state.half_connection.step();
+                state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
             }
             _ => (),
         }
@@ -592,11 +592,11 @@ impl Client {
         match self.state {
             State::Active(ref mut state) => {
                 let ref mut data_sink = UdpFrameSink::new(&self.socket, self.remote_addr);
-                state.endpoint.flush(data_sink);
+                state.half_connection.flush(data_sink);
 
-                if state.disconnect_flush && !state.endpoint.is_send_pending() {
+                if state.disconnect_flush && !state.half_connection.is_send_pending() {
                     // Signal remaining received packets
-                    state.endpoint.receive(&mut EventPacketSink::new(&mut self.events_out));
+                    state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
 
                     // Attempt to close the connection
                     let request_bytes = frame::Frame::DisconnectFrame(frame::DisconnectFrame {}).write();

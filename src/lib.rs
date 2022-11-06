@@ -301,7 +301,7 @@
 //! ```
 //!
 
-mod daten_meister;
+mod half_connection;
 mod endpoint_config;
 mod frame;
 mod packet_id;
