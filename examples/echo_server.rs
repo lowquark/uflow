@@ -3,22 +3,22 @@ fn main() {
     let config = Default::default();
 
     // Create a server object
-    let mut server = uflow::server2::Server::bind(server_address, config).unwrap();
+    let mut server = uflow::server::Server::bind(server_address, config).unwrap();
 
     loop {
         // Process inbound UDP frames and handle events
         for event in server.step() {
             match event {
-                uflow::server2::Event::Connect(peer_address) => {
+                uflow::server::Event::Connect(peer_address) => {
                     println!("[{:?}] connected", peer_address);
                 }
-                uflow::server2::Event::Disconnect(peer_address) => {
+                uflow::server::Event::Disconnect(peer_address) => {
                     println!("[{:?}] disconnected", peer_address);
                 }
-                uflow::server2::Event::Error(peer_address, err) => {
+                uflow::server::Event::Error(peer_address, err) => {
                     println!("[{:?}] error: {:?}", peer_address, err);
                 }
-                uflow::server2::Event::Receive(peer_address, packet_data) => {
+                uflow::server::Event::Receive(peer_address, packet_data) => {
                     let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
                     let reversed_string: std::string::String = packet_data_utf8.chars().rev().collect();
 

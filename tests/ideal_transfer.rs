@@ -12,7 +12,7 @@ const NUM_CHANNELS: usize = 4;
 fn server_thread() -> Vec<md5::Digest> {
     let cfg = Default::default();
 
-    let mut server = uflow::server2::Server::bind("127.0.0.1:8888", cfg).unwrap();
+    let mut server = uflow::server::Server::bind("127.0.0.1:8888", cfg).unwrap();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
     let mut packet_ids = [0u32; NUM_CHANNELS];
@@ -21,13 +21,13 @@ fn server_thread() -> Vec<md5::Digest> {
     'outer: loop {
         for event in server.step() {
             match event {
-                uflow::server2::Event::Connect(peer_addr) => {
+                uflow::server::Event::Connect(peer_addr) => {
                     assert_eq!(connect_seen, false);
                     connect_seen = true;
 
                     println!("[server] client connected from {:?}", peer_addr);
                 }
-                uflow::server2::Event::Receive(_peer_addr, data) => {
+                uflow::server::Event::Receive(_peer_addr, data) => {
                     let channel_id = data[0] as usize;
                     let packet_id = u32::from_be_bytes(data[1..5].try_into().unwrap());
 
@@ -42,7 +42,7 @@ fn server_thread() -> Vec<md5::Digest> {
                     all_data[channel_id].extend_from_slice(&data);
                     *packet_id_expected += 1;
                 }
-                uflow::server2::Event::Disconnect(_peer_addr) => {
+                uflow::server::Event::Disconnect(_peer_addr) => {
                     println!("[server] client disconnected");
                     break 'outer;
                 }
@@ -63,7 +63,7 @@ fn server_thread() -> Vec<md5::Digest> {
 fn client_thread() -> Vec<md5::Digest> {
     let cfg = Default::default();
 
-    let mut client = uflow::client2::Client::connect("127.0.0.1:8888", cfg).unwrap();
+    let mut client = uflow::client::Client::connect("127.0.0.1:8888", cfg).unwrap();
 
     let num_steps = 100;
     let packets_per_step = 6;
@@ -76,7 +76,7 @@ fn client_thread() -> Vec<md5::Digest> {
     for _ in 0..num_steps {
         for event in client.step() {
             match event {
-                uflow::client2::Event::Connect => {
+                uflow::client::Event::Connect => {
                     assert_eq!(connect_seen, false);
                     connect_seen = true;
 
@@ -122,7 +122,7 @@ fn client_thread() -> Vec<md5::Digest> {
     'outer: loop {
         for event in client.step() {
             match event {
-                uflow::client2::Event::Disconnect => {
+                uflow::client::Event::Disconnect => {
                     println!("[client] server disconnected");
                     break 'outer;
                 }

@@ -302,19 +302,13 @@
 //! ```
 //!
 
-mod client;
 mod endpoint;
 mod frame;
 mod packet_id;
-mod peer;
-mod server;
-pub mod server2;
-pub mod client2;
+pub mod server;
+pub mod client;
 mod udp_frame_sink;
 
-pub use server::Server;
-pub use client::Client;
-pub use peer::Peer;
 pub use endpoint::Config as EndpointConfig;
 
 /// The current protocol version ID.

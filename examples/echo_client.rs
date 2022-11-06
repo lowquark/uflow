@@ -3,7 +3,7 @@ fn main() {
     let config = Default::default();
 
     // Create a client object
-    let mut client = uflow::client2::Client::connect(server_address, config).unwrap();
+    let mut client = uflow::client::Client::connect(server_address, config).unwrap();
 
     let mut send_counter = 0;
     let mut message_counter = 0;
@@ -12,16 +12,16 @@ fn main() {
         // Process inbound UDP frames and handle events
         for event in client.step() {
             match event {
-                uflow::client2::Event::Connect => {
+                uflow::client::Event::Connect => {
                     println!("connected to server");
                 }
-                uflow::client2::Event::Disconnect => {
+                uflow::client::Event::Disconnect => {
                     println!("disconnected from server");
                 }
-                uflow::client2::Event::Error(err) => {
+                uflow::client::Event::Error(err) => {
                     println!("server connection error: {:?}", err);
                 }
-                uflow::client2::Event::Receive(packet_data) => {
+                uflow::client::Event::Receive(packet_data) => {
                     let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
 
                     println!("received \"{}\"", packet_data_utf8);
