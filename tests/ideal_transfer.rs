@@ -1,60 +1,58 @@
+use std::thread;
+use std::time;
+
+use std::convert::TryInto;
 
 extern crate md5;
 
-use std::convert::TryInto;
+const STEP_DURATION: time::Duration = time::Duration::from_millis(15);
 
 const NUM_CHANNELS: usize = 4;
 
 fn server_thread() -> Vec<md5::Digest> {
-    let cfg = uflow::EndpointConfig::default();
+    let cfg = Default::default();
 
-    let mut server = uflow::Server::bind("127.0.0.1:8888", 1, cfg).unwrap();
-    let mut peers = Vec::new();
+    let mut server = uflow::server2::Server::bind("127.0.0.1:8888", cfg).unwrap();
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
-
     let mut packet_ids = [0u32; NUM_CHANNELS];
+    let mut connect_seen = false;
 
     'outer: loop {
-        server.step();
+        for event in server.step() {
+            match event {
+                uflow::server2::Event::Connect(peer_addr) => {
+                    assert_eq!(connect_seen, false);
+                    connect_seen = true;
 
-        for peer in server.incoming() {
-            peers.push(peer);
-        }
-
-        for peer in peers.iter_mut() {
-            for event in peer.poll_events() {
-                match event {
-                    uflow::Event::Connect => {
-                        println!("[server] client connected");
-                    }
-                    uflow::Event::Receive(data) => {
-                        //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
-
-                        let channel_id = data[0] as usize;
-                        let packet_id = u32::from_be_bytes(data[1..5].try_into().unwrap());
-
-                        let ref mut packet_id_expected = packet_ids[channel_id];
-
-                        if packet_id != *packet_id_expected {
-                            panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
-                        }
-
-                        all_data[channel_id].extend_from_slice(&data);
-                        *packet_id_expected += 1;
-                    }
-                    uflow::Event::Disconnect => {
-                        println!("[server] client disconnected");
-                        break 'outer;
-                    }
-                    other => panic!("[server] unexpected event: {:?}", other),
+                    println!("[server] client connected from {:?}", peer_addr);
                 }
+                uflow::server2::Event::Receive(_peer_addr, data) => {
+                    let channel_id = data[0] as usize;
+                    let packet_id = u32::from_be_bytes(data[1..5].try_into().unwrap());
+
+                    //println!("[server] received data on channel id {}\ndata begins with: {:?}", channel_id, &data[0..4]);
+
+                    let ref mut packet_id_expected = packet_ids[channel_id];
+
+                    if packet_id != *packet_id_expected {
+                        panic!("[server] data skipped! received ID: {} expected ID: {}", packet_id, packet_id_expected);
+                    }
+
+                    all_data[channel_id].extend_from_slice(&data);
+                    *packet_id_expected += 1;
+                }
+                uflow::server2::Event::Disconnect(_peer_addr) => {
+                    println!("[server] client disconnected");
+                    break 'outer;
+                }
+                other => panic!("[server] unexpected event: {:?}", other),
             }
         }
 
         server.flush();
 
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        thread::sleep(STEP_DURATION);
     }
 
     println!("[server] exiting");
@@ -63,26 +61,25 @@ fn server_thread() -> Vec<md5::Digest> {
 }
 
 fn client_thread() -> Vec<md5::Digest> {
-    let mut client = uflow::Client::bind_any_ipv4().unwrap();
+    let cfg = Default::default();
 
-    let cfg = uflow::EndpointConfig::default();
-
-    let mut server_peer = client.connect("127.0.0.1:8888", cfg).expect("Invalid address");
+    let mut client = uflow::client2::Client::connect("127.0.0.1:8888", cfg).unwrap();
 
     let num_steps = 100;
     let packets_per_step = 6;
     let packet_size = uflow::MAX_FRAGMENT_SIZE;
 
     let mut all_data: Vec<Vec<u8>> = vec![Vec::new(); NUM_CHANNELS as usize];
-
     let mut packet_ids = [0u32; NUM_CHANNELS];
+    let mut connect_seen = false;
 
     for _ in 0..num_steps {
-        client.step();
-
-        for event in server_peer.poll_events() {
+        for event in client.step() {
             match event {
-                uflow::Event::Connect => {
+                uflow::client2::Event::Connect => {
+                    assert_eq!(connect_seen, false);
+                    connect_seen = true;
+
                     println!("[client] connected to server");
                 }
                 other => panic!("[client] unexpected event: {:?}", other),
@@ -107,7 +104,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
             all_data[channel_id].extend_from_slice(&data);
 
-            server_peer.send(data, channel_id, mode);
+            client.send(data, channel_id, mode);
 
             println!("[client] sent packet {} on channel {}", packet_id, channel_id);
 
@@ -116,18 +113,16 @@ fn client_thread() -> Vec<md5::Digest> {
 
         client.flush();
 
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        thread::sleep(STEP_DURATION);
     }
 
     println!("[client] disconnecting");
-    server_peer.disconnect();
+    client.disconnect();
 
     'outer: loop {
-        client.step();
-
-        for event in server_peer.poll_events() {
+        for event in client.step() {
             match event {
-                uflow::Event::Disconnect => {
+                uflow::client2::Event::Disconnect => {
                     println!("[client] server disconnected");
                     break 'outer;
                 }
@@ -137,7 +132,7 @@ fn client_thread() -> Vec<md5::Digest> {
 
         client.flush();
 
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        thread::sleep(STEP_DURATION);
     }
 
     println!("[client] Exiting");
@@ -146,16 +141,15 @@ fn client_thread() -> Vec<md5::Digest> {
 }
 
 #[test]
-fn ideal_transfer() {
-    let server = std::thread::spawn(server_thread);
+fn ideal_transfer_two() {
+    let server = thread::spawn(server_thread);
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    thread::sleep(time::Duration::from_millis(200));
 
-    let client = std::thread::spawn(client_thread);
+    let client = thread::spawn(client_thread);
 
     let server_md5s = server.join().unwrap();
     let client_md5s = client.join().unwrap();
 
     assert_eq!(server_md5s, client_md5s);
 }
-

@@ -308,8 +308,8 @@ mod frame;
 mod packet_id;
 mod peer;
 mod server;
-mod server2;
-mod client2;
+pub mod server2;
+pub mod client2;
 mod udp_frame_sink;
 
 pub use server::Server;

@@ -41,12 +41,14 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug)]
 pub enum ErrorType {
     HandshakeError,
     HandshakeTimeout,
     Timeout,
 }
 
+#[derive(Debug)]
 pub enum Event {
     Connect,
     Disconnect,
@@ -320,7 +322,7 @@ impl Client {
 
     fn handle_handshake_syn_ack(&mut self, frame: frame::HandshakeSynAckFrame) {
         match self.state {
-            State::Pending(ref state) => {
+            State::Pending(ref mut state) => {
                 // If the server responds to our SYN with a matching SYN+ACK, it has already
                 // validated the connection parameters, so initialize an active connection. Since
                 // it is trivial for either party to intentionally stall a connection, there is no
@@ -359,7 +361,12 @@ impl Client {
                         keepalive: self.config.peer_config.keepalive,
                     };
 
-                    let daten_meister = daten_meister::DatenMeister::new(config);
+                    let mut daten_meister = daten_meister::DatenMeister::new(config);
+
+                    let initial_sends = std::mem::take(&mut state.initial_sends);
+                    for initial_send in initial_sends.into_iter() {
+                        daten_meister.send(initial_send.data, initial_send.channel_id, initial_send.mode);
+                    }
 
                     // Initialize connection and signal connect
                     self.events_out.push(Event::Connect);

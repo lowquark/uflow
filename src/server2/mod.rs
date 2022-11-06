@@ -51,12 +51,14 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug)]
 pub enum ErrorType {
     HandshakeError,
     HandshakeTimeout,
     Timeout,
 }
 
+#[derive(Debug)]
 pub enum Event {
     Connect(net::SocketAddr),
     Disconnect(net::SocketAddr),
