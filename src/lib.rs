@@ -1,4 +1,3 @@
-
 #![warn(missing_docs)]
 
 //! `uflow` is a non-blocking, connection-based layer over UDP that provides an ordered and
@@ -302,14 +301,15 @@
 //! ```
 //!
 
-mod endpoint;
+mod daten_meister;
+mod endpoint_config;
 mod frame;
 mod packet_id;
 pub mod server;
 pub mod client;
 mod udp_frame_sink;
 
-pub use endpoint::Config as EndpointConfig;
+pub use endpoint_config::EndpointConfig as EndpointConfig;
 
 /// The current protocol version ID.
 pub const PROTOCOL_VERSION: u8 = 2;
@@ -378,4 +378,3 @@ pub enum Event {
         Box<[u8]>,
     ),
 }
-

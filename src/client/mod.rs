@@ -2,8 +2,8 @@ use std::net;
 use std::time;
 
 use crate::CHANNEL_COUNT;
-use crate::EndpointConfig;
-use crate::endpoint::daten_meister;
+use crate::endpoint_config::EndpointConfig;
+use crate::daten_meister;
 use crate::frame;
 use crate::frame::serial::Serialize;
 use crate::udp_frame_sink::UdpFrameSink;

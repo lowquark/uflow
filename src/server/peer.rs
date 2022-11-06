@@ -1,6 +1,6 @@
 use std::net;
 
-use crate::endpoint::daten_meister::DatenMeister;
+use crate::daten_meister::DatenMeister;
 use crate::SendMode;
 use crate::CHANNEL_COUNT;
 

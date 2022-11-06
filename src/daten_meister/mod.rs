@@ -1,6 +1,4 @@
 
-use super::FrameSink;
-
 use crate::SendMode;
 use crate::frame;
 
@@ -26,6 +24,10 @@ const INITIAL_RTT_ESTIMATE_MS: u64 = 150;
 const INITIAL_RTO_ESTIMATE_MS: u64 = 4*INITIAL_RTT_ESTIMATE_MS;
 const MIN_SYNC_TIMEOUT_MS: u64 = 2000;
 const MIN_SYNC_KEEPALIVE_TIMEOUT_MS: u64 = 5000;
+
+pub trait FrameSink {
+    fn send(&mut self, frame_data: &[u8]);
+}
 
 pub trait PacketSink {
     fn send(&mut self, packet_data: Box<[u8]>);

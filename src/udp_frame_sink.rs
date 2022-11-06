@@ -1,5 +1,5 @@
 
-use crate::endpoint;
+use crate::daten_meister;
 
 use std::net;
 
@@ -19,7 +19,7 @@ impl<'a> UdpFrameSink<'a> {
     }
 }
 
-impl<'a> endpoint::FrameSink for UdpFrameSink<'a> {
+impl<'a> daten_meister::FrameSink for UdpFrameSink<'a> {
     fn send(&mut self, frame_data: &[u8]) {
         //use crate::frame;
         //use frame::serial::Serialize;
