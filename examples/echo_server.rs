@@ -1,48 +1,36 @@
-
 fn main() {
-    // Create a server object bound locally on port 8888, with a maximum of 8 concurrent connections
-    let address = "127.0.0.1:8888";
-    let max_peer_count = 8;
-    let peer_config = uflow::EndpointConfig::default();
-    let mut server = uflow::Server::bind(address, max_peer_count, peer_config).unwrap();
+    let server_address = "127.0.0.1:8888";
+    let config = Default::default();
 
-    // List of active connections
-    let mut clients = Vec::new();
+    // Create a server object
+    let mut server = uflow::server2::Server::bind(server_address, config).unwrap();
 
     loop {
-        // Process inbound UDP frames
-        server.step();
+        // Process inbound UDP frames and handle events
+        for event in server.step() {
+            match event {
+                uflow::server2::Event::Connect(peer_address) => {
+                    println!("[{:?}] connected", peer_address);
+                }
+                uflow::server2::Event::Disconnect(peer_address) => {
+                    println!("[{:?}] disconnected", peer_address);
+                }
+                uflow::server2::Event::Error(peer_address, err) => {
+                    println!("[{:?}] error: {:?}", peer_address, err);
+                }
+                uflow::server2::Event::Receive(peer_address, packet_data) => {
+                    let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
+                    let reversed_string: std::string::String = packet_data_utf8.chars().rev().collect();
 
-        // Add each incoming connection to the client list
-        for client_peer in server.incoming() {
-            println!("[{:?}] appeared", client_peer.address());
-            clients.push(client_peer);
-        }
+                    println!("[{:?}] received \"{}\"", peer_address, packet_data_utf8);
 
-        // Handle events for each connected client
-        for client_peer in clients.iter_mut() {
-            for event in client_peer.poll_events() {
-                match event {
-                    uflow::Event::Connect => {
-                        println!("[{:?}] connected", client_peer.address());
-                    }
-                    uflow::Event::Disconnect => {
-                        println!("[{:?}] disconnected", client_peer.address());
-                    }
-                    uflow::Event::Timeout => {
-                        println!("[{:?}] timed out", client_peer.address());
-                    }
-                    uflow::Event::Receive(packet_data) => {
-                        let packet_data_utf8 = std::str::from_utf8(&packet_data).unwrap();
-                        let reversed_string: std::string::String = packet_data_utf8.chars().rev().collect();
+                    let mut peer = server.peer(&peer_address).unwrap().borrow_mut();
 
-                        println!("[{:?}] received \"{}\"", client_peer.address(), packet_data_utf8);
+                    // Echo the packet reliably on channel 0
+                    peer.send(packet_data, 0, uflow::SendMode::Reliable);
 
-                        // Echo the packet reliably on channel 0
-                        client_peer.send(packet_data, 0, uflow::SendMode::Reliable);
-                        // Echo the reverse of the packet unreliably on channel 1
-                        client_peer.send(reversed_string.as_bytes().into(), 1, uflow::SendMode::Unreliable);
-                    }
+                    // Echo the reverse of the packet unreliably on channel 1
+                    peer.send(reversed_string.as_bytes().into(), 1, uflow::SendMode::Unreliable);
                 }
             }
         }
@@ -50,10 +38,6 @@ fn main() {
         // Flush outbound UDP frames
         server.flush();
 
-        // Forget clients which have disconnected
-        clients.retain(|client_peer| !client_peer.is_disconnected());
-
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
 }
-
