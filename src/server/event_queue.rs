@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::rc::Rc;
 
-use super::peer::Peer;
+use super::remote_client::RemoteClient;
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum EventType {
@@ -13,16 +13,16 @@ pub enum EventType {
 }
 
 pub struct Event {
-    pub peer: Rc<RefCell<Peer>>,
+    pub client: Rc<RefCell<RemoteClient>>,
     pub kind: EventType,
     pub time: u64,
     pub count: u8,
 }
 
 impl Event {
-    pub fn new(peer: Rc<RefCell<Peer>>, kind: EventType, time: u64, count: u8) -> Self {
+    pub fn new(client: Rc<RefCell<RemoteClient>>, kind: EventType, time: u64, count: u8) -> Self {
         Self {
-            peer,
+            client,
             kind,
             time,
             count,

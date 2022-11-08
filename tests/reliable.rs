@@ -117,13 +117,13 @@ fn server_thread() -> Vec<md5::Digest> {
     'outer: loop {
         for event in server.step() {
             match event {
-                uflow::server::Event::Connect(peer_addr) => {
+                uflow::server::Event::Connect(client_addr) => {
                     assert_eq!(connect_seen, false);
                     connect_seen = true;
 
-                    println!("[server] client connected from {:?}", peer_addr);
+                    println!("[server] client connected from {:?}", client_addr);
                 }
-                uflow::server::Event::Receive(_peer_addr, data) => {
+                uflow::server::Event::Receive(_client_addr, data) => {
                     let channel_id = data[0] as usize;
                     let packet_id = u32::from_be_bytes(data[1..5].try_into().unwrap());
 
@@ -138,7 +138,7 @@ fn server_thread() -> Vec<md5::Digest> {
                     all_data[channel_id].extend_from_slice(&data);
                     *packet_id_expected += 1;
                 }
-                uflow::server::Event::Disconnect(_peer_addr) => {
+                uflow::server::Event::Disconnect(_client_addr) => {
                     println!("[server] client disconnected");
                     break 'outer;
                 }

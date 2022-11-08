@@ -15,7 +15,7 @@ use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
 
 mod event_queue;
-mod peer;
+mod remote_client;
 
 static HANDSHAKE_RESEND_INTERVAL_MS: u64 = 2000;
 static HANDSHAKE_RESEND_COUNT: u8 = 8;
@@ -30,14 +30,14 @@ static CLOSED_TIMEOUT_MS: u64 = 15000;
 pub struct Config {
     pub max_pending_connections: usize,
     pub max_active_connections: usize,
-    pub peer_config: EndpointConfig,
+    pub client_config: EndpointConfig,
 }
 
 impl Config {
     pub fn is_valid(&self) -> bool {
         return self.max_pending_connections > 0
             && self.max_active_connections > 0
-            && self.peer_config.is_valid();
+            && self.client_config.is_valid();
     }
 }
 
@@ -46,7 +46,7 @@ impl Default for Config {
         Self {
             max_pending_connections: 4096,
             max_active_connections: 32,
-            peer_config: Default::default(),
+            client_config: Default::default(),
         }
     }
 }
@@ -91,10 +91,10 @@ pub struct Server {
     socket: net::UdpSocket,
     config: Config,
 
-    peers: HashMap<net::SocketAddr, Rc<RefCell<peer::Peer>>>,
-    active_peers: Vec<Rc<RefCell<peer::Peer>>>,
+    clients: HashMap<net::SocketAddr, Rc<RefCell<remote_client::RemoteClient>>>,
+    active_clients: Vec<Rc<RefCell<remote_client::RemoteClient>>>,
 
-    peer_events: event_queue::EventQueue,
+    client_events: event_queue::EventQueue,
 
     time_base: time::Instant,
 
@@ -105,9 +105,9 @@ impl Server {
     /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
     /// [`Server`](Self) object.
     ///
-    /// The server will limit the number of active connections to `max_peer_count`, and will
+    /// The server will limit the number of active connections to `max_client_count`, and will
     /// silently ignore connection requests which would exceed that limit. Otherwise valid incoming
-    /// connections will be initialized according to `peer_config`.
+    /// connections will be initialized according to `client_config`.
     ///
     /// # Error Handling
     ///
@@ -124,10 +124,10 @@ impl Server {
             socket,
             config,
 
-            peers: HashMap::new(),
-            active_peers: Vec::new(),
+            clients: HashMap::new(),
+            active_clients: Vec::new(),
 
-            peer_events: event_queue::EventQueue::new(),
+            client_events: event_queue::EventQueue::new(),
 
             time_base: time::Instant::now(),
 
@@ -154,9 +154,9 @@ impl Server {
 
     /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
     /// socket. Returns an iterator of `ServerEvents`s to signal connection status and deliver
-    /// received packets for each peer.
+    /// received packets for each client.
     ///
-    /// *Note 1*: All peer events are considered delivered, even if the iterator is not consumed until the
+    /// *Note 1*: All client events are considered delivered, even if the iterator is not consumed until the
     /// end.
     ///
     /// *Note 2*: Internally, `uflow` uses the [leaky bucket
@@ -166,32 +166,32 @@ impl Server {
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
-        self.flush_active_peers(now_ms);
+        self.flush_active_clients(now_ms);
 
         self.handle_frames(now_ms);
 
         self.handle_events(now_ms);
 
-        self.active_peers.retain(|peer| peer.borrow().is_active());
+        self.active_clients.retain(|client| client.borrow().is_active());
 
-        self.step_active_peers();
+        self.step_active_clients();
 
         std::mem::take(&mut self.events_out).into_iter()
     }
 
     /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
-    /// possible for each peer.
+    /// possible for each client.
     pub fn flush(&mut self) {
         let now_ms = self.now_ms();
-        self.flush_active_peers(now_ms);
+        self.flush_active_clients(now_ms);
     }
 
-    pub fn disconnect(&mut self, peer_addr: &net::SocketAddr) {
-        if let Some(peer_rc) = self.peers.get(peer_addr) {
-            let mut peer = peer_rc.borrow_mut();
+    pub fn disconnect(&mut self, client_addr: &net::SocketAddr) {
+        if let Some(client_rc) = self.clients.get(client_addr) {
+            let mut client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     state.disconnect_flush = true;
                 }
                 _ => (),
@@ -199,8 +199,8 @@ impl Server {
         }
     }
 
-    pub fn peer(&self, peer_addr: &net::SocketAddr) -> Option<&Rc<RefCell<peer::Peer>>> {
-        self.peers.get(peer_addr)
+    pub fn client(&self, client_addr: &net::SocketAddr) -> Option<&Rc<RefCell<remote_client::RemoteClient>>> {
+        self.clients.get(client_addr)
     }
 
     fn now_ms(&self) -> u64 {
@@ -210,11 +210,11 @@ impl Server {
 
     fn handle_handshake_syn(
         &mut self,
-        peer_addr: net::SocketAddr,
+        client_addr: net::SocketAddr,
         handshake: frame::HandshakeSynFrame,
         now_ms: u64,
     ) {
-        if let Some(_) = self.peers.get(&peer_addr) {
+        if let Some(_) = self.clients.get(&client_addr) {
             // Ignore subsequent SYN (either spam or a duplicate - SYN+ACK will be resent if dropped)
             return;
         }
@@ -224,39 +224,39 @@ impl Server {
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Version,
             });
-            let _ = self.socket.send_to(&reply.write(), peer_addr);
+            let _ = self.socket.send_to(&reply.write(), client_addr);
 
             return;
         }
 
-        if self.peers.len() >= self.config.max_pending_connections
-            && self.active_peers.len() >= self.config.max_active_connections
+        if self.clients.len() >= self.config.max_pending_connections
+            && self.active_clients.len() >= self.config.max_active_connections
         {
             // No room in the inn
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full,
             });
-            let _ = self.socket.send_to(&reply.write(), peer_addr);
+            let _ = self.socket.send_to(&reply.write(), client_addr);
 
             return;
         }
 
-        if (handshake.max_receive_alloc as usize) < self.config.peer_config.max_packet_size {
+        if (handshake.max_receive_alloc as usize) < self.config.client_config.max_packet_size {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
             });
-            let _ = self.socket.send_to(&reply.write(), peer_addr);
+            let _ = self.socket.send_to(&reply.write(), client_addr);
 
             return;
         }
 
-        if (handshake.max_packet_size as usize) > self.config.peer_config.max_receive_alloc {
+        if (handshake.max_packet_size as usize) > self.config.client_config.max_receive_alloc {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
             });
-            let _ = self.socket.send_to(&reply.write(), peer_addr);
+            let _ = self.socket.send_to(&reply.write(), client_addr);
 
             return;
         }
@@ -270,29 +270,29 @@ impl Server {
             nonce: local_nonce,
             max_receive_rate: self
                 .config
-                .peer_config
+                .client_config
                 .max_receive_rate
                 .min(u32::MAX as usize) as u32,
             max_packet_size: self
                 .config
-                .peer_config
+                .client_config
                 .max_packet_size
                 .min(u32::MAX as usize) as u32,
             max_receive_alloc: self
                 .config
-                .peer_config
+                .client_config
                 .max_receive_alloc
                 .min(u32::MAX as usize) as u32,
         });
 
         let reply_bytes = reply.write();
-        let _ = self.socket.send_to(&reply_bytes, peer_addr);
+        let _ = self.socket.send_to(&reply_bytes, client_addr);
 
-        // Create a tentative peer object
+        // Create a tentative client object
 
-        let peer_rc = Rc::new(RefCell::new(peer::Peer::new(
-            peer_addr,
-            peer::PendingState {
+        let client_rc = Rc::new(RefCell::new(remote_client::RemoteClient::new(
+            client_addr,
+            remote_client::PendingState {
                 local_nonce,
                 remote_nonce: handshake.nonce,
                 remote_max_receive_rate: handshake.max_receive_rate,
@@ -302,27 +302,27 @@ impl Server {
             },
         )));
 
-        self.peer_events.push(event_queue::Event::new(
-            Rc::clone(&peer_rc),
+        self.client_events.push(event_queue::Event::new(
+            Rc::clone(&client_rc),
             event_queue::EventType::ResendHandshakeSynAck,
             now_ms + HANDSHAKE_RESEND_INTERVAL_MS,
             HANDSHAKE_RESEND_COUNT,
         ));
 
-        self.peers.insert(peer_addr, peer_rc);
+        self.clients.insert(client_addr, client_rc);
     }
 
     fn handle_handshake_ack(
         &mut self,
-        peer_addr: net::SocketAddr,
+        client_addr: net::SocketAddr,
         handshake: frame::HandshakeAckFrame,
         now_ms: u64,
     ) {
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
-            let mut peer = peer_rc.borrow_mut();
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let mut client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Pending(ref state) => {
+            match client.state {
+                remote_client::State::Pending(ref state) => {
                     if handshake.nonce_ack == state.local_nonce {
                         use crate::packet_id;
 
@@ -339,32 +339,32 @@ impl Server {
                             tx_packet_base_id: state.local_nonce & packet_id::MASK,
                             rx_packet_base_id: state.remote_nonce & packet_id::MASK,
 
-                            tx_bandwidth_limit: (self.config.peer_config.max_send_rate as u32).min(state.remote_max_receive_rate),
+                            tx_bandwidth_limit: (self.config.client_config.max_send_rate as u32).min(state.remote_max_receive_rate),
 
                             tx_alloc_limit: state.remote_max_receive_alloc as usize,
-                            rx_alloc_limit: self.config.peer_config.max_receive_alloc as usize,
+                            rx_alloc_limit: self.config.client_config.max_receive_alloc as usize,
 
-                            keepalive: self.config.peer_config.keepalive,
+                            keepalive: self.config.client_config.keepalive,
                         };
 
                         let half_connection = half_connection::HalfConnection::new(config);
 
-                        peer.state = peer::State::Active(peer::ActiveState {
+                        client.state = remote_client::State::Active(remote_client::ActiveState {
                             half_connection,
                             disconnect_flush: false,
                             timeout_time_ms: now_ms + ACTIVE_TIMEOUT_MS,
                         });
 
-                        self.active_peers.push(Rc::clone(&peer_rc));
+                        self.active_clients.push(Rc::clone(&client_rc));
 
                         // Signal connect
-                        self.events_out.push(Event::Connect(peer_addr));
+                        self.events_out.push(Event::Connect(client_addr));
                     } else {
-                        // Bad handshake, forget peer and signal handshake error
-                        self.events_out.push(Event::Error(peer_addr, ErrorType::HandshakeError));
+                        // Bad handshake, forget client and signal handshake error
+                        self.events_out.push(Event::Error(client_addr, ErrorType::HandshakeError));
 
-                        std::mem::drop(peer);
-                        self.peers.remove(&peer_addr);
+                        std::mem::drop(client);
+                        self.clients.remove(&client_addr);
                     }
                 }
                 _ => (),
@@ -374,33 +374,33 @@ impl Server {
 
     fn handle_disconnect(
         &mut self,
-        peer_addr: net::SocketAddr,
+        client_addr: net::SocketAddr,
         now_ms: u64,
     ) {
         // TODO: Consider effects of spamming this
 
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
+        if let Some(client_rc) = self.clients.get(&client_addr) {
             let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
-            let _ = self.socket.send_to(&reply.write(), peer_addr);
+            let _ = self.socket.send_to(&reply.write(), client_addr);
 
-            let mut peer = peer_rc.borrow_mut();
+            let mut client = client_rc.borrow_mut();
 
             // Signal remaining received packets prior to connection destruction
-            match peer.state {
-                peer::State::Active(ref mut state) => {
-                    state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
+                    state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
                 }
                 _ => (),
             }
 
             // Signal disconnect
-            self.events_out.push(Event::Disconnect(peer_addr));
+            self.events_out.push(Event::Disconnect(client_addr));
 
             // Close now, but forget after a timeout
-            peer.state = peer::State::Closed;
+            client.state = remote_client::State::Closed;
 
-            self.peer_events.push(event_queue::Event::new(
-                Rc::clone(&peer_rc),
+            self.client_events.push(event_queue::Event::new(
+                Rc::clone(&client_rc),
                 event_queue::EventType::ClosedTimeout,
                 now_ms + CLOSED_TIMEOUT_MS,
                 0,
@@ -410,30 +410,30 @@ impl Server {
 
     fn handle_disconnect_ack(
         &mut self,
-        peer_addr: net::SocketAddr
+        client_addr: net::SocketAddr
     ) {
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
-            let peer = peer_rc.borrow_mut();
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Closing => {
-                    // Forget peer and signal disconnect
-                    self.events_out.push(Event::Disconnect(peer_addr));
+            match client.state {
+                remote_client::State::Closing => {
+                    // Forget client and signal disconnect
+                    self.events_out.push(Event::Disconnect(client_addr));
 
-                    std::mem::drop(peer);
-                    self.peers.remove(&peer_addr);
+                    std::mem::drop(client);
+                    self.clients.remove(&client_addr);
                 }
                 _ => (),
             }
         }
     }
 
-    fn handle_data(&mut self, peer_addr: net::SocketAddr, frame: frame::DataFrame, now_ms: u64) {
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
-            let mut peer = peer_rc.borrow_mut();
+    fn handle_data(&mut self, client_addr: net::SocketAddr, frame: frame::DataFrame, now_ms: u64) {
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let mut client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     state
                         .half_connection
                         .handle_data_frame(frame);
@@ -445,12 +445,12 @@ impl Server {
         }
     }
 
-    fn handle_ack(&mut self, peer_addr: net::SocketAddr, frame: frame::AckFrame, now_ms: u64) {
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
-            let mut peer = peer_rc.borrow_mut();
+    fn handle_ack(&mut self, client_addr: net::SocketAddr, frame: frame::AckFrame, now_ms: u64) {
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let mut client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     state
                         .half_connection
                         .handle_ack_frame(frame);
@@ -462,12 +462,12 @@ impl Server {
         }
     }
 
-    fn handle_sync(&mut self, peer_addr: net::SocketAddr, frame: frame::SyncFrame, now_ms: u64) {
-        if let Some(peer_rc) = self.peers.get(&peer_addr) {
-            let mut peer = peer_rc.borrow_mut();
+    fn handle_sync(&mut self, client_addr: net::SocketAddr, frame: frame::SyncFrame, now_ms: u64) {
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let mut client = client_rc.borrow_mut();
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     state
                         .half_connection
                         .handle_sync_frame(frame);
@@ -519,48 +519,48 @@ impl Server {
     }
 
     fn handle_event(&mut self, now_ms: u64, mut event: event_queue::Event) {
-        let peer = event.peer.borrow();
+        let client = event.client.borrow();
 
-        match peer.state {
-            peer::State::Pending(ref state) => {
+        match client.state {
+            remote_client::State::Pending(ref state) => {
                 if event.kind == event_queue::EventType::ResendHandshakeSynAck {
                     if event.count > 0 {
-                        let _ = self.socket.send_to(&state.reply_bytes, peer.address);
+                        let _ = self.socket.send_to(&state.reply_bytes, client.address);
 
                         event.count -= 1;
                         event.time = now_ms + HANDSHAKE_RESEND_INTERVAL_MS;
 
-                        std::mem::drop(peer);
-                        self.peer_events.push(event);
+                        std::mem::drop(client);
+                        self.client_events.push(event);
                     } else {
-                        // Forget peer and signal handshake timeout
-                        self.events_out.push(Event::Error(peer.address, ErrorType::HandshakeTimeout));
-                        self.peers.remove(&peer.address);
+                        // Forget client and signal handshake timeout
+                        self.events_out.push(Event::Error(client.address, ErrorType::HandshakeTimeout));
+                        self.clients.remove(&client.address);
                     }
                 }
             }
-            peer::State::Closing => {
+            remote_client::State::Closing => {
                 if event.kind == event_queue::EventType::ResendDisconnect {
                     if event.count > 0 {
                         let request = frame::Frame::DisconnectFrame(frame::DisconnectFrame {});
-                        let _ = self.socket.send_to(&request.write(), peer.address);
+                        let _ = self.socket.send_to(&request.write(), client.address);
 
                         event.count -= 1;
                         event.time = now_ms + DISCONNECT_RESEND_INTERVAL_MS;
 
-                        std::mem::drop(peer);
-                        self.peer_events.push(event);
+                        std::mem::drop(client);
+                        self.client_events.push(event);
                     } else {
-                        // Forget peer and signal timeout
-                        self.events_out.push(Event::Error(peer.address, ErrorType::Timeout));
-                        self.peers.remove(&peer.address);
+                        // Forget client and signal timeout
+                        self.events_out.push(Event::Error(client.address, ErrorType::Timeout));
+                        self.clients.remove(&client.address);
                     }
                 }
             }
-            peer::State::Closed => {
+            remote_client::State::Closed => {
                 if event.kind == event_queue::EventType::ClosedTimeout {
-                    // Forget peer at last (disconnect has already been signaled)
-                    self.peers.remove(&peer.address);
+                    // Forget client at last (disconnect has already been signaled)
+                    self.clients.remove(&client.address);
                 }
             }
             _ => (),
@@ -568,29 +568,29 @@ impl Server {
     }
 
     fn handle_events(&mut self, now_ms: u64) {
-        while let Some(event) = self.peer_events.peek() {
+        while let Some(event) = self.client_events.peek() {
             if event.time > now_ms {
                 break;
             }
 
-            let event = self.peer_events.pop().unwrap();
+            let event = self.client_events.pop().unwrap();
 
             self.handle_event(now_ms, event);
         }
 
-        for peer_rc in self.active_peers.iter() {
-            let mut peer = peer_rc.borrow_mut();
-            let peer_addr = peer.address;
+        for client_rc in self.active_clients.iter() {
+            let mut client = client_rc.borrow_mut();
+            let client_addr = client.address;
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     if now_ms >= state.timeout_time_ms {
                         // Signal remaining received packets
-                        state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                        state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
 
-                        // Forget peer and signal timeout
-                        self.events_out.push(Event::Error(peer_addr, ErrorType::Timeout));
-                        self.peers.remove(&peer.address);
+                        // Forget client and signal timeout
+                        self.events_out.push(Event::Error(client_addr, ErrorType::Timeout));
+                        self.clients.remove(&client.address);
                     }
                 }
                 _ => (),
@@ -598,41 +598,41 @@ impl Server {
         }
     }
 
-    fn step_active_peers(&mut self) {
-        for peer_rc in self.active_peers.iter() {
-            let mut peer = peer_rc.borrow_mut();
-            let peer_addr = peer.address;
+    fn step_active_clients(&mut self) {
+        for client_rc in self.active_clients.iter() {
+            let mut client = client_rc.borrow_mut();
+            let client_addr = client.address;
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
                     // Process and signal received packets
                     state.half_connection.step();
-                    state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                    state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
                 }
                 _ => (),
             }
         }
     }
 
-    fn flush_active_peers(&mut self, now_ms: u64) {
-        for peer_rc in self.active_peers.iter() {
-            let mut peer = peer_rc.borrow_mut();
-            let peer_addr = peer.address;
+    fn flush_active_clients(&mut self, now_ms: u64) {
+        for client_rc in self.active_clients.iter() {
+            let mut client = client_rc.borrow_mut();
+            let client_addr = client.address;
 
-            match peer.state {
-                peer::State::Active(ref mut state) => {
-                    let ref mut data_sink = UdpFrameSink::new(&self.socket, peer_addr);
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
+                    let ref mut data_sink = UdpFrameSink::new(&self.socket, client_addr);
                     state.half_connection.flush(data_sink);
 
                     if state.disconnect_flush && !state.half_connection.is_send_pending() {
                         // Signal remaining received packets
-                        state.half_connection.receive(&mut EventPacketSink::new(peer_addr, &mut self.events_out));
+                        state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
 
                         // Attempt to close the connection
-                        peer.state = peer::State::Closing;
+                        client.state = remote_client::State::Closing;
 
-                        self.peer_events.push(event_queue::Event::new(
-                            Rc::clone(&peer_rc),
+                        self.client_events.push(event_queue::Event::new(
+                            Rc::clone(&client_rc),
                             event_queue::EventType::ResendDisconnect,
                             now_ms + DISCONNECT_RESEND_INTERVAL_MS,
                             DISCONNECT_RESEND_COUNT,
