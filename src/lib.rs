@@ -29,16 +29,16 @@
 //! As a non-blocking interface, a server object depends on periodic calls to
 //! [`Server::step()`](server::Server::step) to process inbound traffic, to update connection
 //! states, and for timekeeping. To signal pending events to the application, `step()` returns an
-//! iterator to a list of [`server::Event`] enums which contain information specific to each event
-//! type.
+//! iterator to a list of [`server::Event`] objects which contain information specific to each
+//! event type.
 //!
 //! Once a client handshake has been completed, a [`RemoteClient`](server::RemoteClient) object
 //! will be created to represent the new connection. Connected clients are indexed by address, and
 //! may be accessed by calling [`Server::client()`](server::Server::client).
 //!
 //! A `RemoteClient` functions as a handle for a given connection, and allows the server to send
-//! packets, query connection status, and disconnect individual clients. However, no packets will
-//! be placed on the network, and no packets will be processed from a client until the next call to
+//! packets and query connection status. However, no packets will be placed on the network, and no
+//! received packets will be processed until the next call to
 //! [`Server::step()`](server::Server::step). The application may call
 //! [`Server::flush()`](server::Server::flush) to send all pending outbound data immediately.
 //!
@@ -72,7 +72,7 @@
 //!     // Send data, update server application state
 //!     // ...
 //!
-//!     // Flush outbound UDP frames
+//!     // Flush outbound data
 //!     server.flush();
 //!
 //!     // Sleep for 30ms (≈33 updates/second)
@@ -86,7 +86,7 @@
 //! # Connecting to a Server
 //!
 //! A `uflow` client is created by calling [`Client::connect()`](client::Client::connect), which
-//! opens a non-blocking UDP socket and initiates a connection using the provided destination
+//! opens a non-blocking UDP socket, and initiates a connection using the provided destination
 //! address and endpoint configuration. If the destination address could be resolved, a new
 //! [`Client`](client::Client) object representing the connection will be returned.
 //!
@@ -129,7 +129,7 @@
 //!     // Send data, update client application state
 //!     // ...
 //!
-//!     // Flush outbound UDP frames
+//!     // Flush outbound data
 //!     client.flush();
 //!
 //!     // Sleep for 30ms (≈33 updates/second)
@@ -209,13 +209,13 @@
 //! # Receiving Packets (and Other Events)
 //!
 //! Connection status updates and received packets are delivered to the application by calling
-//! [`Client::step()`](client::Client::step) and [`Server::step()`](server::Server::step), as
-//! shown previously. For clients and servers, a `Connect` event will be generated when a
-//! connection is first established. If either end of the connection explicitly disconnects, a
-//! `Disconnect` event will be generated. Once a packet has been received (and that packet is not
-//! waiting for any previous packets), a `Receive` event will be generated. If an error is
-//! encountered, or a connection times out at any point, an `Error` event will be generated. Once
-//! a `Disconnect` or `Error` event has been generated, no further events will be generated.
+//! [`Client::step()`](client::Client::step) and [`Server::step()`](server::Server::step), as shown
+//! previously. A `Connect` event will be generated when a connection is first established, and if
+//! either end of the connection explicitly disconnects, a `Disconnect` event will be generated.
+//! Once a packet has been received (and that packet is not waiting for any previous packets), a
+//! `Receive` event will be generated. If an error is encountered, or a connection times out at any
+//! point, an `Error` event will be generated. Once a `Disconnect` or an `Error` event has been
+//! generated, no further events will be generated.
 //!
 //! ##### Maximum Receive Allocation
 //!
@@ -234,7 +234,7 @@
 //! after all events from `step()` have been handled. By doing so, information relating to which
 //! packets have been delivered (and how much buffer space is available) will be relayed to the
 //! sender as soon as possible. Although this will prevent acknowledgement data from being
-//! aggregated with subsequent packet data, the resulting increase in bandwidth is likely to be
+//! aggregated with any subsequent packet data, the resulting increase in bandwidth is probably
 //! inconsequential.
 //!
 //! # Disconnecting
@@ -268,7 +268,6 @@
 //!
 //! assert!(client.is_active() == false);
 //! ```
-//!
 
 mod half_connection;
 mod endpoint_config;
@@ -276,10 +275,10 @@ mod frame;
 mod packet_id;
 mod udp_frame_sink;
 
-/// Module which defines server-side connection objects and parameters.
+/// Contains server-side connection objects and parameters.
 pub mod server;
 
-/// Module which defines client-side connection objects and parameters.
+/// Contains client-side connection objects and parameters.
 pub mod client;
 
 pub use endpoint_config::EndpointConfig as EndpointConfig;
