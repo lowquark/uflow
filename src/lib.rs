@@ -284,7 +284,7 @@ pub mod client;
 pub use endpoint_config::EndpointConfig as EndpointConfig;
 
 /// The current protocol version ID.
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 3;
 
 /// The maximum number of channels which may be used on a given connection.
 pub const CHANNEL_COUNT: usize = frame::serial::MAX_CHANNELS;
