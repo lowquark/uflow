@@ -264,6 +264,7 @@ impl Server {
         if handshake.version != PROTOCOL_VERSION {
             // Bad version
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
+                nonce_ack: handshake.nonce,
                 error: frame::HandshakeErrorType::Version,
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
@@ -276,6 +277,7 @@ impl Server {
         {
             // No room in the inn
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
+                nonce_ack: handshake.nonce,
                 error: frame::HandshakeErrorType::Full,
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
@@ -286,6 +288,7 @@ impl Server {
         if (handshake.max_receive_alloc as usize) < self.config.endpoint_config.max_packet_size {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
+                nonce_ack: handshake.nonce,
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
@@ -296,6 +299,7 @@ impl Server {
         if (handshake.max_packet_size as usize) > self.config.endpoint_config.max_receive_alloc {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
+                nonce_ack: handshake.nonce,
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);

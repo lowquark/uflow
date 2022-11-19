@@ -480,18 +480,18 @@ impl Client {
         }
     }
 
-    fn handle_handshake_error(&mut self, _frame: frame::HandshakeErrorFrame) {
+    fn handle_handshake_error(&mut self, frame: frame::HandshakeErrorFrame) {
         // Receiving a handshake error frame signals that the connection request was somehow
         // impossible. If the response matches our SYN, forward this to the user as a handshake
         // error and forget the connection.
 
-        // TODO: This frame type needs a nonce_ack field!
-
         match self.state {
-            State::Pending(_) => {
-                // Forget connection and signal handshake error
-                self.events_out.push(Event::Error(ErrorType::HandshakeError));
-                self.state = State::Fin;
+            State::Pending(ref state) => {
+                if frame.nonce_ack == state.local_nonce {
+                    // Forget connection and signal handshake error
+                    self.events_out.push(Event::Error(ErrorType::HandshakeError));
+                    self.state = State::Fin;
+                }
             }
             _ => (),
         }

@@ -32,6 +32,7 @@ pub enum HandshakeErrorType {
 
 #[derive(Clone,Debug,PartialEq)]
 pub struct HandshakeErrorFrame {
+    pub nonce_ack: u32,
     pub error: HandshakeErrorType,
 }
 

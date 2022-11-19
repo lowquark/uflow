@@ -24,7 +24,7 @@ const HANDSHAKE_ERROR_FRAME_ID: u8 = 13;
 const HANDSHAKE_SYN_FRAME_PAYLOAD_SIZE: usize = 17; // TODO: Pad to 1500 bytes total
 const HANDSHAKE_SYN_ACK_FRAME_PAYLOAD_SIZE: usize = 20;
 const HANDSHAKE_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
-const HANDSHAKE_ERROR_FRAME_PAYLOAD_SIZE: usize = 1;
+const HANDSHAKE_ERROR_FRAME_PAYLOAD_SIZE: usize = 5;
 const DISCONNECT_FRAME_PAYLOAD_SIZE: usize = 0;
 const DISCONNECT_ACK_FRAME_PAYLOAD_SIZE: usize = 0;
 
@@ -145,13 +145,19 @@ fn read_handshake_error_payload(data: &[u8]) -> Option<Frame> {
         return None;
     }
 
-    let error = match data[0] {
+    let nonce_ack = ((data[0] as u32) << 24) |
+                    ((data[1] as u32) << 16) |
+                    ((data[2] as u32) <<  8) |
+                    ((data[3] as u32)      );
+
+    let error = match data[4] {
         0 => HandshakeErrorType::Version,
         1 => HandshakeErrorType::Full,
         _ => return None,
     };
 
     Some(Frame::HandshakeErrorFrame(HandshakeErrorFrame {
+        nonce_ack,
         error,
     }))
 }
@@ -533,6 +539,10 @@ fn write_handshake_ack(frame: &HandshakeAckFrame) -> Box<[u8]> {
 fn write_handshake_error(frame: &HandshakeErrorFrame) -> Box<[u8]> {
     let mut frame_bytes = Box::new([
         HANDSHAKE_ERROR_FRAME_ID,
+        (frame.nonce_ack >> 24) as u8,
+        (frame.nonce_ack >> 16) as u8,
+        (frame.nonce_ack >>  8) as u8,
+        (frame.nonce_ack      ) as u8,
         match frame.error {
             HandshakeErrorType::Version => 0,
             HandshakeErrorType::Full => 1,
@@ -785,6 +795,7 @@ mod tests {
     #[test]
     fn handshake_error_basic() {
         let f = Frame::HandshakeErrorFrame(HandshakeErrorFrame {
+            nonce_ack: 0x03246387,
             error: HandshakeErrorType::Full,
         });
         verify_consistent(&f);
@@ -976,6 +987,8 @@ mod tests {
             datagrams: datagrams,
         });
     }
+
+    // TODO: Random handshake/disconnect tests
 
     #[test]
     fn data_random() {
