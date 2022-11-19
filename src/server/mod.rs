@@ -330,16 +330,17 @@ impl Server {
 
         // Create a tentative client object
 
-        let client_rc = Rc::new(RefCell::new(remote_client::RemoteClient::new(
-            client_addr,
-            remote_client::PendingState {
+        let client_rc = Rc::new(RefCell::new(remote_client::RemoteClient {
+            address: client_addr,
+            state: remote_client::State::Pending(remote_client::PendingState {
                 local_nonce,
                 remote_nonce: handshake.nonce,
                 remote_max_receive_rate: handshake.max_receive_rate,
                 remote_max_receive_alloc: handshake.max_receive_alloc,
                 reply_bytes,
-            },
-        )));
+            }),
+            max_packet_size: self.config.endpoint_config.max_packet_size,
+        }));
 
         self.client_events.push(event_queue::Event::new(
             Rc::clone(&client_rc),

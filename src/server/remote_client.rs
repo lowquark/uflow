@@ -29,16 +29,10 @@ pub (super) enum State {
 pub struct RemoteClient {
     pub (super) address: net::SocketAddr,
     pub (super) state: State,
+    pub (super) max_packet_size: usize,
 }
 
 impl RemoteClient {
-    pub (super) fn new(address: net::SocketAddr, state: PendingState) -> Self {
-        Self {
-            address,
-            state: State::Pending(state),
-        }
-    }
-
     /// Returns `true` if the connection is active, that is, a connection handshake has been
     /// completed and the remote host has not yet timed out or disconnected. Returns `false`
     /// otherwise.
@@ -59,12 +53,10 @@ impl RemoteClient {
     /// `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
     /// size](endpoint::Config#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
-        /* TODO: Get this value from half_connection
-        assert!(data.len() <= self.config.peer_config.max_packet_size,
+        assert!(data.len() <= self.max_packet_size,
                 "send failed: packet of size {} exceeds configured maximum of {}",
                 data.len(),
-                self.config.peer_config.max_packet_size);
-        */
+                self.max_packet_size);
 
         assert!(channel_id < CHANNEL_COUNT,
                 "send failed: channel ID {} is invalid",
