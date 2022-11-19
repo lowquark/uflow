@@ -618,7 +618,6 @@ impl Client {
             frame::Frame::AckFrame(frame) => {
                 self.handle_ack(now_ms, frame);
             }
-            _ => (),
         }
     }
 

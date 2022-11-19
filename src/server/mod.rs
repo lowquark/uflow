@@ -565,7 +565,6 @@ impl Server {
             frame::Frame::AckFrame(frame) => {
                 self.handle_ack(address, frame, now_ms);
             }
-            _ => (),
         }
     }
 

@@ -48,22 +48,6 @@ pub struct InfoReplyFrame {
 }
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct ConnectFrame {
-    pub version: u8,
-    pub nonce: u32,
-
-    pub max_receive_rate: u32,
-
-    pub max_packet_size: u32,
-    pub max_receive_alloc: u32,
-}
-
-#[derive(Clone,Debug,PartialEq)]
-pub struct ConnectAckFrame {
-    pub nonce: u32,
-}
-
-#[derive(Clone,Debug,PartialEq)]
 pub struct DisconnectFrame {
 }
 
@@ -154,8 +138,6 @@ pub enum Frame {
     HandshakeSynAckFrame(HandshakeSynAckFrame),
     HandshakeAckFrame(HandshakeAckFrame),
     HandshakeErrorFrame(HandshakeErrorFrame),
-    ConnectFrame(ConnectFrame),
-    ConnectAckFrame(ConnectAckFrame),
     DisconnectFrame(DisconnectFrame),
     DisconnectAckFrame(DisconnectAckFrame),
     DataFrame(DataFrame),
