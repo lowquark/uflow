@@ -8,7 +8,6 @@ pub (super) struct PendingState {
     pub local_nonce: u32,
     pub remote_nonce: u32,
     pub remote_max_receive_rate: u32,
-    pub remote_max_packet_size: u32,
     pub remote_max_receive_alloc: u32,
     pub reply_bytes: Box<[u8]>,
 }

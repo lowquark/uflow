@@ -23,6 +23,7 @@ static DISCONNECT_RESEND_COUNT: u8 = 8;
 
 static CLOSED_TIMEOUT_MS: u64 = 15000;
 
+/// Stores configuration parameters for a [`Client`](Client) object.
 pub struct Config {
     /// Endpoint configuration to use for outbound server connections.
     pub endpoint_config: EndpointConfig,
@@ -43,6 +44,7 @@ impl Default for Config {
     }
 }
 
+/// Represents a connection error.
 #[derive(Debug)]
 pub enum ErrorType {
     /// Indicates a generic handshake failure while attempting to establish a connection with a
@@ -54,6 +56,7 @@ pub enum ErrorType {
     Timeout,
 }
 
+/// Used to signal connection events and deliver received packets.
 #[derive(Debug)]
 pub enum Event {
     /// Indicates a successful connection to a server.
@@ -300,7 +303,7 @@ impl Client {
     /// complete.
     pub fn disconnect(&mut self) {
         match self.state {
-            State::Pending(ref mut state) => {
+            State::Pending(_) => {
                 // No point in assuming the server will reply, so enter fin immediately
                 self.state = State::Fin;
             }
@@ -466,7 +469,7 @@ impl Client {
         }
     }
 
-    fn handle_handshake_error(&mut self, frame: frame::HandshakeErrorFrame) {
+    fn handle_handshake_error(&mut self, _frame: frame::HandshakeErrorFrame) {
         // Receiving a handshake error frame signals that the connection request was somehow
         // impossible. If the response matches our SYN, forward this to the user as a handshake
         // error and forget the connection.

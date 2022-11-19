@@ -305,9 +305,13 @@ mod half_connection;
 mod endpoint_config;
 mod frame;
 mod packet_id;
-pub mod server;
-pub mod client;
 mod udp_frame_sink;
+
+/// Module which defines server-side connection objects and parameters.
+pub mod server;
+
+/// Module which defines client-side connection objects and parameters.
+pub mod client;
 
 pub use endpoint_config::EndpointConfig as EndpointConfig;
 
@@ -359,22 +363,4 @@ pub enum SendMode {
     /// This packet will be sent until acknowledged by the receiver. The receiver will not deliver
     /// subsequent packets on the same channel until this packet has been delivered.
     Reliable,
-}
-
-/// An event produced by a [`Peer`](peer::Peer) object.
-#[derive(Clone,Debug,PartialEq)]
-pub enum Event {
-    /// Indicates a successful connection to/from a remote host.
-    Connect,
-    /// Indicates a disconnection from the remote host. A disconnection event is only produced if
-    /// the peer was previously connected, and either end explicitly terminates the connection.
-    Disconnect,
-    /// Indicates a connection has timed out (i.e. no packets have been received from the remote
-    /// host for some amount of time). No further events will be delivered.
-    Timeout,
-    /// Indicates that a packet has been received from the remote host.
-    Receive(
-        /// The received packet.
-        Box<[u8]>,
-    ),
 }

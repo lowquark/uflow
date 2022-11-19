@@ -27,6 +27,7 @@ static DISCONNECT_RESEND_COUNT: u8 = 8;
 
 static CLOSED_TIMEOUT_MS: u64 = 15000;
 
+/// Stores configuration parameters for a [`Server`](Server) object.
 pub struct Config {
     /// The maximum number of connections, including active connections and connections which are in
     /// the process of connecting / disconnecting.
@@ -56,6 +57,7 @@ impl Default for Config {
     }
 }
 
+/// Represents a connection error.
 #[derive(Debug)]
 pub enum ErrorType {
     /// Indicates a generic handshake failure while attempting to establish a connection with a
@@ -68,6 +70,7 @@ pub enum ErrorType {
     Timeout,
 }
 
+/// Used to signal connection events and deliver received packets.
 #[derive(Debug)]
 pub enum Event {
     /// Indicates a successful connection from a client.
@@ -333,7 +336,6 @@ impl Server {
                 local_nonce,
                 remote_nonce: handshake.nonce,
                 remote_max_receive_rate: handshake.max_receive_rate,
-                remote_max_packet_size: handshake.max_packet_size,
                 remote_max_receive_alloc: handshake.max_receive_alloc,
                 reply_bytes,
             },
