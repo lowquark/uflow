@@ -5,14 +5,14 @@ use std::rc::Rc;
 use std::time;
 
 use crate::endpoint_config::EndpointConfig;
-use crate::half_connection;
-use crate::frame;
 use crate::frame::serial::Serialize;
-use crate::udp_frame_sink::UdpFrameSink;
+use crate::frame;
+use crate::half_connection;
 use crate::MAX_FRAME_SIZE;
-use crate::PROTOCOL_VERSION;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::PROTOCOL_VERSION;
+use crate::udp_frame_sink::UdpFrameSink;
 
 mod event_queue;
 mod remote_client;
@@ -28,14 +28,19 @@ static DISCONNECT_RESEND_COUNT: u8 = 8;
 static CLOSED_TIMEOUT_MS: u64 = 15000;
 
 pub struct Config {
-    pub max_pending_connections: usize,
+    /// The maximum number of connections, including active connections and connections which are in
+    /// the process of connecting / disconnecting.
+    pub max_total_connections: usize,
+    /// The maximum number of active connections.
     pub max_active_connections: usize,
+    /// Endpoint configuration to use for inbound client connections.
     pub client_config: EndpointConfig,
 }
 
 impl Config {
+    /// Returns true if the given configuration is valid.
     pub fn is_valid(&self) -> bool {
-        return self.max_pending_connections > 0
+        return self.max_total_connections > 0
             && self.max_active_connections > 0
             && self.client_config.is_valid();
     }
@@ -44,7 +49,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_pending_connections: 4096,
+            max_total_connections: 4096,
             max_active_connections: 32,
             client_config: Default::default(),
         }
@@ -53,16 +58,26 @@ impl Default for Config {
 
 #[derive(Debug)]
 pub enum ErrorType {
+    /// Indicates a generic handshake failure while attempting to establish a connection with a
+    /// client.
     HandshakeError,
+    /// Indicates that the client timed out during the handshake (i.e. did not respond to the
+    /// server's ack).
     HandshakeTimeout,
+    /// Indicates that an active client has timed out.
     Timeout,
 }
 
 #[derive(Debug)]
 pub enum Event {
+    /// Indicates a successful connection from a remote client.
     Connect(net::SocketAddr),
+    /// Indicates a disconnection from a remote client. A disconnection event is only produced if
+    /// the client was previously connected, and either party explicitly terminates the connection.
     Disconnect(net::SocketAddr),
+    /// Indicates that a packet has been received from the remote client.
     Receive(net::SocketAddr, Box<[u8]>),
+    /// Indicates that the connection has been terminated due to an unrecoverable error.
     Error(net::SocketAddr, ErrorType),
 }
 
@@ -86,7 +101,7 @@ impl<'a> half_connection::PacketSink for EventPacketSink<'a> {
     }
 }
 
-/// A polling-based socket object which manages inbound `uflow` connections.
+/// Manages inbound `uflow` connections.
 pub struct Server {
     socket: net::UdpSocket,
     config: Config,
@@ -104,10 +119,6 @@ pub struct Server {
 impl Server {
     /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
     /// [`Server`](Self) object.
-    ///
-    /// The server will limit the number of active connections to `max_client_count`, and will
-    /// silently ignore connection requests which would exceed that limit. Otherwise valid incoming
-    /// connections will be initialized according to `client_config`.
     ///
     /// # Error Handling
     ///
@@ -153,16 +164,16 @@ impl Server {
     }
 
     /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of `ServerEvents`s to signal connection status and deliver
-    /// received packets for each client.
+    /// socket. Returns an iterator of [`server::Event`] objects to signal connection status and
+    /// deliver received packets for each client.
     ///
-    /// *Note 1*: All client events are considered delivered, even if the iterator is not consumed until the
-    /// end.
+    /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
+    /// the end.
     ///
     /// *Note 2*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
-    /// called relatively frequently (a minimum of once per connection round-trip time).
+    /// called regularly and relatively frequently (at least once per connection round-trip time).
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
@@ -179,13 +190,15 @@ impl Server {
         std::mem::take(&mut self.events_out).into_iter()
     }
 
-    /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
-    /// possible for each client.
+    /// Sends as many pending outbound frames as possible for each client.
     pub fn flush(&mut self) {
         let now_ms = self.now_ms();
+
         self.flush_active_clients(now_ms);
     }
 
+    /// Gracefully disconnects the client at the provided address. Any outbound packets currently
+    /// pending will be sent prior to closing the connection.
     pub fn disconnect(&mut self, client_addr: &net::SocketAddr) {
         if let Some(client_rc) = self.clients.get(client_addr) {
             let mut client = client_rc.borrow_mut();
@@ -199,6 +212,30 @@ impl Server {
         }
     }
 
+    /// Immediately disconnects the client at the provided address. The client will not be
+    /// notified.
+    pub fn disconnect_now(&mut self, client_addr: &net::SocketAddr) {
+        if let Some(client_rc) = self.clients.get(&client_addr) {
+            let mut client = client_rc.borrow_mut();
+
+            // Signal remaining received packets prior to connection destruction
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
+                    state.half_connection.receive(&mut EventPacketSink::new(*client_addr, &mut self.events_out));
+                }
+                _ => (),
+            }
+
+            // Forget client and signal disconnect
+            self.events_out.push(Event::Disconnect(*client_addr));
+
+            std::mem::drop(client);
+            self.clients.remove(&client_addr);
+        }
+    }
+
+    /// Returns an object representing the client at the given address. Returns `None` if no such
+    /// client exists.
     pub fn client(&self, client_addr: &net::SocketAddr) -> Option<&Rc<RefCell<remote_client::RemoteClient>>> {
         self.clients.get(client_addr)
     }
@@ -215,7 +252,8 @@ impl Server {
         now_ms: u64,
     ) {
         if let Some(_) = self.clients.get(&client_addr) {
-            // Ignore subsequent SYN (either spam or a duplicate - SYN+ACK will be resent if dropped)
+            // Ignore subsequent SYN (either spam or a duplicate - SYN+ACK will be resent if no ACK
+            // is received)
             return;
         }
 
@@ -229,7 +267,7 @@ impl Server {
             return;
         }
 
-        if self.clients.len() >= self.config.max_pending_connections
+        if self.clients.len() >= self.config.max_total_connections
             && self.active_clients.len() >= self.config.max_active_connections
         {
             // No room in the inn
@@ -377,9 +415,8 @@ impl Server {
         client_addr: net::SocketAddr,
         now_ms: u64,
     ) {
-        // TODO: Consider effects of spamming this
-
         if let Some(client_rc) = self.clients.get(&client_addr) {
+            // TODO: Should this response be throttled?
             let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
             let _ = self.socket.send_to(&reply.write(), client_addr);
 
@@ -413,7 +450,7 @@ impl Server {
         client_addr: net::SocketAddr
     ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
-            let client = client_rc.borrow_mut();
+            let client = client_rc.borrow();
 
             match client.state {
                 remote_client::State::Closing => {
@@ -428,7 +465,12 @@ impl Server {
         }
     }
 
-    fn handle_data(&mut self, client_addr: net::SocketAddr, frame: frame::DataFrame, now_ms: u64) {
+    fn handle_data(
+        &mut self,
+        client_addr: net::SocketAddr,
+        frame: frame::DataFrame,
+        now_ms: u64
+    ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
             let mut client = client_rc.borrow_mut();
 
@@ -445,7 +487,12 @@ impl Server {
         }
     }
 
-    fn handle_ack(&mut self, client_addr: net::SocketAddr, frame: frame::AckFrame, now_ms: u64) {
+    fn handle_ack(
+        &mut self,
+        client_addr: net::SocketAddr,
+        frame: frame::AckFrame,
+        now_ms: u64
+    ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
             let mut client = client_rc.borrow_mut();
 
@@ -462,7 +509,12 @@ impl Server {
         }
     }
 
-    fn handle_sync(&mut self, client_addr: net::SocketAddr, frame: frame::SyncFrame, now_ms: u64) {
+    fn handle_sync(
+        &mut self,
+        client_addr: net::SocketAddr,
+        frame: frame::SyncFrame,
+        now_ms: u64
+    ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
             let mut client = client_rc.borrow_mut();
 
@@ -479,7 +531,12 @@ impl Server {
         }
     }
 
-    fn handle_frame(&mut self, address: net::SocketAddr, frame: frame::Frame, now_ms: u64) {
+    fn handle_frame(
+        &mut self,
+        address: net::SocketAddr,
+        frame: frame::Frame,
+        now_ms: u64
+    ) {
         match frame {
             frame::Frame::HandshakeSynFrame(frame) => {
                 self.handle_handshake_syn(address, frame, now_ms);
@@ -508,7 +565,10 @@ impl Server {
         }
     }
 
-    fn handle_frames(&mut self, now_ms: u64) {
+    fn handle_frames(
+        &mut self,
+        now_ms: u64
+    ) {
         let mut frame_data_buf = [0; MAX_FRAME_SIZE];
 
         while let Ok((frame_size, address)) = self.socket.recv_from(&mut frame_data_buf) {
@@ -518,7 +578,11 @@ impl Server {
         }
     }
 
-    fn handle_event(&mut self, now_ms: u64, mut event: event_queue::Event) {
+    fn handle_event(
+        &mut self,
+        mut event: event_queue::Event,
+        now_ms: u64
+    ) {
         let client = event.client.borrow();
 
         match client.state {
@@ -567,7 +631,10 @@ impl Server {
         }
     }
 
-    fn handle_events(&mut self, now_ms: u64) {
+    fn handle_events(
+        &mut self,
+        now_ms: u64
+    ) {
         while let Some(event) = self.client_events.peek() {
             if event.time > now_ms {
                 break;
@@ -575,7 +642,7 @@ impl Server {
 
             let event = self.client_events.pop().unwrap();
 
-            self.handle_event(now_ms, event);
+            self.handle_event(event, now_ms);
         }
 
         for client_rc in self.active_clients.iter() {
