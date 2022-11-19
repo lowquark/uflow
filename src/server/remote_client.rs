@@ -25,7 +25,7 @@ pub (super) enum State {
     Closed,
 }
 
-/// Used by a [`Server`] object to represent a connected client.
+/// Used by a [`Server`](super::Server) object to represent a connected client.
 pub struct RemoteClient {
     pub (super) address: net::SocketAddr,
     pub (super) state: State,
@@ -51,7 +51,7 @@ impl RemoteClient {
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel (i.e. if
     /// `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
-    /// size](endpoint::Config#structfield.max_packet_size).
+    /// size](crate::endpoint_config::EndpointConfig#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         assert!(data.len() <= self.max_packet_size,
                 "send failed: packet of size {} exceeds configured maximum of {}",

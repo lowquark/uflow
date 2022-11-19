@@ -1,72 +1,79 @@
 #![warn(missing_docs)]
 
 //! `uflow` is a non-blocking, connection-based layer over UDP that provides an ordered and
-//! drop-tolerant packet streaming interface for real-time applications. It manages connection
-//! state, packet sequencing, packet fragmentation, reliable delivery, and congestion control to
-//! create a simple and robust solution for low-latency internet communication.
+//! drop-tolerant packet streaming interface for real-time applications (e.g. games). It manages
+//! connection state, packet sequencing, packet fragmentation, reliable delivery, and congestion
+//! control to create a simple and robust solution for low-latency internet communication.
 //!
 //! # Hosting a Server
 //!
-//! A `uflow` server is created by calling [`Server::bind[...]()`](Server::bind), which opens a UDP
-//! socket bound to the specified address, and returns a corresponding `Server` object. The number
-//! of active connections will be restricted to the provided limit, and each incoming connection
-//! will be initialized using the given configuration (see: [`EndpointConfig`]).
+//! A `uflow` server is created by calling [`Server::bind[...]()`](server::Server::bind), which
+//! opens a UDP socket bound to the specified address, and returns a corresponding `Server` object.
+//! The number of active connections will be restricted to the configured limit, and each incoming
+//! connection will be initialized using the given endpoint configuration (see:
+//! [`EndpointConfig`]).
 //!
 //! ```
 //! let server_address = "127.0.0.1:8888";
-//! let max_peer_count = 8;
-//! let peer_config = uflow::EndpointConfig::default();
+//! let config = uflow::server::Config {
+//!     max_total_connections: 4096,
+//!     max_active_connections: 8,
+//!     endpoint_config: Default::default(),
+//! };
 //!
-//! let mut server = uflow::Server::bind(server_address, max_peer_count, peer_config)
+//! // Create a server object
+//! let mut server = uflow::server::Server::bind(server_address, config)
 //!     .expect("Failed to bind/configure socket");
 //! ```
 //!
-//! As a non-blocking interface, a server depends on periodic calls to [`Server::step()`] to
-//! process inbound traffic, to update connection states, and for basic timekeeping. Once the
-//! server has received a valid connection request, a [`Peer`] object will be created to represent
-//! the connection. New `Peer` objects may be obtained by calling
-//! [`Server::incoming()`](Server::incoming), and stored wherever is most convenient.
+//! As a non-blocking interface, a server object depends on periodic calls to
+//! [`Server::step()`](server::Server::step) to process inbound traffic, to update connection
+//! states, and for timekeeping. To signal pending events to the application, `step()` returns an
+//! iterator to a list of [`server::Event`] enums which contain information specific to each event
+//! type.
 //!
-//! A `Peer` object functions as a handle for a given connection, and allows the application to
-//! transfer data to/from a particular host using a single object. However, no packets will be sent
-//! on the network, and no packets will be received from a peer until the next call to
-//! `Server::step()`. The application may call [`Server::flush()`] to send all pending outbound
-//! data immediately.
+//! Once a client handshake has been completed, a [`RemoteClient`](server::RemoteClient) object
+//! will be created to represent the new connection. Connected clients are indexed by address, and
+//! may be accessed by calling [`Server::client()`](server::Server::client).
+//!
+//! A `RemoteClient` functions as a handle for a given connection, and allows the server to send
+//! packets, query connection status, and disconnect individual clients. However, no packets will
+//! be placed on the network, and no packets will be processed from a client until the next call to
+//! [`Server::step()`](server::Server::step). The application may call
+//! [`Server::flush()`](server::Server::flush) to send all pending outbound data immediately.
 //!
 //! A basic server loop that extends the above example is shown below:
 //!
 //! ```
 //! # let server_address = "127.0.0.1:8888";
-//! # let max_peer_count = 8;
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut server = uflow::Server::bind(server_address, max_peer_count, peer_config)
-//! #     .expect("Failed to bind/configure socket");
-//! let mut peer_list = Vec::new();
-//!
+//! # let config = Default::default();
+//! # let mut server = uflow::server::Server::bind(server_address, config).unwrap();
 //! loop {
-//!     // Process inbound UDP frames
-//!     server.step();
-//!
-//!     // Handle new connections
-//!     for new_peer in server.incoming() {
-//!         println!("New connection from {}", new_peer.address());
-//!         peer_list.push(new_peer);
+//!     // Process inbound UDP frames and handle events
+//!     for event in server.step() {
+//!         match event {
+//!             uflow::server::Event::Connect(client_address) => {
+//!                 // TODO: Handle client connection
+//!             }
+//!             uflow::server::Event::Disconnect(client_address) => {
+//!                 // TODO: Handle client disconnection
+//!             }
+//!             uflow::server::Event::Error(client_address, error) => {
+//!                 // TODO: Handle connection error
+//!             }
+//!             uflow::server::Event::Receive(client_address, packet_data) => {
+//!                 // Echo the packet on channel 0
+//!                 let mut client = server.client(&client_address).unwrap().borrow_mut();
+//!                 client.send(packet_data, 0, uflow::SendMode::Unreliable);
+//!             }
+//!         }
 //!     }
 //!
-//!     // Send/receive data, update server application state
-//!     for peer in peer_list.iter() {
-//!         // peer.poll_events()
-//!
-//!         // ...
-//!
-//!         // peer.send(...)
-//!     }
+//!     // Send data, update server application state
+//!     // ...
 //!
 //!     // Flush outbound UDP frames
 //!     server.flush();
-//!
-//!     // Remove disconnected peers
-//!     peer_list.retain(|peer| !peer.is_disconnected());
 //!
 //!     // Sleep for 30ms (≈33 updates/second)
 //!     std::thread::sleep(std::time::Duration::from_millis(30));
@@ -78,55 +85,44 @@
 //!
 //! # Connecting to a Server
 //!
-//! A `uflow` client is created by calling [`Client::bind[...]()`](Client::bind), which opens a UDP
-//! socket bound to the specified address, and returns a corresponding `Client` object. Unlike
-//! server creation, no connection parameters are provided when the `Client` object is created, and
-//! there is no maximum number of simultaneous connections.
+//! A `uflow` client is created by calling [`Client::connect()`](client::Client::connect), which
+//! opens a non-blocking UDP socket and initiates a connection using the provided destination
+//! address and endpoint configuration. If the destination address could be resolved, a new
+//! [`Client`](client::Client) object representing the connection will be returned.
 //!
 //! ```
-//! // Create a client object on any IPv4 address/port
-//! let mut client = uflow::Client::bind_any_ipv4()
-//!     .expect("Failed to bind/configure socket");
-//! ```
-//!
-//! A connection is then initiated by calling [`connect()`](Client::connect), which requires the
-//! address of the remote host, and the connection parameters to use. Assuming the provided address
-//! could be resolved, a new [`Peer`] object representing the connection will be returned.
-//!
-//! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
 //! let server_address = "127.0.0.1:8888";
-//! let peer_config = uflow::EndpointConfig::default();
+//! let config = Default::default();
 //!
-//! let mut server_peer = client.connect(server_address, peer_config)
+//! // Create a client object
+//! let mut client = uflow::client::Client::connect(server_address, config)
 //!     .expect("Invalid address");
 //! ```
 //!
-//! Like a server, a client depends on periodic calls to [`Client::step()`] in order to process
-//! inbound traffic, to update connection states, and for basic timekeeping. Once a connection has
-//! been established, the corresponding `Peer` will generate a [`Connect`](Event::Connect) event. A
-//! basic client loop extending the above example is shown below:
+//! Like a server, a client depends on periodic calls to [`Client::step()`](client::Client::step)
+//! in order to process inbound traffic, to update connection state, and for timekeeping. A basic
+//! client loop extending the above example is shown below:
 //!
 //! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
 //! # let server_address = "127.0.0.1:8888";
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut server_peer = client.connect(server_address, peer_config)
-//! #     .expect("Invalid address");
+//! # let config = Default::default();
+//! # let mut client = uflow::client::Client::connect(server_address, config).unwrap();
 //! loop {
 //!     // Process inbound UDP frames
-//!     client.step();
-//!
-//!     // Handle events
-//!     for event in server_peer.poll_events() {
+//!     for event in client.step() {
 //!         match event {
-//!             uflow::Event::Connect => {
-//!                 // Connected to server!
-//!                 // ...
+//!             uflow::client::Event::Connect => {
+//!                 // TODO: Handle connection
 //!             }
-//!             _ => (),
+//!             uflow::client::Event::Disconnect => {
+//!                 // TODO: Handle disconnection
+//!             }
+//!             uflow::client::Event::Error(error) => {
+//!                 // TODO: Handle connection error
+//!             }
+//!             uflow::client::Event::Receive(packet_data) => {
+//!                 // TODO: Handle received packets
+//!             }
 //!         }
 //!     }
 //!
@@ -146,22 +142,21 @@
 //!
 //! # Sending Packets
 //!
-//! Packets are sent to a remote host by calling [`Peer::send()`], which additionally requires a
-//! channel ID and a packet send mode. Any packets that are sent prior to establishing a connection
-//! will be sent once the connection succeeds.
+//! Packets are sent to a remote host by calling [`client::Client::send()`] or
+//! [`server::RemoteClient::send()`], which additionally requires a channel ID and a packet send
+//! mode. Any packets that are sent prior to establishing a connection will be sent once the
+//! connection succeeds.
 //!
 //! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
-//! # let server_address = "127.0.0.1:8888";
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut peer = client.connect(server_address, peer_config)
-//! #     .expect("Invalid address");
+//! let server_address = "127.0.0.1:8888";
+//! let config = Default::default();
+//! let mut client = uflow::client::Client::connect(server_address, config).unwrap();
+//!
 //! let packet_data = "Hello world!".as_bytes();
 //! let channel_id = 0;
 //! let send_mode = uflow::SendMode::Reliable;
 //!
-//! peer.send(packet_data.into(), channel_id, send_mode);
+//! client.send(packet_data.into(), channel_id, send_mode);
 //! ```
 //!
 //! Additional details relating to how packets are sent and received by `uflow` are described in
@@ -186,7 +181,7 @@
 //! Because packets that are sent using [`SendMode::Reliable`] may not be skipped, and because all
 //! packets on a given channel must be delivered in-order, the receiving application will not see a
 //! given received packet until all previous reliable packets on the same channel have also been
-//! received. This means that if a reliable packet is dropped, its channel will effectively stall
+//! received. This means that if a reliable packet is dropped, that channel will effectively stall
 //! for its arrival, but packets received on other channels may still be delivered in the meantime.
 //!
 //! Thus, by carefully choosing the send mode and channel of outgoing packets, the latency effects
@@ -203,54 +198,31 @@
 //! processing packets quickly enough.
 //!
 //! The total size of all packets awaiting delivery can be obtained by calling
-//! [`Peer::send_buffer_size()`](Peer::send_buffer_size), and if desired, an application can use
-//! this value to terminate excessively delayed connections. In addition, the application may send
-//! packets using [`SendMode::TimeSensitive`] to drop packets at the sender if they could not be
-//! sent immediately (i.e. prior to the next call to `step()`). In the event that the total
-//! available bandwidth is limited, this prevents outdated packets from using any unnecessary
-//! bandwidth, and prioritizes sending newer packets in the send queue.
+//! [`Client::send_buffer_size()`](client::Client::send_buffer_size) or
+//! [`RemoteClient::send_buffer_size()`](server::RemoteClient::send_buffer_size), and if desired, an
+//! application can use this value to terminate excessively delayed connections. In addition, the
+//! application may send packets using [`SendMode::TimeSensitive`] to drop packets at the sender if
+//! they could not be sent immediately (i.e. prior to the next call to `step()`). In the event that
+//! the total available bandwidth is limited, this prevents outdated packets from using any
+//! unnecessary bandwidth, and prioritizes sending newer packets in the send queue.
 //!
 //! # Receiving Packets (and Other Events)
 //!
 //! Connection status updates and received packets are delivered to the application by calling
-//! [`Peer::poll_events()`](peer::Peer::poll_events), which returns all pending events via
-//! iterator:
-//!
-//! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
-//! # let server_address = "127.0.0.1:8888";
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut peer = client.connect(server_address, peer_config)
-//! #     .expect("Invalid address");
-//! for event in peer.poll_events() {
-//!     match event {
-//!         uflow::Event::Connect => {
-//!         }
-//!         uflow::Event::Disconnect => {
-//!         }
-//!         uflow::Event::Timeout => {
-//!         }
-//!         uflow::Event::Receive(packet_data) => {
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! A [`Connect`](Event::Connect) event will be generated by a `Peer` object when a connection is
-//! first established. If either end of the connection explicitly disconnects, a
-//! [`Disconnect`](Event::Disconnect) event will be generated. Once a packet has been received (and
-//! that packet is not waiting for any previous packets), a [`Receive`](Event::Receive) event will
-//! be generated. If a connection times out at any point, a [`Timeout`](Event::Timeout) event will
-//! be generated. The last event generated by a `Peer` object will always be a `Timeout`, even
-//! after a connection has closed normally.
+//! [`Client::step()`](client::Client::step) and [`Server::step()`](server::Server::step), as
+//! shown previously. For clients and servers, a `Connect` event will be generated when a
+//! connection is first established. If either end of the connection explicitly disconnects, a
+//! `Disconnect` event will be generated. Once a packet has been received (and that packet is not
+//! waiting for any previous packets), a `Receive` event will be generated. If an error is
+//! encountered, or a connection times out at any point, an `Error` event will be generated. Once
+//! a `Disconnect` or `Error` event has been generated, no further events will be generated.
 //!
 //! ##### Maximum Receive Allocation
 //!
-//! If the sender is sends a continuous stream of packets, but `poll_events()` is not called for
-//! whatever reason, the number of packets in the `Peer`'s receive buffer will increase until its
-//! [maximum receive allocation](EndpointConfig#structfield.max_receive_alloc) has been reached. At
-//! that point, any new packets will be silently ignored.
+//! If a sender is sending a continuous stream of packets, but `step()` is not called on the
+//! receiver for whatever reason, the number of packets in the receiver's receive buffer will
+//! increase until its [maximum receive allocation](EndpointConfig#structfield.max_receive_alloc)
+//! has been reached. At that point, any new packets will be silently ignored.
 //!
 //! *Note*: This feature is intended to guard against memory allocation attacks. A well-behaved
 //! sender will ensure that it does not send new packets exceeding the receiver's memory limit, and
@@ -259,45 +231,42 @@
 //! ##### Optimal Acknowledgements
 //!
 //! If desired, the sender may call `flush()` on the associated client or server object immediately
-//! after all events have been handled. By doing so, information relating to which packets have
-//! been delivered (and how much buffer space is available) will be relayed to the sender as soon
-//! as possible. (If `flush()` was called prior to handling events, the resulting acknowledgements
-//! would contain slightly outdated information—from a synchronization standpoint, this would be
-//! sub-optimal but non-fatal.)
+//! after all events from `step()` have been handled. By doing so, information relating to which
+//! packets have been delivered (and how much buffer space is available) will be relayed to the
+//! sender as soon as possible. Although this will prevent acknowledgement data from being
+//! aggregated with subsequent packet data, the resulting increase in bandwidth is likely to be
+//! inconsequential.
 //!
 //! # Disconnecting
 //!
-//! A connection is explicitly closed by calling [`Peer::disconnect()`], which makes an effort to
+//! A connection is explicitly closed by calling
+//! [`Client::disconnect()`](client::Client::disconnect) or
+//! [`Server::disconnect()`](server::Server::disconnect), which makes an effort to
 //! notify the remote host of the disconnection, and to send all pending outbound packets before
 //! doing so. The sender can expect that any pending reliable packets will be delivered prior to
-//! disconnecting, provided that the remote host doesn't also disconnect in the meantime.
+//! disconnecting, provided that the remote host doesn't also disconnect in the meantime. The
+//! application must continue to call `step()` to ensure that the disconnection takes place.
 //!
 //! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
 //! # let server_address = "127.0.0.1:8888";
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut peer = client.connect(server_address, peer_config)
-//! #     .expect("Invalid address");
-//! peer.disconnect();
+//! # let config = Default::default();
+//! # let mut client = uflow::client::Client::connect(server_address, config).unwrap();
+//! client.disconnect();
 //!
 //! // ... calls to step() continue
 //! ```
 //!
-//! Alternatively, one may call [`Peer::disconnect_now()`], which sends no further packets and
-//! disconnects immediately. Because no notification is sent, this will cause a timeout on the
+//! Alternatively, one may call `disconnect_now()`, which sends no further packets and forgets the
+//! connection immediately. Because no notification is sent, this will cause a timeout on the
 //! remote host.
 //!
 //! ```
-//! # let mut client = uflow::Client::bind_any_ipv4()
-//! #     .expect("Failed to bind/configure socket");
 //! # let server_address = "127.0.0.1:8888";
-//! # let peer_config = uflow::EndpointConfig::default();
-//! # let mut peer = client.connect(server_address, peer_config)
-//! #     .expect("Invalid address");
-//! peer.disconnect_now();
+//! # let config = Default::default();
+//! # let mut client = uflow::client::Client::connect(server_address, config).unwrap();
+//! client.disconnect_now();
 //!
-//! assert!(peer.is_disconnected());
+//! assert!(client.is_active() == false);
 //! ```
 //!
 
@@ -347,9 +316,10 @@ pub const MAX_PACKET_SIZE: usize = MAX_FRAGMENT_SIZE * frame::serial::MAX_FRAGME
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SendMode {
     /// This packet will be sent at most once. If this packet cannot be sent immediately (i.e.
-    /// prior to the next call to [`Client::step`] or [`Server::step`]), it will be discarded by
-    /// the sender. If this packet has not been received, but a subsequent packet has been received
-    /// on the same channel, the receiver may skip this packet.
+    /// prior to the next call to [`Client::step`](client::Client::step) or
+    /// [`Server::step`](server::Server::step)), it will be discarded by the sender. If this packet
+    /// has not been received, but a subsequent packet has been received on the same channel, the
+    /// receiver may skip this packet.
     TimeSensitive,
     /// This packet will be sent exactly once. If this packet has not been received, but a
     /// subsequent packet has been received on the same channel, the receiver may skip this packet.

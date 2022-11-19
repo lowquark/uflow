@@ -230,8 +230,8 @@ impl Client {
     }
 
     /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of [`server::Event`] objects to signal connection events and
-    /// deliver packets received from the server.
+    /// socket. Returns an iterator of [`Event`] objects to signal connection events and deliver
+    /// packets received from the server.
     ///
     /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
     /// the end.
@@ -267,7 +267,8 @@ impl Client {
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel (`channel_id >=
     /// CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
-    /// size](endpoint::Config#structfield.max_packet_size) provided to [`Client::connect`].
+    /// size](crate::endpoint_config::EndpointConfig#structfield.max_packet_size) provided to
+    /// [`connect()`](Self::connect).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         assert!(data.len() <= self.config.endpoint_config.max_packet_size,
                 "send failed: packet of size {} exceeds configured maximum of {}",
@@ -385,6 +386,16 @@ impl Client {
         match self.state {
             State::Active(ref state) => state.half_connection.send_buffer_size(),
             _ => 0,
+        }
+    }
+
+    /// Returns `true` if the connection is active, that is, a connection handshake has been
+    /// completed and the remote host has not yet timed out or disconnected. Returns `false`
+    /// otherwise.
+    pub fn is_active(&self) -> bool {
+        match self.state {
+            State::Active(_) => true,
+            _ => false,
         }
     }
 

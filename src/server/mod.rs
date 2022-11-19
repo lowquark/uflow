@@ -27,6 +27,8 @@ static DISCONNECT_RESEND_COUNT: u8 = 8;
 
 static CLOSED_TIMEOUT_MS: u64 = 15000;
 
+pub use remote_client::RemoteClient;
+
 /// Stores configuration parameters for a [`Server`](Server) object.
 pub struct Config {
     /// The maximum number of connections, including active connections and connections which are in
@@ -166,8 +168,8 @@ impl Server {
     }
 
     /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of [`server::Event`] objects to signal connection events and
-    /// deliver received packets for each client.
+    /// socket. Returns an iterator of [`Event`] objects to signal connection events and deliver
+    /// received packets for each client.
     ///
     /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
     /// the end.
