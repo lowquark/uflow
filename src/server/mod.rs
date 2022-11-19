@@ -34,7 +34,7 @@ pub struct Config {
     /// The maximum number of active connections.
     pub max_active_connections: usize,
     /// Endpoint configuration to use for inbound client connections.
-    pub client_config: EndpointConfig,
+    pub endpoint_config: EndpointConfig,
 }
 
 impl Config {
@@ -42,7 +42,7 @@ impl Config {
     pub fn is_valid(&self) -> bool {
         return self.max_total_connections > 0
             && self.max_active_connections > 0
-            && self.client_config.is_valid();
+            && self.endpoint_config.is_valid();
     }
 }
 
@@ -51,7 +51,7 @@ impl Default for Config {
         Self {
             max_total_connections: 4096,
             max_active_connections: 32,
-            client_config: Default::default(),
+            endpoint_config: Default::default(),
         }
     }
 }
@@ -64,18 +64,18 @@ pub enum ErrorType {
     /// Indicates that the client timed out during the handshake (i.e. did not respond to the
     /// server's ack).
     HandshakeTimeout,
-    /// Indicates that an active client has timed out.
+    /// Indicates that an active client connection has timed out.
     Timeout,
 }
 
 #[derive(Debug)]
 pub enum Event {
-    /// Indicates a successful connection from a remote client.
+    /// Indicates a successful connection from a client.
     Connect(net::SocketAddr),
-    /// Indicates a disconnection from a remote client. A disconnection event is only produced if
-    /// the client was previously connected, and either party explicitly terminates the connection.
+    /// Indicates that a client has disconnected. A disconnection event is only produced if either
+    /// party explicitly terminates an active connection.
     Disconnect(net::SocketAddr),
-    /// Indicates that a packet has been received from the remote client.
+    /// Signals a packet received from a client.
     Receive(net::SocketAddr, Box<[u8]>),
     /// Indicates that the connection has been terminated due to an unrecoverable error.
     Error(net::SocketAddr, ErrorType),
@@ -101,7 +101,7 @@ impl<'a> half_connection::PacketSink for EventPacketSink<'a> {
     }
 }
 
-/// Manages inbound `uflow` connections.
+/// Acts as a host for inbound `uflow` connections.
 pub struct Server {
     socket: net::UdpSocket,
     config: Config,
@@ -123,12 +123,11 @@ impl Server {
     /// # Error Handling
     ///
     /// Any errors resulting from socket initialization are forwarded to the caller. This function
-    /// will panic if the given endpoint configuration is not valid.
+    /// will panic if the provided server configuration is not valid.
     pub fn bind<A: net::ToSocketAddrs>(addr: A, config: Config) -> Result<Self, std::io::Error> {
         assert!(config.is_valid(), "invalid server config");
 
         let socket = net::UdpSocket::bind(addr)?;
-
         socket.set_nonblocking(true)?;
 
         Ok(Self {
@@ -164,7 +163,7 @@ impl Server {
     }
 
     /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of [`server::Event`] objects to signal connection status and
+    /// socket. Returns an iterator of [`server::Event`] objects to signal connection events and
     /// deliver received packets for each client.
     ///
     /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
@@ -173,7 +172,7 @@ impl Server {
     /// *Note 2*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
-    /// called regularly and relatively frequently (at least once per connection round-trip time).
+    /// called regularly and frequently (at least once per connection round-trip time).
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
@@ -213,7 +212,7 @@ impl Server {
     }
 
     /// Immediately disconnects the client at the provided address. The client will not be
-    /// notified.
+    /// notified, and a [`Disconnect`](Event::Disconnect) event will be generated immediately.
     pub fn disconnect_now(&mut self, client_addr: &net::SocketAddr) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
             let mut client = client_rc.borrow_mut();
@@ -279,7 +278,7 @@ impl Server {
             return;
         }
 
-        if (handshake.max_receive_alloc as usize) < self.config.client_config.max_packet_size {
+        if (handshake.max_receive_alloc as usize) < self.config.endpoint_config.max_packet_size {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
@@ -289,7 +288,7 @@ impl Server {
             return;
         }
 
-        if (handshake.max_packet_size as usize) > self.config.client_config.max_receive_alloc {
+        if (handshake.max_packet_size as usize) > self.config.endpoint_config.max_receive_alloc {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 error: frame::HandshakeErrorType::Full, // TODO: Better error status
@@ -308,17 +307,17 @@ impl Server {
             nonce: local_nonce,
             max_receive_rate: self
                 .config
-                .client_config
+                .endpoint_config
                 .max_receive_rate
                 .min(u32::MAX as usize) as u32,
             max_packet_size: self
                 .config
-                .client_config
+                .endpoint_config
                 .max_packet_size
                 .min(u32::MAX as usize) as u32,
             max_receive_alloc: self
                 .config
-                .client_config
+                .endpoint_config
                 .max_receive_alloc
                 .min(u32::MAX as usize) as u32,
         });
@@ -377,12 +376,12 @@ impl Server {
                             tx_packet_base_id: state.local_nonce & packet_id::MASK,
                             rx_packet_base_id: state.remote_nonce & packet_id::MASK,
 
-                            tx_bandwidth_limit: (self.config.client_config.max_send_rate as u32).min(state.remote_max_receive_rate),
+                            tx_bandwidth_limit: (self.config.endpoint_config.max_send_rate as u32).min(state.remote_max_receive_rate),
 
                             tx_alloc_limit: state.remote_max_receive_alloc as usize,
-                            rx_alloc_limit: self.config.client_config.max_receive_alloc as usize,
+                            rx_alloc_limit: self.config.endpoint_config.max_receive_alloc as usize,
 
-                            keepalive: self.config.client_config.keepalive,
+                            keepalive: self.config.endpoint_config.keepalive,
                         };
 
                         let half_connection = half_connection::HalfConnection::new(config);

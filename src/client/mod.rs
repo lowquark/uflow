@@ -3,15 +3,15 @@ use std::time;
 
 use crate::CHANNEL_COUNT;
 use crate::endpoint_config::EndpointConfig;
-use crate::half_connection;
-use crate::frame;
 use crate::frame::serial::Serialize;
-use crate::udp_frame_sink::UdpFrameSink;
+use crate::frame;
+use crate::half_connection;
 use crate::MAX_FRAME_SIZE;
-use crate::PROTOCOL_VERSION;
 use crate::MAX_FRAME_WINDOW_SIZE;
 use crate::MAX_PACKET_WINDOW_SIZE;
+use crate::PROTOCOL_VERSION;
 use crate::SendMode;
+use crate::udp_frame_sink::UdpFrameSink;
 
 static HANDSHAKE_RESEND_INTERVAL_MS: u64 = 2000;
 static HANDSHAKE_RESEND_COUNT: u8 = 8;
@@ -24,43 +24,54 @@ static DISCONNECT_RESEND_COUNT: u8 = 8;
 static CLOSED_TIMEOUT_MS: u64 = 15000;
 
 pub struct Config {
-    pub peer_config: EndpointConfig,
+    /// Endpoint configuration to use for outbound server connections.
+    pub endpoint_config: EndpointConfig,
 }
 
 impl Config {
+    /// Returns true if the given configuration is valid.
     pub fn is_valid(&self) -> bool {
-        return self.peer_config.is_valid();
+        self.endpoint_config.is_valid()
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            peer_config: Default::default(),
+            endpoint_config: Default::default(),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum ErrorType {
+    /// Indicates a generic handshake failure while attempting to establish a connection with a
+    /// server.
     HandshakeError,
+    /// Indicates that the connection request timed out (the server never responded).
     HandshakeTimeout,
+    /// Indicates that an active connection has timed out.
     Timeout,
 }
 
 #[derive(Debug)]
 pub enum Event {
+    /// Indicates a successful connection to a server.
     Connect,
+    /// Indicates that the server has disconnected. A disconnection event is only produced if either
+    /// party explicitly terminates an active connection.
     Disconnect,
+    /// Signals a packet received from the server.
     Receive(Box<[u8]>),
+    /// Indicates that the connection has been terminated due to an unrecoverable error.
     Error(ErrorType),
 }
 
-struct EventPacketSink<'a> {
+struct PacketReceiveSink<'a> {
     event_queue: &'a mut Vec<Event>,
 }
 
-impl<'a> EventPacketSink<'a> {
+impl<'a> PacketReceiveSink<'a> {
     fn new(event_queue: &'a mut Vec<Event>) -> Self {
         Self {
             event_queue,
@@ -68,7 +79,7 @@ impl<'a> EventPacketSink<'a> {
     }
 }
 
-impl<'a> half_connection::PacketSink for EventPacketSink<'a> {
+impl<'a> half_connection::PacketSink for PacketReceiveSink<'a> {
     fn send(&mut self, packet_data: Box<[u8]>) {
         self.event_queue.push(Event::Receive(packet_data));
     }
@@ -80,7 +91,7 @@ struct SendEntry {
     mode: SendMode,
 }
 
-pub struct PendingState {
+struct PendingState {
     local_nonce: u32,
 
     request_bytes: Box<[u8]>,
@@ -90,20 +101,20 @@ pub struct PendingState {
     initial_sends: Vec<SendEntry>,
 }
 
-pub struct ActiveState {
+struct ActiveState {
     local_nonce: u32,
     half_connection: half_connection::HalfConnection,
     disconnect_flush: bool,
     timeout_time_ms: u64,
 }
 
-pub struct ClosingState {
+struct ClosingState {
     request_bytes: Box<[u8]>,
     resend_time_ms: u64,
     resend_count: u8,
 }
 
-pub struct ClosedState {
+struct ClosedState {
     timeout_time_ms: u64,
 }
 
@@ -115,6 +126,7 @@ enum State {
     Fin,
 }
 
+/// Manages a single outbound `uflow` connection.
 pub struct Client {
     socket: net::UdpSocket,
     config: Config,
@@ -130,12 +142,16 @@ pub struct Client {
 }
 
 impl Client {
-    /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
-    /// [`Client`](Self) object.
+    /// Opens a non-blocking UDP socket bound to an ephemeral address, and creates a corresponding
+    /// [`Client`](Self) object. A connection to the server at the provided destination address is
+    /// initiated immediately.
+    ///
+    /// An IPv4/IPv6 socket will be opened according to the type of the destination address.
     ///
     /// # Error Handling
     ///
-    /// Any errors resulting from socket initialization are forwarded to the caller.
+    /// Any errors resulting from socket initialization are forwarded to the caller. This function
+    /// will panic if the provided client configuration is not valid.
     pub fn connect<A: net::ToSocketAddrs>(
         dst_addr: A,
         config: Config
@@ -167,15 +183,15 @@ impl Client {
             version: PROTOCOL_VERSION,
             nonce,
             max_receive_rate: config
-                .peer_config
+                .endpoint_config
                 .max_receive_rate
                 .min(u32::MAX as usize) as u32,
             max_packet_size: config
-                .peer_config
+                .endpoint_config
                 .max_packet_size
                 .min(u32::MAX as usize) as u32,
             max_receive_alloc: config
-                .peer_config
+                .endpoint_config
                 .max_receive_alloc
                 .min(u32::MAX as usize) as u32,
         });
@@ -210,10 +226,17 @@ impl Client {
         })
     }
 
-    /// *Note*: Internally, `uflow` uses the [leaky bucket
+    /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
+    /// socket. Returns an iterator of [`server::Event`] objects to signal connection events and
+    /// deliver packets received from the server.
+    ///
+    /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
+    /// the end.
+    ///
+    /// *Note 2*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
-    /// called relatively frequently (a minimum of once per connection round-trip time).
+    /// called regularly and frequently (at least once per connection round-trip time).
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
@@ -228,26 +251,25 @@ impl Client {
         std::mem::take(&mut self.events_out).into_iter()
     }
 
-    /// Sends as many pending outbound frames (packet data, acknowledgements, keep-alives, etc.) as
-    /// possible.
+    /// Sends as many pending outbound frames as possible.
     pub fn flush(&mut self) {
         let now_ms = self.now_ms();
         self.flush_if_active(now_ms);
     }
 
-    /// Enqueues a packet for delivery to the remote host. The packet will be sent on the given
-    /// channel according to the specified mode.
+    /// Enqueues a packet for delivery to the server. The packet will be sent on the given channel
+    /// according to the specified mode.
     ///
     /// # Error Handling
     ///
-    /// This function will panic if `channel_id` does not refer to a valid channel (i.e.
-    /// if `channel_id >= CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
-    /// size](endpoint::Config#structfield.max_packet_size).
+    /// This function will panic if `channel_id` does not refer to a valid channel (`channel_id >=
+    /// CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
+    /// size](endpoint::Config#structfield.max_packet_size) provided to [`Client::connect`].
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
-        assert!(data.len() <= self.config.peer_config.max_packet_size,
+        assert!(data.len() <= self.config.endpoint_config.max_packet_size,
                 "send failed: packet of size {} exceeds configured maximum of {}",
                 data.len(),
-                self.config.peer_config.max_packet_size);
+                self.config.endpoint_config.max_packet_size);
 
         assert!(channel_id < CHANNEL_COUNT,
                 "send failed: channel ID {} is invalid",
@@ -260,15 +282,22 @@ impl Client {
             State::Active(ref mut state) => {
                 state.half_connection.send(data, channel_id as u8, mode);
             }
-            _ => (),
+            State::Closing(_) => {
+                // Disconnecting, nothing to do
+            }
+            State::Closed(_) => {
+                // Remote host has closed this connection, nothing to do
+            }
+            State::Fin => {
+                // Connection is dead, nothing to do
+            }
         }
     }
 
-    /// Explicitly terminates the connection, notifying the remote host in the process.
-    ///
-    /// If the `Peer` is currently connected, all pending packets will be sent prior to
-    /// disconnecting, and a [`Disconnect`](Event::Disconnect) event will be generated once the
-    /// disconnection is complete.
+    /// Gracefully disconnects from the server. If a connection is active, any outbound packets
+    /// currently pending will be sent prior to closing the connection, and a
+    /// [`Disconnect`](Event::Disconnect) event will be generated once the disconnection is
+    /// complete.
     pub fn disconnect(&mut self) {
         match self.state {
             State::Pending(ref mut state) => {
@@ -276,19 +305,60 @@ impl Client {
                 self.state = State::Fin;
             }
             State::Active(ref mut state) => {
-                state.disconnect_flush = true;
+                if state.disconnect_flush == false {
+                    // TODO: Could skip flush phase and enter closing now if nothing is pending
+                    state.disconnect_flush = true;
+                }
             }
-            _ => (),
+            State::Closing(_) => {
+                // Already disconnecting, nothing to do
+            }
+            State::Closed(_) => {
+                // The remote host has already closed this connection, nothing to do
+            }
+            State::Fin => {
+                // Connection is dead, nothing to do
+            }
+        }
+    }
+
+    /// Explicitly terminates the connection, without notifying the server. If a connection is
+    /// active, a [`Disconnect`](Event::Disconnect) event will be generated immediately.
+    pub fn disconnect_now(&mut self) {
+        match self.state {
+            State::Pending(_) => {
+                // No point in assuming the server will reply, so enter fin immediately
+                self.state = State::Fin;
+            }
+            State::Active(_) => {
+                // Signal disconnect
+                self.events_out.push(Event::Disconnect);
+                // Forget now
+                self.state = State::Fin;
+            }
+            State::Closing(_) => {
+                // A disconnect event has not yet been delivered, signal one
+                self.events_out.push(Event::Disconnect);
+                // Forget now
+                self.state = State::Fin;
+            }
+            State::Closed(_) => {
+                // A disconnect event has already been delivered, but forget now
+                self.state = State::Fin;
+            }
+            State::Fin => {
+                // Connection is dead, nothing to do
+            }
         }
     }
 
     /// Returns the local address of the internal UDP socket.
-    pub fn local_addr(&self) -> net::SocketAddr {
+    pub fn local_address(&self) -> net::SocketAddr {
         self.local_addr
     }
 
-    /// Returns the address of the remote host.
-    pub fn remote_addr(&self) -> net::SocketAddr {
+    /// Returns the address of the server.
+    pub fn remote_address(&self) -> net::SocketAddr {
         self.remote_addr
     }
 
@@ -353,12 +423,12 @@ impl Client {
                         tx_packet_base_id: state.local_nonce & packet_id::MASK,
                         rx_packet_base_id: frame.nonce & packet_id::MASK,
 
-                        tx_bandwidth_limit: (self.config.peer_config.max_send_rate as u32).min(frame.max_receive_rate),
+                        tx_bandwidth_limit: (self.config.endpoint_config.max_send_rate as u32).min(frame.max_receive_rate),
 
                         tx_alloc_limit: frame.max_receive_alloc as usize,
-                        rx_alloc_limit: self.config.peer_config.max_receive_alloc as usize,
+                        rx_alloc_limit: self.config.endpoint_config.max_receive_alloc as usize,
 
-                        keepalive: self.config.peer_config.keepalive,
+                        keepalive: self.config.endpoint_config.keepalive,
                     };
 
                     let mut half_connection = half_connection::HalfConnection::new(config);
@@ -377,10 +447,6 @@ impl Client {
                         disconnect_flush: false,
                         timeout_time_ms: ACTIVE_TIMEOUT_MS,
                     });
-                } else {
-                    // Forget connection and signal handshake error
-                    self.events_out.push(Event::Error(ErrorType::HandshakeError));
-                    self.state = State::Fin;
                 }
             }
             State::Active(ref state) => {
@@ -426,28 +492,50 @@ impl Client {
         // connection?
 
         match self.state {
-            State::Fin => return,
-            _ => (),
-        }
+            State::Pending(_) => {
+                let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                let _ = self.socket.send(&reply.write());
 
-        let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
-        let _ = self.socket.send(&reply.write());
-
-        // Signal remaining received packets prior to connection destruction
-        match self.state {
+                // Close now, but forget after a timeout
+                self.state = State::Closed(ClosedState {
+                    timeout_time_ms: now_ms + CLOSED_TIMEOUT_MS,
+                });
+            },
             State::Active(ref mut state) => {
-                state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
-            }
-            _ => (),
+                let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                let _ = self.socket.send(&reply.write());
+
+                // Signal any remaining received packets prior to connection destruction
+                state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
+
+                // Signal disconnect
+                self.events_out.push(Event::Disconnect);
+
+                // Close now, but forget after a timeout
+                self.state = State::Closed(ClosedState {
+                    timeout_time_ms: now_ms + CLOSED_TIMEOUT_MS,
+                });
+            },
+            State::Closing(_) => {
+                // This may as well be an acknowledgement
+                let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                let _ = self.socket.send(&reply.write());
+
+                // Signal disconnect
+                self.events_out.push(Event::Disconnect);
+
+                // Close now, but forget after a timeout
+                self.state = State::Closed(ClosedState {
+                    timeout_time_ms: now_ms + CLOSED_TIMEOUT_MS,
+                });
+            },
+            State::Closed(_) => {
+                // Acknowledge subsequent disconnection requests
+                let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                let _ = self.socket.send(&reply.write());
+            },
+            State::Fin => (),
         }
-
-        // Signal disconnect
-        self.events_out.push(Event::Disconnect);
-
-        // Close now, but forget after a timeout
-        self.state = State::Closed(ClosedState {
-            timeout_time_ms: now_ms + CLOSED_TIMEOUT_MS,
-        });
     }
 
     fn handle_disconnect_ack(&mut self) {
@@ -573,7 +661,7 @@ impl Client {
                     self.state = State::Fin;
                 }
             }
-            _ => (),
+            State::Fin => (),
         }
     }
 
@@ -582,7 +670,7 @@ impl Client {
             State::Active(ref mut state) => {
                 // Process and signal received packets
                 state.half_connection.step();
-                state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
+                state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
             }
             _ => (),
         }
@@ -596,7 +684,7 @@ impl Client {
 
                 if state.disconnect_flush && !state.half_connection.is_send_pending() {
                     // Signal remaining received packets
-                    state.half_connection.receive(&mut EventPacketSink::new(&mut self.events_out));
+                    state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
 
                     // Attempt to close the connection
                     let request_bytes = frame::Frame::DisconnectFrame(frame::DisconnectFrame {}).write();
