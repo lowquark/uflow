@@ -14,14 +14,14 @@ use crate::SendMode;
 use crate::udp_frame_sink::UdpFrameSink;
 
 static HANDSHAKE_RESEND_INTERVAL_MS: u64 = 2000;
-static HANDSHAKE_RESEND_COUNT: u8 = 8;
+static HANDSHAKE_RESEND_COUNT: u8 = 10;
 
-static ACTIVE_TIMEOUT_MS: u64 = 15000;
+static ACTIVE_TIMEOUT_MS: u64 = 20000;
 
 static DISCONNECT_RESEND_INTERVAL_MS: u64 = 2000;
-static DISCONNECT_RESEND_COUNT: u8 = 8;
+static DISCONNECT_RESEND_COUNT: u8 = 10;
 
-static CLOSED_TIMEOUT_MS: u64 = 15000;
+static CLOSED_TIMEOUT_MS: u64 = 20000;
 
 /// Stores configuration parameters for a [`Client`](Client) object.
 pub struct Config {
@@ -45,7 +45,7 @@ impl Default for Config {
 }
 
 /// Represents a connection error.
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub enum ErrorType {
     /// Indicates a generic handshake failure while attempting to establish a connection with a
     /// server.
