@@ -1,4 +1,5 @@
 
+use crate::MAX_FRAME_SIZE;
 use super::*;
 
 mod build;
@@ -21,7 +22,7 @@ const HANDSHAKE_SYN_ACK_FRAME_ID: u8 = 11;
 const HANDSHAKE_ACK_FRAME_ID: u8 = 12;
 const HANDSHAKE_ERROR_FRAME_ID: u8 = 13;
 
-const HANDSHAKE_SYN_FRAME_PAYLOAD_SIZE: usize = 17; // TODO: Pad to 1500 bytes total
+const HANDSHAKE_SYN_FRAME_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - FRAME_OVERHEAD; // Padded to internet MTU
 const HANDSHAKE_SYN_ACK_FRAME_PAYLOAD_SIZE: usize = 20;
 const HANDSHAKE_ACK_FRAME_PAYLOAD_SIZE: usize = 4;
 const HANDSHAKE_ERROR_FRAME_PAYLOAD_SIZE: usize = 5;
@@ -433,7 +434,9 @@ fn read_ack_payload(data: &[u8]) -> Option<Frame> {
 
 
 fn write_handshake_syn(frame: &HandshakeSynFrame) -> Box<[u8]> {
-    let mut frame_bytes = Box::new([
+    let mut frame_bytes = Box::new([0; MAX_FRAME_SIZE]);
+
+    let non_padding_bytes = [
         HANDSHAKE_SYN_FRAME_ID,
         frame.version,
         (frame.nonce >> 24) as u8,
@@ -452,11 +455,9 @@ fn write_handshake_syn(frame: &HandshakeSynFrame) -> Box<[u8]> {
         (frame.max_receive_alloc >> 16) as u8,
         (frame.max_receive_alloc >>  8) as u8,
         (frame.max_receive_alloc      ) as u8,
-        0,
-        0,
-        0,
-        0,
-    ]);
+    ];
+
+    frame_bytes[.. non_padding_bytes.len()].clone_from_slice(&non_padding_bytes);
 
     let frame_len = frame_bytes.len();
     let data_bytes = &frame_bytes[0 .. frame_len - 4];
