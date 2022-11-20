@@ -181,7 +181,7 @@ impl Server {
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
-        self.flush_active_clients(now_ms);
+        self.flush_active_clients();
 
         self.handle_frames(now_ms);
 
@@ -189,59 +189,35 @@ impl Server {
 
         self.active_clients.retain(|client| client.borrow().is_active());
 
-        self.step_active_clients();
+        self.step_active_clients(now_ms);
 
         std::mem::take(&mut self.events_out).into_iter()
     }
 
     /// Sends as many pending outbound frames as possible for each client.
     pub fn flush(&mut self) {
-        let now_ms = self.now_ms();
-
-        self.flush_active_clients(now_ms);
-    }
-
-    /// Gracefully disconnects the client at the provided address. Any outbound packets currently
-    /// pending will be sent prior to closing the connection.
-    pub fn disconnect(&mut self, client_addr: &net::SocketAddr) {
-        if let Some(client_rc) = self.clients.get(client_addr) {
-            let mut client = client_rc.borrow_mut();
-
-            match client.state {
-                remote_client::State::Active(ref mut state) => {
-                    state.disconnect_flush = true;
-                }
-                _ => (),
-            }
-        }
-    }
-
-    /// Immediately disconnects the client at the provided address. The client will not be
-    /// notified, and a [`Disconnect`](Event::Disconnect) event will be generated immediately.
-    pub fn disconnect_now(&mut self, client_addr: &net::SocketAddr) {
-        if let Some(client_rc) = self.clients.get(&client_addr) {
-            let mut client = client_rc.borrow_mut();
-
-            // Signal remaining received packets prior to connection destruction
-            match client.state {
-                remote_client::State::Active(ref mut state) => {
-                    state.half_connection.receive(&mut EventPacketSink::new(*client_addr, &mut self.events_out));
-                }
-                _ => (),
-            }
-
-            // Forget client and signal disconnect
-            self.events_out.push(Event::Disconnect(*client_addr));
-
-            std::mem::drop(client);
-            self.clients.remove(&client_addr);
-        }
+        self.flush_active_clients();
     }
 
     /// Returns an object representing the client at the given address. Returns `None` if no such
     /// client exists.
     pub fn client(&self, client_addr: &net::SocketAddr) -> Option<&Rc<RefCell<remote_client::RemoteClient>>> {
         self.clients.get(client_addr)
+    }
+
+    /// Immediately terminates the client connection with the provided address. No further data
+    /// will be sent or received, and a timeout error will be generated on the client.
+    pub fn drop(&mut self, client_addr: &net::SocketAddr) {
+        if let Some(client_rc) = self.clients.get(client_addr) {
+            match client_rc.borrow().state {
+                remote_client::State::Active(_) => {
+                    self.active_clients.retain(|entry| !Rc::ptr_eq(&entry, &client_rc));
+                }
+                _ => (),
+            }
+
+            self.clients.remove(client_addr);
+        }
     }
 
     fn now_ms(&self) -> u64 {
@@ -397,8 +373,8 @@ impl Server {
 
                         client.state = remote_client::State::Active(remote_client::ActiveState {
                             half_connection,
-                            disconnect_flush: false,
                             timeout_time_ms: now_ms + ACTIVE_TIMEOUT_MS,
+                            disconnect_signal: None,
                         });
 
                         self.active_clients.push(Rc::clone(&client_rc));
@@ -665,6 +641,8 @@ impl Server {
                         // Forget client and signal timeout
                         self.events_out.push(Event::Error(client_addr, ErrorType::Timeout));
                         self.clients.remove(&client.address);
+
+                        // XXX TODO: The client must be removed from the active list as well!
                     }
                 }
                 _ => (),
@@ -672,33 +650,20 @@ impl Server {
         }
     }
 
-    fn step_active_clients(&mut self) {
+    fn step_active_clients(&mut self, now_ms: u64) {
         for client_rc in self.active_clients.iter() {
             let mut client = client_rc.borrow_mut();
             let client_addr = client.address;
 
             match client.state {
                 remote_client::State::Active(ref mut state) => {
-                    // Process and signal received packets
-                    state.half_connection.step();
-                    state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
-                }
-                _ => (),
-            }
-        }
-    }
+                    let disconnect_now = match state.disconnect_signal {
+                        Some(remote_client::DisconnectMode::Now) => true,
+                        Some(remote_client::DisconnectMode::Flush) => !state.half_connection.is_send_pending(),
+                        None => false,
+                    };
 
-    fn flush_active_clients(&mut self, now_ms: u64) {
-        for client_rc in self.active_clients.iter() {
-            let mut client = client_rc.borrow_mut();
-            let client_addr = client.address;
-
-            match client.state {
-                remote_client::State::Active(ref mut state) => {
-                    let ref mut data_sink = UdpFrameSink::new(&self.socket, client_addr);
-                    state.half_connection.flush(data_sink);
-
-                    if state.disconnect_flush && !state.half_connection.is_send_pending() {
+                    if disconnect_now {
                         // Signal remaining received packets
                         state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
 
@@ -711,7 +676,26 @@ impl Server {
                             now_ms + DISCONNECT_RESEND_INTERVAL_MS,
                             DISCONNECT_RESEND_COUNT,
                         ));
+                    } else {
+                        // Process and signal received packets
+                        state.half_connection.step();
+                        state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
                     }
+                }
+                _ => (),
+            }
+        }
+    }
+
+    fn flush_active_clients(&mut self) {
+        for client_rc in self.active_clients.iter() {
+            let mut client = client_rc.borrow_mut();
+            let client_addr = client.address;
+
+            match client.state {
+                remote_client::State::Active(ref mut state) => {
+                    let ref mut data_sink = UdpFrameSink::new(&self.socket, client_addr);
+                    state.half_connection.flush(data_sink);
                 }
                 _ => (),
             }

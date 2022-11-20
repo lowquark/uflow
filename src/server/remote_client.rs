@@ -4,6 +4,11 @@ use crate::half_connection::HalfConnection;
 use crate::SendMode;
 use crate::CHANNEL_COUNT;
 
+pub (super) enum DisconnectMode {
+    Now,
+    Flush,
+}
+
 pub (super) struct PendingState {
     pub local_nonce: u32,
     pub remote_nonce: u32,
@@ -14,8 +19,8 @@ pub (super) struct PendingState {
 
 pub (super) struct ActiveState {
     pub half_connection: HalfConnection,
-    pub disconnect_flush: bool,
     pub timeout_time_ms: u64,
+    pub disconnect_signal: Option<DisconnectMode>,
 }
 
 pub (super) enum State {
@@ -43,7 +48,7 @@ impl RemoteClient {
         }
     }
 
-    /// Enqueues a packet for delivery to the peer. The packet will be sent on the given channel
+    /// Enqueues a packet for delivery to this client. The packet will be sent on the given channel
     /// according to the specified mode. If the connection is not active, the packet will be
     /// silently discarded.
     ///
@@ -65,6 +70,35 @@ impl RemoteClient {
         match self.state {
             State::Active(ref mut state) => {
                 state.half_connection.send(data, channel_id as u8, mode);
+            }
+            _ => (),
+        }
+    }
+
+    /// Gracefully terminates this connection as soon as possible.
+    ///
+    /// If any oubound packets are pending, they may be flushed prior to disconnecting, but no
+    /// packets are guaranteed to be received by the client. The connection will remain active
+    /// until the next call to [`Server::step()`](super::Server::step).
+    pub fn disconnect(&mut self) {
+        match self.state {
+            State::Active(ref mut state) => {
+                state.disconnect_signal = Some(DisconnectMode::Now);
+            }
+            _ => (),
+        }
+    }
+
+    /// Gracefully terminates this connection once all packets have been sent.
+    ///
+    /// If any oubound packets are pending, they will be sent prior to disconnecting. Reliable
+    /// packets can be assumed to have been delievered, so long as the client does not disconnect
+    /// in the meantime. The connection will remain active until the next call to
+    /// [`Server::step()`](super::Server::step) with no pending outbound packets.
+    pub fn disconnect_flush(&mut self) {
+        match self.state {
+            State::Active(ref mut state) => {
+                state.disconnect_signal = Some(DisconnectMode::Flush);
             }
             _ => (),
         }

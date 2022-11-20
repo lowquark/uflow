@@ -237,13 +237,11 @@
 //!
 //! # Disconnecting
 //!
-//! A connection is explicitly closed by calling
-//! [`Client::disconnect()`](client::Client::disconnect) or
-//! [`Server::disconnect()`](server::Server::disconnect), which makes an effort to
-//! notify the remote host of the disconnection, and to send all pending outbound packets before
-//! doing so. The sender can expect that any pending reliable packets will be delivered prior to
-//! disconnecting, provided that the remote host doesn't also disconnect in the meantime. The
-//! application must continue to call `step()` to ensure that the disconnection takes place.
+//! A connection is explicitly closed by calling `disconnect()` or `disconnect_flush()` on the
+//! appropriate `Client` or `RemoteClient` object. `disconnect()` will disconnect on the next call
+//! to `step()`, whereas `disconnect_flush()` will send all pending outbound packets prior to
+//! disconnecting. In both cases the application must continue to call `step()` to ensure that the
+//! disconnection takes place.
 //!
 //! ```
 //! # let server_address = "127.0.0.1:8888";
@@ -251,21 +249,11 @@
 //! # let mut client = uflow::client::Client::connect(server_address, config).unwrap();
 //! client.disconnect();
 //!
-//! // ... calls to step() continue
+//! // ... calls to client.step() continue
 //! ```
 //!
-//! Alternatively, one may call `disconnect_now()`, which sends no further packets and forgets the
-//! connection immediately. Because no notification is sent, this will cause a timeout on the
-//! remote host.
-//!
-//! ```
-//! # let server_address = "127.0.0.1:8888";
-//! # let config = Default::default();
-//! # let mut client = uflow::client::Client::connect(server_address, config).unwrap();
-//! client.disconnect_now();
-//!
-//! assert!(client.is_active() == false);
-//! ```
+//! Servers may also call `drop()`, which sends no further packets and forgets the connection
+//! immediately. This will generate a timeout error on the client.
 
 mod half_connection;
 mod frame;

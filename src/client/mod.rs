@@ -94,6 +94,11 @@ struct SendEntry {
     mode: SendMode,
 }
 
+pub (super) enum DisconnectMode {
+    Now,
+    Flush,
+}
+
 struct PendingState {
     local_nonce: u32,
 
@@ -107,8 +112,8 @@ struct PendingState {
 struct ActiveState {
     local_nonce: u32,
     half_connection: half_connection::HalfConnection,
-    disconnect_flush: bool,
     timeout_time_ms: u64,
+    disconnect_signal: Option<DisconnectMode>,
 }
 
 struct ClosingState {
@@ -243,21 +248,20 @@ impl Client {
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
-        self.flush_if_active(now_ms);
+        self.flush_if_active();
 
         self.handle_frames(now_ms);
 
         self.handle_events(now_ms);
 
-        self.step_if_active();
+        self.step_if_active(now_ms);
 
         std::mem::take(&mut self.events_out).into_iter()
     }
 
     /// Sends as many pending outbound frames as possible.
     pub fn flush(&mut self) {
-        let now_ms = self.now_ms();
-        self.flush_if_active(now_ms);
+        self.flush_if_active();
     }
 
     /// Enqueues a packet for delivery to the server. The packet will be sent on the given channel
@@ -298,10 +302,11 @@ impl Client {
         }
     }
 
-    /// Gracefully disconnects from the server. If a connection is active, any outbound packets
-    /// currently pending will be sent prior to closing the connection, and a
-    /// [`Disconnect`](Event::Disconnect) event will be generated once the disconnection is
-    /// complete.
+    /// Gracefully terminates this connection as soon as possible.
+    ///
+    /// If any oubound packets are pending, they may be flushed prior to disconnecting, but no
+    /// packets are guaranteed to be received by the server. The connection will remain active
+    /// until the next call to [`Client::step()`].
     pub fn disconnect(&mut self) {
         match self.state {
             State::Pending(_) => {
@@ -309,50 +314,28 @@ impl Client {
                 self.state = State::Fin;
             }
             State::Active(ref mut state) => {
-                if state.disconnect_flush == false {
-                    // TODO: Could skip flush phase and enter closing now if nothing is pending
-                    state.disconnect_flush = true;
-                }
+                state.disconnect_signal = Some(DisconnectMode::Now);
             }
-            State::Closing(_) => {
-                // Already disconnecting, nothing to do
-            }
-            State::Closed(_) => {
-                // The remote host has already closed this connection, nothing to do
-            }
-            State::Fin => {
-                // Connection is dead, nothing to do
-            }
+            _ => (),
         }
     }
 
-    /// Explicitly terminates the connection, without notifying the server. If a connection is
-    /// active, a [`Disconnect`](Event::Disconnect) event will be generated immediately.
-    pub fn disconnect_now(&mut self) {
+    /// Gracefully terminates this connection once all packets have been sent.
+    ///
+    /// If any oubound packets are pending, they will be sent prior to disconnecting. Reliable
+    /// packets can be assumed to have been delievered, so long as the client does not disconnect
+    /// in the meantime. The connection will remain active until the next call to
+    /// [`Client::step()`] with no pending outbound packets.
+    pub fn disconnect_flush(&mut self) {
         match self.state {
             State::Pending(_) => {
                 // No point in assuming the server will reply, so enter fin immediately
                 self.state = State::Fin;
             }
-            State::Active(_) => {
-                // Signal disconnect
-                self.events_out.push(Event::Disconnect);
-                // Forget now
-                self.state = State::Fin;
+            State::Active(ref mut state) => {
+                state.disconnect_signal = Some(DisconnectMode::Flush);
             }
-            State::Closing(_) => {
-                // A disconnect event has not yet been delivered, signal one
-                self.events_out.push(Event::Disconnect);
-                // Forget now
-                self.state = State::Fin;
-            }
-            State::Closed(_) => {
-                // A disconnect event has already been delivered, but forget now
-                self.state = State::Fin;
-            }
-            State::Fin => {
-                // Connection is dead, nothing to do
-            }
+            _ => (),
         }
     }
 
@@ -458,8 +441,8 @@ impl Client {
                     self.state = State::Active(ActiveState {
                         local_nonce: state.local_nonce,
                         half_connection,
-                        disconnect_flush: false,
                         timeout_time_ms: ACTIVE_TIMEOUT_MS,
+                        disconnect_signal: None,
                     });
                 }
             }
@@ -678,24 +661,16 @@ impl Client {
         }
     }
 
-    fn step_if_active(&mut self) {
+    fn step_if_active(&mut self, now_ms: u64) {
         match self.state {
             State::Active(ref mut state) => {
-                // Process and signal received packets
-                state.half_connection.step();
-                state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
-            }
-            _ => (),
-        }
-    }
+                let disconnect_now = match state.disconnect_signal {
+                    Some(DisconnectMode::Now) => true,
+                    Some(DisconnectMode::Flush) => !state.half_connection.is_send_pending(),
+                    None => false,
+                };
 
-    fn flush_if_active(&mut self, now_ms: u64) {
-        match self.state {
-            State::Active(ref mut state) => {
-                let ref mut data_sink = UdpFrameSink::new(&self.socket, self.remote_addr);
-                state.half_connection.flush(data_sink);
-
-                if state.disconnect_flush && !state.half_connection.is_send_pending() {
+                if disconnect_now {
                     // Signal remaining received packets
                     state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
 
@@ -708,7 +683,21 @@ impl Client {
                         resend_time_ms: now_ms + DISCONNECT_RESEND_INTERVAL_MS,
                         resend_count: DISCONNECT_RESEND_COUNT,
                     });
+                } else {
+                    // Process and signal received packets
+                    state.half_connection.step();
+                    state.half_connection.receive(&mut PacketReceiveSink::new(&mut self.events_out));
                 }
+            }
+            _ => (),
+        }
+    }
+
+    fn flush_if_active(&mut self) {
+        match self.state {
+            State::Active(ref mut state) => {
+                let ref mut data_sink = UdpFrameSink::new(&self.socket, self.remote_addr);
+                state.half_connection.flush(data_sink);
             }
             _ => (),
         }
