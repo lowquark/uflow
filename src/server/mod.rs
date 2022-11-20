@@ -4,7 +4,7 @@ use std::net;
 use std::rc::Rc;
 use std::time;
 
-use crate::endpoint_config::EndpointConfig;
+use crate::EndpointConfig;
 use crate::frame::serial::Serialize;
 use crate::frame;
 use crate::half_connection;
