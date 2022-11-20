@@ -1,6 +1,25 @@
 
 # Changelog
 
+## 0.7.0
+
+The public API has changed significantly since the previous version. The three
+primary changes are as follows:
+
+* A 3-way handshake similar to TCP has been implemented. This removes the
+  possibility of connecting two `Client` objects simultaneously, but allows
+  servers to be far more robust to spam and DDoS reflection attacks.
+
+* Client objects now manage a single outbound connection, which resolves a
+  major bug involving simultaneous connections to the same server. In general,
+  a `Client` object is a drop-in replacement for a `Peer` object.
+
+* Packets and connection events are received from the `Client`/`Server` object
+  directly after the call to `step()`, rather than through an awkward
+  combination of `step()` followed by `Peer::poll_events()`. This means that
+  events from all connected clients must be handled in one place, but enables
+  easier management of per-connection userdata.
+
 ## 0.6.1
 
 * Subtly optimized memory usage of sender fragment acknowledgement flags

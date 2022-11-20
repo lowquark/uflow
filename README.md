@@ -9,10 +9,9 @@ by the venerable [ENet](http://enet.bespin.org) library.
 ## Features
 
   * Packet-oriented data transfer between two hosts
-  * 4-way connection handshake supporting both client-server and peer-to-peer
-    connections
   * Automatic packet fragmentation and reassembly according to the internet MTU
     (1500 bytes)
+  * 3-way connection handshake for proper connection management
   * Up to 64 independently sequenced packet streams
   * 4 intuitive packet transfer modes: *Time-Sensitive*, *Unreliable*,
     *Persistent*, and *Reliable*
@@ -26,6 +25,7 @@ by the venerable [ENet](http://enet.bespin.org) library.
     allocation attacks)
   * Nonce-validated data acknowledgements (to prevent loss rate / bandwidth
     spoofing)
+  * Resilient to DDoS amplification (request-reply ratio ≈ 28:1)
   * Meticulously designed and unit tested to ensure stall-free behavior
   * Threadless, non-blocking implementation
 
