@@ -233,9 +233,7 @@
 //! If desired, the sender may call `flush()` on the associated client or server object immediately
 //! after all events from `step()` have been handled. By doing so, information relating to which
 //! packets have been delivered (and how much buffer space is available) will be relayed to the
-//! sender as soon as possible. Although this will prevent acknowledgement data from being
-//! aggregated with any subsequent packet data, the resulting increase in bandwidth is probably
-//! inconsequential.
+//! sender as soon as possible.
 //!
 //! # Disconnecting
 //!
