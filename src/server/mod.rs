@@ -209,13 +209,8 @@ impl Server {
     /// will be sent or received, and a timeout error will be generated on the client.
     pub fn drop(&mut self, client_addr: &net::SocketAddr) {
         if let Some(client_rc) = self.clients.get(client_addr) {
-            match client_rc.borrow().state {
-                remote_client::State::Active(_) => {
-                    self.active_clients.retain(|entry| !Rc::ptr_eq(&entry, &client_rc));
-                }
-                _ => (),
-            }
-
+            // Forget client immediately
+            client_rc.borrow_mut().state = remote_client::State::Fin;
             self.clients.remove(client_addr);
         }
     }
@@ -385,6 +380,7 @@ impl Server {
                         // Bad handshake, forget client and signal handshake error
                         self.events_out.push(Event::Error(client_addr, ErrorType::HandshakeError));
 
+                        client.state = remote_client::State::Fin;
                         std::mem::drop(client);
                         self.clients.remove(&client_addr);
                     }
@@ -434,13 +430,14 @@ impl Server {
         client_addr: net::SocketAddr
     ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
-            let client = client_rc.borrow();
+            let mut client = client_rc.borrow_mut();
 
             match client.state {
                 remote_client::State::Closing => {
                     // Forget client and signal disconnect
                     self.events_out.push(Event::Disconnect(client_addr));
 
+                    client.state = remote_client::State::Fin;
                     std::mem::drop(client);
                     self.clients.remove(&client_addr);
                 }
@@ -566,7 +563,7 @@ impl Server {
         mut event: event_queue::Event,
         now_ms: u64
     ) {
-        let client = event.client.borrow();
+        let mut client = event.client.borrow_mut();
 
         match client.state {
             remote_client::State::Pending(ref state) => {
@@ -582,6 +579,8 @@ impl Server {
                     } else {
                         // Forget client and signal handshake timeout
                         self.events_out.push(Event::Error(client.address, ErrorType::HandshakeTimeout));
+
+                        client.state = remote_client::State::Fin;
                         self.clients.remove(&client.address);
                     }
                 }
@@ -600,6 +599,8 @@ impl Server {
                     } else {
                         // Forget client and signal timeout
                         self.events_out.push(Event::Error(client.address, ErrorType::Timeout));
+
+                        client.state = remote_client::State::Fin;
                         self.clients.remove(&client.address);
                     }
                 }
@@ -607,6 +608,7 @@ impl Server {
             remote_client::State::Closed => {
                 if event.kind == event_queue::EventType::ClosedTimeout {
                     // Forget client at last (disconnect has already been signaled)
+                    client.state = remote_client::State::Fin;
                     self.clients.remove(&client.address);
                 }
             }
@@ -640,9 +642,9 @@ impl Server {
 
                         // Forget client and signal timeout
                         self.events_out.push(Event::Error(client_addr, ErrorType::Timeout));
-                        self.clients.remove(&client.address);
 
-                        // XXX TODO: The client must be removed from the active list as well!
+                        client.state = remote_client::State::Fin;
+                        self.clients.remove(&client.address);
                     }
                 }
                 _ => (),

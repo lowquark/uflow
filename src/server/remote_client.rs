@@ -28,6 +28,7 @@ pub (super) enum State {
     Active(ActiveState),
     Closing,
     Closed,
+    Fin,
 }
 
 /// Used by a [`Server`](super::Server) object to represent a connected client.
