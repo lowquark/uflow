@@ -670,6 +670,9 @@ impl Server {
                         state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
 
                         // Attempt to close the connection
+                        let request = frame::Frame::DisconnectFrame(frame::DisconnectFrame {});
+                        let _ = self.socket.send_to(&request.write(), client.address);
+
                         client.state = remote_client::State::Closing;
 
                         self.client_events.push(event_queue::Event::new(
