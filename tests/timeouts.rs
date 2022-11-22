@@ -6,7 +6,7 @@ fn client_handshake_timeout() {
     let cfg = Default::default();
     let mut client = uflow::client::Client::connect("127.0.0.1:8888", cfg).unwrap();
 
-    // We expect to see exactly one Error(ErrorType::HandshakeTimeout) within 25 seconds
+    // We expect to see exactly one Error(ErrorType::Timeout) within 25 seconds
     let end_time = time::Instant::now() + time::Duration::from_secs(25);
     let mut timeout_seen = false;
 
@@ -15,7 +15,7 @@ fn client_handshake_timeout() {
             match event {
                 uflow::client::Event::Error(error) => {
                     assert_eq!(timeout_seen, false);
-                    assert_eq!(error, uflow::client::ErrorType::HandshakeTimeout);
+                    assert_eq!(error, uflow::client::ErrorType::Timeout);
                     timeout_seen = true;
                 }
                 other => panic!("unexpected event: {:?}", other),
@@ -93,10 +93,14 @@ fn client_active_timeout() {
 #[test]
 fn server_handshake_timeout() {
     let server = thread::spawn(|| {
-        let cfg = Default::default();
+        let cfg = uflow::server::Config {
+            enable_handshake_errors: true,
+            .. Default::default()
+        };
+
         let mut server = uflow::server::Server::bind("127.0.0.1:7777", cfg).unwrap();
 
-        // We expect to see exactly one Error(_, ErrorType::HandshakeTimeout) within 25 seconds
+        // We expect to see exactly one Error(_, ErrorType::Timeout) within 25 seconds
         let end_time = time::Instant::now() + time::Duration::from_secs(25);
         let mut timeout_seen = false;
 
@@ -105,7 +109,7 @@ fn server_handshake_timeout() {
                 match event {
                     uflow::server::Event::Error(_, error) => {
                         assert_eq!(timeout_seen, false);
-                        assert_eq!(error, uflow::server::ErrorType::HandshakeTimeout);
+                        assert_eq!(error, uflow::server::ErrorType::Timeout);
                         timeout_seen = true;
                     }
                     other => panic!("unexpected event: {:?}", other),

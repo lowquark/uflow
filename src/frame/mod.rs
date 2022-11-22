@@ -27,7 +27,8 @@ pub struct HandshakeAckFrame {
 #[derive(Clone,Debug,PartialEq)]
 pub enum HandshakeErrorType {
     Version,
-    Full,
+    Config,
+    ServerFull,
 }
 
 #[derive(Clone,Debug,PartialEq)]

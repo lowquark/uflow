@@ -153,7 +153,8 @@ fn read_handshake_error_payload(data: &[u8]) -> Option<Frame> {
 
     let error = match data[4] {
         0 => HandshakeErrorType::Version,
-        1 => HandshakeErrorType::Full,
+        1 => HandshakeErrorType::Config,
+        2 => HandshakeErrorType::ServerFull,
         _ => return None,
     };
 
@@ -546,7 +547,8 @@ fn write_handshake_error(frame: &HandshakeErrorFrame) -> Box<[u8]> {
         (frame.nonce_ack      ) as u8,
         match frame.error {
             HandshakeErrorType::Version => 0,
-            HandshakeErrorType::Full => 1,
+            HandshakeErrorType::Config => 1,
+            HandshakeErrorType::ServerFull => 2,
         },
         0,
         0,
@@ -797,7 +799,7 @@ mod tests {
     fn handshake_error_basic() {
         let f = Frame::HandshakeErrorFrame(HandshakeErrorFrame {
             nonce_ack: 0x03246387,
-            error: HandshakeErrorType::Full,
+            error: HandshakeErrorType::ServerFull,
         });
         verify_consistent(&f);
         verify_extra_bytes_fail(&f);

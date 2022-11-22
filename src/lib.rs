@@ -16,9 +16,8 @@
 //! ```
 //! let server_address = "127.0.0.1:8888";
 //! let config = uflow::server::Config {
-//!     max_total_connections: 4096,
 //!     max_active_connections: 8,
-//!     endpoint_config: Default::default(),
+//!     .. Default::default()
 //! };
 //!
 //! // Create a server object

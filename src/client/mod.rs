@@ -47,13 +47,17 @@ impl Default for Config {
 /// Represents a connection error.
 #[derive(Debug,PartialEq)]
 pub enum ErrorType {
-    /// Indicates a generic handshake failure while attempting to establish a connection with a
-    /// server.
-    HandshakeError,
-    /// Indicates that the connection request timed out (the server never responded).
-    HandshakeTimeout,
-    /// Indicates that an active connection has timed out.
+    /// Indicates that an active connection or connection handshake has timed out.
     Timeout,
+    /// Indicates that an inbound connection could not be established due to a protocol version
+    /// mismatch.
+    Version,
+    /// Indicates that a connection could not be established due to an endpoint configuration
+    /// mismatch.
+    Config,
+    /// Indicates that a connection could not be established because the maximum number of clients
+    /// are already connected to the server.
+    ServerFull,
 }
 
 /// Used to signal connection events and deliver received packets.
@@ -471,8 +475,14 @@ impl Client {
         match self.state {
             State::Pending(ref state) => {
                 if frame.nonce_ack == state.local_nonce {
-                    // Forget connection and signal handshake error
-                    self.events_out.push(Event::Error(ErrorType::HandshakeError));
+                    let error_type = match frame.error {
+                        frame::HandshakeErrorType::Version => ErrorType::Version,
+                        frame::HandshakeErrorType::Config => ErrorType::Config,
+                        frame::HandshakeErrorType::ServerFull => ErrorType::ServerFull,
+                    };
+
+                    // Forget connection and signal appropriate handshake error
+                    self.events_out.push(Event::Error(error_type));
                     self.state = State::Fin;
                 }
             }
@@ -625,7 +635,7 @@ impl Client {
                         state.resend_count -= 1;
                     } else {
                         // Signal timeout and forget connection
-                        self.events_out.push(Event::Error(ErrorType::HandshakeTimeout));
+                        self.events_out.push(Event::Error(ErrorType::Timeout));
                         self.state = State::Fin;
                     }
                 }

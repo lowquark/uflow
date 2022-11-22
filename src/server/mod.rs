@@ -36,6 +36,8 @@ pub struct Config {
     pub max_total_connections: usize,
     /// The maximum number of active connections.
     pub max_active_connections: usize,
+    /// Whether to emit events in response to client handshake errors.
+    pub enable_handshake_errors: bool,
     /// Endpoint configuration to use for inbound client connections.
     pub endpoint_config: EndpointConfig,
 }
@@ -54,6 +56,7 @@ impl Default for Config {
         Self {
             max_total_connections: 4096,
             max_active_connections: 32,
+            enable_handshake_errors: false,
             endpoint_config: Default::default(),
         }
     }
@@ -62,14 +65,17 @@ impl Default for Config {
 /// Represents a connection error.
 #[derive(Debug,PartialEq)]
 pub enum ErrorType {
-    /// Indicates a generic handshake failure while attempting to establish a connection with a
-    /// client.
-    HandshakeError,
-    /// Indicates that the client timed out during the handshake (i.e. did not respond to the
-    /// server's ack).
-    HandshakeTimeout,
-    /// Indicates that an active client connection has timed out.
+    /// Indicates that an active connection or connection handshake has timed out.
     Timeout,
+    /// Indicates that an inbound connection could not be established due to a protocol version
+    /// mismatch.
+    Version,
+    /// Indicates that an inbound connection could not be established due to an endpoint
+    /// configuration mismatch.
+    Config,
+    /// Indicates that a connection could not be established because the maximum number of clients
+    /// are already connected to the server.
+    ServerFull,
 }
 
 /// Used to signal connection events and deliver received packets.
@@ -240,6 +246,10 @@ impl Server {
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
 
+            if self.config.enable_handshake_errors {
+                self.events_out.push(Event::Error(client_addr, ErrorType::Version));
+            }
+
             return;
         }
 
@@ -249,9 +259,13 @@ impl Server {
             // No room in the inn
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 nonce_ack: handshake.nonce,
-                error: frame::HandshakeErrorType::Full,
+                error: frame::HandshakeErrorType::ServerFull,
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
+
+            if self.config.enable_handshake_errors {
+                self.events_out.push(Event::Error(client_addr, ErrorType::ServerFull));
+            }
 
             return;
         }
@@ -260,9 +274,13 @@ impl Server {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 nonce_ack: handshake.nonce,
-                error: frame::HandshakeErrorType::Full, // TODO: Better error status
+                error: frame::HandshakeErrorType::Config, // TODO: Better error status
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
+
+            if self.config.enable_handshake_errors {
+                self.events_out.push(Event::Error(client_addr, ErrorType::Config));
+            }
 
             return;
         }
@@ -271,9 +289,13 @@ impl Server {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 nonce_ack: handshake.nonce,
-                error: frame::HandshakeErrorType::Full, // TODO: Better error status
+                error: frame::HandshakeErrorType::Config, // TODO: Better error status
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
+
+            if self.config.enable_handshake_errors {
+                self.events_out.push(Event::Error(client_addr, ErrorType::Config));
+            }
 
             return;
         }
@@ -376,13 +398,6 @@ impl Server {
 
                         // Signal connect
                         self.events_out.push(Event::Connect(client_addr));
-                    } else {
-                        // Bad handshake, forget client and signal handshake error
-                        self.events_out.push(Event::Error(client_addr, ErrorType::HandshakeError));
-
-                        client.state = remote_client::State::Fin;
-                        std::mem::drop(client);
-                        self.clients.remove(&client_addr);
                     }
                 }
                 _ => (),
@@ -577,8 +592,10 @@ impl Server {
                         std::mem::drop(client);
                         self.client_events.push(event);
                     } else {
-                        // Forget client and signal handshake timeout
-                        self.events_out.push(Event::Error(client.address, ErrorType::HandshakeTimeout));
+                        if self.config.enable_handshake_errors {
+                            // Forget client and signal handshake timeout
+                            self.events_out.push(Event::Error(client.address, ErrorType::Timeout));
+                        }
 
                         client.state = remote_client::State::Fin;
                         self.clients.remove(&client.address);
