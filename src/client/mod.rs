@@ -49,8 +49,7 @@ impl Default for Config {
 pub enum ErrorType {
     /// Indicates that an active connection or connection handshake has timed out.
     Timeout,
-    /// Indicates that an inbound connection could not be established due to a protocol version
-    /// mismatch.
+    /// Indicates that a connection could not be established due to a protocol version mismatch.
     Version,
     /// Indicates that a connection could not be established due to an endpoint configuration
     /// mismatch.
@@ -70,7 +69,7 @@ pub enum Event {
     Disconnect,
     /// Signals a packet received from the server.
     Receive(Box<[u8]>),
-    /// Indicates that the connection has been terminated due to an unrecoverable error.
+    /// Indicates that a connection has been terminated due to an unrecoverable error.
     Error(ErrorType),
 }
 
@@ -154,7 +153,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Opens a non-blocking UDP socket bound to an ephemeral address, and creates a corresponding
+    /// Opens a non-blocking UDP socket bound to an ephemeral address, and returns a corresponding
     /// [`Client`](Self) object. A connection to the server at the provided destination address is
     /// initiated immediately.
     ///
@@ -238,9 +237,9 @@ impl Client {
         })
     }
 
-    /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of [`Event`] objects to signal connection events and deliver
-    /// packets received from the server.
+    /// Flushes outbound frames, then processes as many inbound frames as possible from the
+    /// internal socket. Returns an iterator of [`Event`] objects to signal connection events and
+    /// deliver packets received from the server.
     ///
     /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
     /// the end.
@@ -248,7 +247,7 @@ impl Client {
     /// *Note 2*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
-    /// called regularly and frequently (at least once per connection round-trip time).
+    /// called regularly and relatively frequently.
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
@@ -263,20 +262,33 @@ impl Client {
         std::mem::take(&mut self.events_out).into_iter()
     }
 
-    /// Sends as many pending outbound frames as possible.
+    /// Sends as many outbound frames as possible.
     pub fn flush(&mut self) {
         self.flush_if_active();
+    }
+
+    /// Returns `true` if the connection is active, that is, a connection handshake has been
+    /// completed and the remote host has not yet timed out or disconnected. Returns `false`
+    /// otherwise.
+    pub fn is_active(&self) -> bool {
+        match self.state {
+            State::Active(_) => true,
+            _ => false,
+        }
     }
 
     /// Enqueues a packet for delivery to the server. The packet will be sent on the given channel
     /// according to the specified mode.
     ///
+    /// If a connection has not yet been established, the packet will remain enqueued until the
+    /// connection succeeds. Otherwise, if the connection is not active, the packet will be
+    /// silently discarded.
+    ///
     /// # Error Handling
     ///
     /// This function will panic if `channel_id` does not refer to a valid channel (`channel_id >=
     /// CHANNEL_COUNT`), or if `data.len()` exceeds the [maximum packet
-    /// size](crate::endpoint_config::EndpointConfig#structfield.max_packet_size) provided to
-    /// [`connect()`](Self::connect).
+    /// size](crate::EndpointConfig#structfield.max_packet_size).
     pub fn send(&mut self, data: Box<[u8]>, channel_id: usize, mode: SendMode) {
         assert!(data.len() <= self.config.endpoint_config.max_packet_size,
                 "send failed: packet of size {} exceeds configured maximum of {}",
@@ -308,7 +320,7 @@ impl Client {
 
     /// Gracefully terminates this connection as soon as possible.
     ///
-    /// If any oubound packets are pending, they may be flushed prior to disconnecting, but no
+    /// If any outbound packets are pending, they may be flushed prior to disconnecting, but no
     /// packets are guaranteed to be received by the server. The connection will remain active
     /// until the next call to [`Client::step()`].
     pub fn disconnect(&mut self) {
@@ -326,9 +338,9 @@ impl Client {
 
     /// Gracefully terminates this connection once all packets have been sent.
     ///
-    /// If any oubound packets are pending, they will be sent prior to disconnecting. Reliable
-    /// packets can be assumed to have been delievered, so long as the client does not disconnect
-    /// in the meantime. The connection will remain active until the next call to
+    /// If any outbound packets are pending, they will be sent prior to disconnecting. Reliable
+    /// packets can be assumed to have been delievered, so long as the server does not also
+    /// disconnect in the meantime. The connection will remain active until the next call to
     /// [`Client::step()`] with no pending outbound packets.
     pub fn disconnect_flush(&mut self) {
         match self.state {
@@ -364,25 +376,15 @@ impl Client {
     }
 
     /// Returns the combined size of all outstanding packets (i.e. those which have not yet been
-    /// acknowledged by the server), in bytes.
+    /// acknowledged), in bytes.
     ///
-    /// This figure represents the amount of memory allocated by outgoing packets. Thus, packets
-    /// which are marked [`Time-Sensitive`](SendMode::TimeSensitive) are included in this total,
-    /// even if they would not be sent.
+    /// This figure represents the amount of memory allocated for outgoing packets. Packets which
+    /// are marked [`TimeSensitive`](SendMode::TimeSensitive) are included in this total, even if
+    /// they would not be sent.
     pub fn send_buffer_size(&self) -> usize {
         match self.state {
             State::Active(ref state) => state.half_connection.send_buffer_size(),
             _ => 0,
-        }
-    }
-
-    /// Returns `true` if the connection is active, that is, a connection handshake has been
-    /// completed and the remote host has not yet timed out or disconnected. Returns `false`
-    /// otherwise.
-    pub fn is_active(&self) -> bool {
-        match self.state {
-            State::Active(_) => true,
-            _ => false,
         }
     }
 

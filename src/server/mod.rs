@@ -73,8 +73,8 @@ pub enum ErrorType {
     /// Indicates that an inbound connection could not be established due to an endpoint
     /// configuration mismatch.
     Config,
-    /// Indicates that a connection could not be established because the maximum number of clients
-    /// are already connected to the server.
+    /// Indicates that an inbound connection could not be established because the maximum number of
+    /// clients are already connected to the server.
     ServerFull,
 }
 
@@ -88,7 +88,7 @@ pub enum Event {
     Disconnect(net::SocketAddr),
     /// Signals a packet received from a client.
     Receive(net::SocketAddr, Box<[u8]>),
-    /// Indicates that the connection has been terminated due to an unrecoverable error.
+    /// Indicates that a connection has been terminated due to an unrecoverable error.
     Error(net::SocketAddr, ErrorType),
 }
 
@@ -128,7 +128,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Opens a non-blocking UDP socket bound to the provided address, and creates a corresponding
+    /// Opens a non-blocking UDP socket bound to the provided address, and returns a corresponding
     /// [`Server`](Self) object.
     ///
     /// # Error Handling
@@ -157,13 +157,13 @@ impl Server {
     }
 
     /// Equivalent to calling [`bind()`](Self::bind) with address
-    /// `(`[`std::net::Ipv4Addr::UNSPECIFIED`](std::net::Ipv4Addr::UNSPECIFIED)`, 0)`.
+    /// `(std::net::Ipv4Addr::UNSPECIFIED, 0)`.
     pub fn bind_any_ipv4(config: Config) -> Result<Self, std::io::Error> {
         Self::bind((net::Ipv4Addr::UNSPECIFIED, 0), config)
     }
 
     /// Equivalent to calling [`bind()`](Self::bind) with address
-    /// `(`[`std::net::Ipv6Addr::UNSPECIFIED`](std::net::Ipv6Addr::UNSPECIFIED)`, 0)`.
+    /// `(std::net::Ipv6Addr::UNSPECIFIED, 0)`.
     pub fn bind_any_ipv6(config: Config) -> Result<Self, std::io::Error> {
         Self::bind((net::Ipv6Addr::UNSPECIFIED, 0), config)
     }
@@ -173,9 +173,9 @@ impl Server {
         self.socket.local_addr().unwrap()
     }
 
-    /// Flushes pending outbound frames, and reads as many UDP frames as possible from the internal
-    /// socket. Returns an iterator of [`Event`] objects to signal connection events and deliver
-    /// received packets for each client.
+    /// Flushes outbound frames, then processes as many inbound frames as possible from the
+    /// internal socket. Returns an iterator of [`Event`] objects to signal connection events and
+    /// deliver received packets for each client.
     ///
     /// *Note 1*: All events are considered delivered, even if the iterator is not consumed until
     /// the end.
@@ -183,7 +183,7 @@ impl Server {
     /// *Note 2*: Internally, `uflow` uses the [leaky bucket
     /// algorithm](https://en.wikipedia.org/wiki/Leaky_bucket) to control the rate at which UDP
     /// frames are sent. To ensure that data is transferred smoothly, this function should be
-    /// called regularly and frequently (at least once per connection round-trip time).
+    /// called regularly and relatively frequently.
     pub fn step(&mut self) -> impl Iterator<Item = Event> {
         let now_ms = self.now_ms();
 
@@ -200,19 +200,19 @@ impl Server {
         std::mem::take(&mut self.events_out).into_iter()
     }
 
-    /// Sends as many pending outbound frames as possible for each client.
+    /// Sends as many outbound frames as possible for each client.
     pub fn flush(&mut self) {
         self.flush_active_clients();
     }
 
-    /// Returns an object representing the client at the given address. Returns `None` if no such
-    /// client exists.
+    /// Returns a reference to the [`RemoteClient`] with the given address. Returns `None` if no
+    /// such client exists.
     pub fn client(&self, client_addr: &net::SocketAddr) -> Option<&Rc<RefCell<remote_client::RemoteClient>>> {
         self.clients.get(client_addr)
     }
 
-    /// Immediately terminates the client connection with the provided address. No further data
-    /// will be sent or received, and a timeout error will be generated on the client.
+    /// Immediately terminates the connection with the given address. No further data will be sent
+    /// or received, and a timeout error will be generated on the client.
     pub fn drop(&mut self, client_addr: &net::SocketAddr) {
         if let Some(client_rc) = self.clients.get(client_addr) {
             // Forget client immediately
@@ -274,7 +274,7 @@ impl Server {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 nonce_ack: handshake.nonce,
-                error: frame::HandshakeErrorType::Config, // TODO: Better error status
+                error: frame::HandshakeErrorType::Config,
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
 
@@ -289,7 +289,7 @@ impl Server {
             // This connection may stall
             let reply = frame::Frame::HandshakeErrorFrame(frame::HandshakeErrorFrame {
                 nonce_ack: handshake.nonce,
-                error: frame::HandshakeErrorType::Config, // TODO: Better error status
+                error: frame::HandshakeErrorType::Config,
             });
             let _ = self.socket.send_to(&reply.write(), client_addr);
 

@@ -11,7 +11,7 @@
 //! opens a UDP socket bound to the specified address, and returns a corresponding `Server` object.
 //! The number of active connections will be restricted to the configured limit, and each incoming
 //! connection will be initialized using the given endpoint configuration (see:
-//! [`EndpointConfig`]).
+//! [`server::Config`]).
 //!
 //! ```
 //! let server_address = "127.0.0.1:8888";
@@ -26,20 +26,21 @@
 //! ```
 //!
 //! As a non-blocking interface, a server object depends on periodic calls to
-//! [`Server::step()`](server::Server::step) to process inbound traffic, to update connection
-//! states, and for timekeeping. To signal pending events to the application, `step()` returns an
-//! iterator to a list of [`server::Event`] objects which contain information specific to each
-//! event type.
+//! [`Server::step()`](server::Server::step) to process inbound traffic and update connection
+//! states. To signal pending events to the application, `step()` returns an iterator to a list of
+//! [`server::Event`] objects which contain information specific to each event type.
 //!
 //! Once a client handshake has been completed, a [`RemoteClient`](server::RemoteClient) object
-//! will be created to represent the new connection. Connected clients are indexed by address, and
-//! may be accessed by calling [`Server::client()`](server::Server::client).
+//! will be created to represent the new connection. These objects may be obtained by calling
+//! [`Server::client()`](server::Server::client) with the appropriate address. Because
+//! `RemoteClient` does not store user data, it is expected that the application will store
+//! any necessary per-client data in a separate data structure.
 //!
-//! A `RemoteClient` functions as a handle for a given connection, and allows the server to send
-//! packets and query connection status. However, no packets will be placed on the network, and no
-//! received packets will be processed until the next call to
-//! [`Server::step()`](server::Server::step). The application may call
-//! [`Server::flush()`](server::Server::flush) to send all pending outbound data immediately.
+//! A `RemoteClient` functions as a handle for a given connection, and allows the server
+//! application to send packets and query various connection details. However, no packets will be
+//! placed on the network, and no received packets will be processed until the next call to
+//! `step()`. The application may call [`Server::flush()`](server::Server::flush) to send outbound
+//! data immediately.
 //!
 //! A basic server loop that extends the above example is shown below:
 //!
@@ -85,9 +86,9 @@
 //! # Connecting to a Server
 //!
 //! A `uflow` client is created by calling [`Client::connect()`](client::Client::connect), which
-//! opens a non-blocking UDP socket, and initiates a connection using the provided destination
-//! address and endpoint configuration. If the destination address could be resolved, a new
-//! [`Client`](client::Client) object representing the connection will be returned.
+//! opens a non-blocking UDP socket and returns a corresponding [`Client`](client::Client) object.
+//! A connection will be initiated immediately using the provided destination address and
+//! configuration (see [`client::Config`]).
 //!
 //! ```
 //! let server_address = "127.0.0.1:8888";
@@ -99,8 +100,8 @@
 //! ```
 //!
 //! Like a server, a client depends on periodic calls to [`Client::step()`](client::Client::step)
-//! in order to process inbound traffic, to update connection state, and for timekeeping. A basic
-//! client loop extending the above example is shown below:
+//! in order to process inbound traffic and update its connection state. A basic client loop which
+//! extends the above example is shown below:
 //!
 //! ```
 //! # let server_address = "127.0.0.1:8888";
@@ -163,18 +164,19 @@
 //!
 //! ##### Packet Fragmentation and Aggregation
 //!
-//! All packets are aggregated into larger UDP frames, and are automatically divided into fragments
-//! so as to ensure no frame exceeds the internet MTU (1500 bytes). Fragments are transferred with
-//! the same send mode as their containing packet—that is, fragments will be resent if and only if
-//! the packet is marked with [`SendMode::Persistent`] or [`SendMode::Reliable`]. A packet is
-//! considered received once all of its constituent fragments have been received.
+//! Small packets are aggregated into larger UDP frames, and large packets are divided into
+//! fragments such that no frame exceeds the internet MTU (1500 bytes). Each fragment is
+//! transferred with the same send mode as its containing packet—that is, fragments will be resent
+//! if and only if the containing packet is marked with [`SendMode::Persistent`] or
+//! [`SendMode::Reliable`]. A packet is considered received once all of its constituent fragments
+//! have been received.
 //!
 //! ##### Channels
 //!
 //! Each connection contains 64 virtual channels that are used to ensure relative packet ordering:
 //! packets that are received on a given channel will be delivered to the receiving application in
-//! the order they were sent. Packets which are not yet received may be skipped, depending on the
-//! send mode of the particular packet, and whether or not any subsequent packets have been
+//! the order they were sent. Packets which have not yet been received may be skipped, depending on
+//! the send mode of the particular packet, and whether or not any subsequent packets have been
 //! received.
 //!
 //! Because packets that are sent using [`SendMode::Reliable`] may not be skipped, and because all
@@ -198,23 +200,26 @@
 //!
 //! The total size of all packets awaiting delivery can be obtained by calling
 //! [`Client::send_buffer_size()`](client::Client::send_buffer_size) or
-//! [`RemoteClient::send_buffer_size()`](server::RemoteClient::send_buffer_size), and if desired, an
-//! application can use this value to terminate excessively delayed connections. In addition, the
-//! application may send packets using [`SendMode::TimeSensitive`] to drop packets at the sender if
-//! they could not be sent immediately (i.e. prior to the next call to `step()`). In the event that
-//! the total available bandwidth is limited, this prevents outdated packets from using any
-//! unnecessary bandwidth, and prioritizes sending newer packets in the send queue.
+//! [`RemoteClient::send_buffer_size()`](server::RemoteClient::send_buffer_size), and if desired,
+//! an application can use this value to terminate excessively delayed connections. In addition,
+//! the application may send packets using [`SendMode::TimeSensitive`] to drop packets at the
+//! sender if they could not be sent immediately (i.e. during the next call to `step()`). In the
+//! event that the total available bandwidth is limited, this prevents outdated packets from using
+//! any unnecessary bandwidth, and prioritizes sending newer packets in the send queue.
 //!
 //! # Receiving Packets (and Other Events)
 //!
-//! Connection status updates and received packets are delivered to the application by calling
-//! [`Client::step()`](client::Client::step) and [`Server::step()`](server::Server::step), as shown
-//! previously. A `Connect` event will be generated when a connection is first established, and if
-//! either end of the connection explicitly disconnects, a `Disconnect` event will be generated.
-//! Once a packet has been received (and that packet is not waiting for any previous packets), a
-//! `Receive` event will be generated. If an error is encountered, or a connection times out at any
-//! point, an `Error` event will be generated. Once a `Disconnect` or an `Error` event has been
-//! generated, no further events will be generated.
+//! Each time `step()` is called on a `Client` or `Server` object, connection events are returned
+//! via iterator. Because servers may have multiple connections, server events each contain an
+//! associated client address, whereas client events do not. See [`client::Event`] and
+//! [`server::Event`] for more details.
+//!
+//! For client and server, the overall connection-event behavior is as follows. A `Connect` event
+//! will be generated when a connection is first established. If either end of the connection
+//! explicitly disconnects, a `Disconnect` event will be generated. Once a packet has been received
+//! (and that packet is not waiting for any previous packets), a `Receive` event will be generated.
+//! If an error is encountered, or the connection times out at any point, an `Error` event will be
+//! generated. No further events are generated after a `Disconnect` or an `Error` event.
 //!
 //! ##### Maximum Receive Allocation
 //!
@@ -223,22 +228,23 @@
 //! increase until its [maximum receive allocation](EndpointConfig#structfield.max_receive_alloc)
 //! has been reached. At that point, any new packets will be silently ignored.
 //!
-//! *Note*: This feature is intended to guard against memory allocation attacks. A well-behaved
-//! sender will ensure that it does not send new packets exceeding the receiver's memory limit, and
-//! the stall will back-propagate accordingly.
+//! *Note*: This feature is intended to prevent memory allocation attacks. A well-behaved sender
+//! will ensure that it does not send new packets which would exceed the receiver's memory limit,
+//! and the stall will back-propagate accordingly.
 //!
 //! ##### Optimal Acknowledgements
 //!
-//! If desired, the sender may call `flush()` on the associated client or server object immediately
-//! after all events from `step()` have been handled. By doing so, information relating to which
-//! packets have been delivered (and how much buffer space is available) will be relayed to the
-//! sender as soon as possible.
+//! If desired, an application may call `flush()` on the associated client or server object
+//! immediately after all events from `step()` have been handled. By doing so, information relating
+//! to which packets have been delivered (and how much buffer space is available) will be relayed
+//! back to the sender as soon as possible.
 //!
 //! # Disconnecting
 //!
 //! A connection is explicitly closed by calling `disconnect()` or `disconnect_flush()` on the
-//! appropriate `Client` or `RemoteClient` object. `disconnect()` will disconnect on the next call
-//! to `step()`, whereas `disconnect_flush()` will send all pending outbound packets prior to
+//! corresponding [`Client`](client::Client) or [`RemoteClient`](server::RemoteClient) object;
+//! `disconnect()` will initiate the disconnection process on the next call to `step()`, whereas
+//! `disconnect_flush()` will make sure to send all pending outbound packets prior to
 //! disconnecting. In both cases the application must continue to call `step()` to ensure that the
 //! disconnection takes place.
 //!
@@ -251,18 +257,18 @@
 //! // ... calls to client.step() continue
 //! ```
 //!
-//! Servers may also call `drop()`, which sends no further packets and forgets the connection
-//! immediately. This will generate a timeout error on the client.
+//! Servers may also call [`Server::drop()`](server::Server::drop), which sends no further packets
+//! and forgets the connection immediately. This will generate a timeout error on the client.
 
 mod half_connection;
 mod frame;
 mod packet_id;
 mod udp_frame_sink;
 
-/// Contains server-side connection objects and parameters.
+/// Server-related connection objects and parameters.
 pub mod server;
 
-/// Contains client-side connection objects and parameters.
+/// Client-related connection objects and parameters.
 pub mod client;
 
 /// The current protocol version ID.
