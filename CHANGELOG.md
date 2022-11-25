@@ -3,8 +3,7 @@
 
 ## 0.7.0
 
-The public API has changed significantly since the previous version. The three
-primary changes are as follows:
+The public API has changed significantly since the previous version:
 
 * A 3-way handshake similar to TCP has been implemented. This removes the
   possibility of connecting two `Client` objects simultaneously, but allows
@@ -17,8 +16,12 @@ primary changes are as follows:
 * Packets and connection events are received from the `Client`/`Server` object
   directly after the call to `step()`, rather than through an awkward
   combination of `step()` followed by `Peer::poll_events()`. This means that
-  events from all connected clients must be handled in one place, but enables
-  easier management of per-connection userdata.
+  events from all connected clients must be handled in one place, but allows
+  for easier management of per-connection userdata.
+
+* For servers, what now corresponds to a `Peer` object (`RemoteClient`) is not
+  stored within an `Arc<RwLock<...>>`, and thus cannot be passed between
+  threads.
 
 ## 0.6.1
 
