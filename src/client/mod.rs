@@ -493,22 +493,16 @@ impl Client {
     }
 
     fn handle_disconnect(&mut self, now_ms: u64) {
-        // Receiving a disconnect in any state (other than fin) terminates the connection
-        // immediately. The original and subsequent requests are acknowledged for a finite amount
-        // of time.
+        // Receiving a disconnect while active or closing terminates the connection immediately.
+        // The original and subsequent requests are acknowledged for a finite amount of time.
 
         // TODO: Should a disconnect frame contain a nonce field which references the current
         // connection?
 
         match self.state {
             State::Pending(_) => {
-                let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
-                let _ = self.socket.send(&reply.write());
-
-                // Close now, but forget after a timeout
-                self.state = State::Closed(ClosedState {
-                    timeout_time_ms: now_ms + CLOSED_TIMEOUT_MS,
-                });
+                // A client has no reason to respond to a disconnect frame while the connection is
+                // pending
             },
             State::Active(ref mut state) => {
                 let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});

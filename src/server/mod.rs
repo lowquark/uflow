@@ -411,32 +411,58 @@ impl Server {
         now_ms: u64,
     ) {
         if let Some(client_rc) = self.clients.get(&client_addr) {
-            // TODO: Should this response be throttled?
-            let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
-            let _ = self.socket.send_to(&reply.write(), client_addr);
-
             let mut client = client_rc.borrow_mut();
 
-            // Signal remaining received packets prior to connection destruction
             match client.state {
+                remote_client::State::Pending(_) => {
+                    // A pending connection must only respond to an ACK with a valid nonce - do
+                    // nothing until acceptable ACK is received
+                },
                 remote_client::State::Active(ref mut state) => {
+                    let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                    let _ = self.socket.send_to(&reply.write(), client_addr);
+
+                    // Signal remaining received packets prior to connection destruction
                     state.half_connection.receive(&mut EventPacketSink::new(client_addr, &mut self.events_out));
-                }
-                _ => (),
+
+                    // Signal disconnect
+                    self.events_out.push(Event::Disconnect(client_addr));
+
+                    // Close now, but forget after a timeout
+                    client.state = remote_client::State::Closed;
+
+                    self.client_events.push(event_queue::Event::new(
+                        Rc::clone(&client_rc),
+                        event_queue::EventType::ClosedTimeout,
+                        now_ms + CLOSED_TIMEOUT_MS,
+                        0,
+                    ));
+                },
+                remote_client::State::Closing => {
+                    // This may as well be an acknowledgement
+                    let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                    let _ = self.socket.send_to(&reply.write(), client_addr);
+
+                    // Signal disconnect
+                    self.events_out.push(Event::Disconnect(client_addr));
+
+                    // Close now, but forget after a timeout
+                    client.state = remote_client::State::Closed;
+
+                    self.client_events.push(event_queue::Event::new(
+                        Rc::clone(&client_rc),
+                        event_queue::EventType::ClosedTimeout,
+                        now_ms + CLOSED_TIMEOUT_MS,
+                        0,
+                    ));
+                },
+                remote_client::State::Closed => {
+                    // Acknowledge subsequent disconnection requests
+                    let reply = frame::Frame::DisconnectAckFrame(frame::DisconnectAckFrame {});
+                    let _ = self.socket.send_to(&reply.write(), client_addr);
+                },
+                remote_client::State::Fin => (),
             }
-
-            // Signal disconnect
-            self.events_out.push(Event::Disconnect(client_addr));
-
-            // Close now, but forget after a timeout
-            client.state = remote_client::State::Closed;
-
-            self.client_events.push(event_queue::Event::new(
-                Rc::clone(&client_rc),
-                event_queue::EventType::ClosedTimeout,
-                now_ms + CLOSED_TIMEOUT_MS,
-                0,
-            ));
         }
     }
 
