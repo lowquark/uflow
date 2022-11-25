@@ -1,9 +1,9 @@
 
-# Uflow
+# UFlow
 
-Uflow is a Rust library and UDP networking protocol for realtime internet data
+UFlow is a Rust library and UDP networking protocol for realtime internet data
 transfer, with a focus on simplicity and robustness. Though it has been
-designed from the ground up, Uflow's interface and functionality are inspired
+designed from the ground up, UFlow's interface and functionality are inspired
 by the venerable [ENet](http://enet.bespin.org) library.
 
 ## Features
