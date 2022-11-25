@@ -229,7 +229,7 @@ fn client_thread() -> Vec<md5::Digest> {
 }
 
 #[test]
-fn reliable() {
+fn reliable_transfer() {
     thread::spawn(router_thread);
 
     thread::sleep(time::Duration::from_millis(200));

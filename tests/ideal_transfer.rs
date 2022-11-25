@@ -141,7 +141,7 @@ fn client_thread() -> Vec<md5::Digest> {
 }
 
 #[test]
-fn ideal_transfer_two() {
+fn ideal_transfer() {
     let server = thread::spawn(server_thread);
 
     thread::sleep(time::Duration::from_millis(200));
