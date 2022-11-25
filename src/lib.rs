@@ -241,11 +241,11 @@
 //!
 //! # Disconnecting
 //!
-//! A connection is explicitly closed by calling `disconnect()` or `disconnect_flush()` on the
+//! A connection is explicitly closed by calling `disconnect()` or `disconnect_now()` on the
 //! corresponding [`Client`](client::Client) or [`RemoteClient`](server::RemoteClient) object;
-//! `disconnect()` will initiate the disconnection process on the next call to `step()`, whereas
-//! `disconnect_flush()` will make sure to send all pending outbound packets prior to
-//! disconnecting. In both cases the application must continue to call `step()` to ensure that the
+//! `disconnect()` will make sure to send all pending outbound packets prior to disconnecting,
+//! whereas `disconnect_now()` will initiate the disconnection process on the next call to
+//! `step()`. In both cases the application must continue to call `step()` to ensure that the
 //! disconnection takes place.
 //!
 //! ```

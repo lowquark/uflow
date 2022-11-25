@@ -5,7 +5,7 @@ static DURATION: time::Duration = time::Duration::from_secs(1);
 static STEP_INTERVAL: time::Duration = time::Duration::from_millis(100);
 
 #[test]
-fn client_disconnect() {
+fn client_disconnect_now() {
     let server_thread = thread::spawn(|| {
         let cfg = Default::default();
         let mut server = uflow::server::Server::bind("127.0.0.1:9999", cfg).unwrap();
@@ -63,7 +63,7 @@ fn client_disconnect() {
                         assert_eq!(disconnect_seen, false);
                         connect_seen = true;
 
-                        client.disconnect();
+                        client.disconnect_now();
                     }
                     uflow::client::Event::Disconnect => {
                         assert_eq!(connect_seen, true);
@@ -91,7 +91,7 @@ fn client_disconnect() {
 }
 
 #[test]
-fn server_disconnect() {
+fn server_disconnect_now() {
     let server_thread = thread::spawn(|| {
         let cfg = Default::default();
         let mut server = uflow::server::Server::bind("127.0.0.1:8888", cfg).unwrap();
@@ -109,7 +109,7 @@ fn server_disconnect() {
                         assert_eq!(disconnect_seen, false);
                         connect_seen = true;
 
-                        server.client(&peer_address).unwrap().borrow_mut().disconnect();
+                        server.client(&peer_address).unwrap().borrow_mut().disconnect_now();
                     }
                     uflow::server::Event::Disconnect(_) => {
                         assert_eq!(connect_seen, true);
@@ -250,7 +250,7 @@ fn client_disconnect_flush() {
                         assert_eq!(disconnect_seen, false);
                         connect_seen = true;
 
-                        client.disconnect_flush();
+                        client.disconnect();
                         client.send([0, 1, 2, 3].into(), 0, uflow::SendMode::Reliable);
                     }
                     uflow::client::Event::Disconnect => {
@@ -298,7 +298,7 @@ fn server_disconnect_flush() {
                         connect_seen = true;
 
                         let mut client = server.client(&peer_address).unwrap().borrow_mut();
-                        client.disconnect_flush();
+                        client.disconnect();
                         client.send([0, 1, 2, 3].into(), 0, uflow::SendMode::Reliable);
                     }
                     uflow::server::Event::Disconnect(_) => {

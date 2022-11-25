@@ -318,11 +318,12 @@ impl Client {
         }
     }
 
-    /// Gracefully terminates this connection as soon as possible.
+    /// Gracefully terminates this connection once all packets have been sent.
     ///
-    /// If any outbound packets are pending, they may be flushed prior to disconnecting, but no
-    /// packets are guaranteed to be received by the server. The connection will remain active
-    /// until the next call to [`Client::step()`].
+    /// If any outbound packets are pending, they will be sent prior to disconnecting. Reliable
+    /// packets can be assumed to have been delievered, so long as the server does not also
+    /// disconnect in the meantime. The connection will remain active until the next call to
+    /// [`Client::step()`] with no pending outbound packets.
     pub fn disconnect(&mut self) {
         match self.state {
             State::Pending(_) => {
@@ -330,26 +331,25 @@ impl Client {
                 self.state = State::Fin;
             }
             State::Active(ref mut state) => {
-                state.disconnect_signal = Some(DisconnectMode::Now);
+                state.disconnect_signal = Some(DisconnectMode::Flush);
             }
             _ => (),
         }
     }
 
-    /// Gracefully terminates this connection once all packets have been sent.
+    /// Gracefully terminates this connection as soon as possible.
     ///
-    /// If any outbound packets are pending, they will be sent prior to disconnecting. Reliable
-    /// packets can be assumed to have been delievered, so long as the server does not also
-    /// disconnect in the meantime. The connection will remain active until the next call to
-    /// [`Client::step()`] with no pending outbound packets.
-    pub fn disconnect_flush(&mut self) {
+    /// If any outbound packets are pending, they may be flushed prior to disconnecting, but no
+    /// packets are guaranteed to be received by the server. The connection will remain active
+    /// until the next call to [`Client::step()`].
+    pub fn disconnect_now(&mut self) {
         match self.state {
             State::Pending(_) => {
                 // No point in assuming the server will reply, so enter fin immediately
                 self.state = State::Fin;
             }
             State::Active(ref mut state) => {
-                state.disconnect_signal = Some(DisconnectMode::Flush);
+                state.disconnect_signal = Some(DisconnectMode::Now);
             }
             _ => (),
         }

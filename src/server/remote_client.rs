@@ -77,30 +77,30 @@ impl RemoteClient {
         }
     }
 
-    /// Gracefully terminates this connection as soon as possible.
-    ///
-    /// If any outbound packets are pending, they may be flushed prior to disconnecting, but no
-    /// packets are guaranteed to be received by the client. The connection will remain active
-    /// until the next call to [`Server::step()`](super::Server::step).
-    pub fn disconnect(&mut self) {
-        match self.state {
-            State::Active(ref mut state) => {
-                state.disconnect_signal = Some(DisconnectMode::Now);
-            }
-            _ => (),
-        }
-    }
-
     /// Gracefully terminates this connection once all packets have been sent.
     ///
     /// If any outbound packets are pending, they will be sent prior to disconnecting. Reliable
     /// packets can be assumed to have been delievered, so long as the client does not also
     /// disconnect in the meantime. The connection will remain active until the next call to
     /// [`Server::step()`](super::Server::step) with no pending outbound packets.
-    pub fn disconnect_flush(&mut self) {
+    pub fn disconnect(&mut self) {
         match self.state {
             State::Active(ref mut state) => {
                 state.disconnect_signal = Some(DisconnectMode::Flush);
+            }
+            _ => (),
+        }
+    }
+
+    /// Gracefully terminates this connection as soon as possible.
+    ///
+    /// If any outbound packets are pending, they may be flushed prior to disconnecting, but no
+    /// packets are guaranteed to be received by the client. The connection will remain active
+    /// until the next call to [`Server::step()`](super::Server::step).
+    pub fn disconnect_now(&mut self) {
+        match self.state {
+            State::Active(ref mut state) => {
+                state.disconnect_signal = Some(DisconnectMode::Now);
             }
             _ => (),
         }
