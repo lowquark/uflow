@@ -20,8 +20,6 @@ mod remote_client;
 static HANDSHAKE_RESEND_INTERVAL_MS: u64 = 2000;
 static HANDSHAKE_RESEND_COUNT: u8 = 10;
 
-static ACTIVE_TIMEOUT_MS: u64 = 20000;
-
 static DISCONNECT_RESEND_INTERVAL_MS: u64 = 2000;
 static DISCONNECT_RESEND_COUNT: u8 = 10;
 
@@ -390,7 +388,7 @@ impl Server {
 
                         client.state = remote_client::State::Active(remote_client::ActiveState {
                             half_connection,
-                            timeout_time_ms: now_ms + ACTIVE_TIMEOUT_MS,
+                            timeout_time_ms: now_ms + self.config.endpoint_config.active_timeout_ms,
                             disconnect_signal: None,
                         });
 
@@ -502,7 +500,7 @@ impl Server {
                         .half_connection
                         .handle_data_frame(frame);
 
-                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
+                    state.timeout_time_ms = now_ms + self.config.endpoint_config.active_timeout_ms;
                 }
                 _ => (),
             }
@@ -524,7 +522,7 @@ impl Server {
                         .half_connection
                         .handle_ack_frame(frame);
 
-                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
+                    state.timeout_time_ms = now_ms + self.config.endpoint_config.active_timeout_ms;
                 }
                 _ => (),
             }
@@ -546,7 +544,7 @@ impl Server {
                         .half_connection
                         .handle_sync_frame(frame);
 
-                    state.timeout_time_ms = now_ms + ACTIVE_TIMEOUT_MS;
+                    state.timeout_time_ms = now_ms + self.config.endpoint_config.active_timeout_ms;
                 }
                 _ => (),
             }

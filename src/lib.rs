@@ -359,6 +359,10 @@ pub struct EndpointConfig {
     /// for one keepalive interval (currently 5 seconds). If set to false, the connection will time
     /// out if either endpoint does not send data for one timeout interval (currently 20 seconds).
     pub keepalive: bool,
+
+    /// Time in milliseconds after which an active connection will terminate if no data has been received.
+    /// By default this is 20 seconds.
+    pub active_timeout_ms: u64,
 }
 
 impl Default for EndpointConfig {
@@ -377,6 +381,8 @@ impl Default for EndpointConfig {
             max_receive_alloc: 1_000_000,
 
             keepalive: true,
+
+            active_timeout_ms: 20000
         }
     }
 }
