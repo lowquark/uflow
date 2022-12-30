@@ -51,7 +51,13 @@ fn client_active_timeout() {
     });
 
     let client = thread::spawn(|| {
-        let cfg = Default::default();
+        let cfg = uflow::client::Config {
+            endpoint_config: uflow::EndpointConfig {
+                active_timeout_ms: 20000,
+                ..Default::default()
+            }
+        };
+
         let mut client = uflow::client::Client::connect("127.0.0.1:9999", cfg).unwrap();
 
         // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within 25 seconds
@@ -153,7 +159,14 @@ fn server_active_timeout() {
     });
 
     let server = thread::spawn(|| {
-        let cfg = Default::default();
+        let cfg = uflow::server::Config {
+            endpoint_config: uflow::EndpointConfig {
+                active_timeout_ms: 20000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
         let mut server = uflow::server::Server::bind("127.0.0.1:6666", cfg).unwrap();
 
         // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within 25 seconds
