@@ -51,8 +51,7 @@ pub struct Config {
     pub tx_alloc_limit: usize,
     pub rx_alloc_limit: usize,
 
-    pub keepalive: bool,
-    pub keepalive_interval_ms: u64,
+    pub keepalive_interval_ms: Option<u64>,
 }
 
 pub struct HalfConnection {
@@ -78,8 +77,7 @@ pub struct HalfConnection {
     flush_id: u32,
 
     sync_reply: bool,
-    sync_keepalive: bool,
-    sync_keepalive_interval_ms: u64
+    sync_keepalive_interval_ms: Option<u64>,
 }
 
 impl HalfConnection {
@@ -107,7 +105,6 @@ impl HalfConnection {
             flush_id: 0,
 
             sync_reply: false,
-            sync_keepalive: config.keepalive,
             sync_keepalive_interval_ms: config.keepalive_interval_ms,
         }
     }
@@ -270,8 +267,8 @@ impl HalfConnection {
             // is considered in this case, but the rate at which keepalive frames are sent will
             // still be restricted by TFRC's RTO computation and by MIN_SYNC_TIMEOUT_MS.
             if next_frame_id.is_none() && next_packet_id.is_none() {
-                if self.sync_keepalive {
-                    if elapsed_ms < self.sync_keepalive_interval_ms {
+                if let Some(keepalive_interval_ms) = self.sync_keepalive_interval_ms {
+                    if elapsed_ms < keepalive_interval_ms {
                         return Ok(());
                     }
                 } else {
@@ -514,8 +511,7 @@ mod tests {
                 tx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
                 rx_alloc_limit: MAX_FRAGMENT_SIZE * MAX_PACKET_WINDOW_SIZE as usize,
 
-                keepalive: true,
-                keepalive_interval_ms: 5000,
+                keepalive_interval_ms: Some(5000),
             };
 
             Self::new_config(config)
@@ -946,7 +942,7 @@ mod tests {
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
 
-        now_ms += ta.hc.sync_keepalive_interval_ms - 1;
+        now_ms += ta.hc.sync_keepalive_interval_ms.unwrap() - 1;
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
@@ -960,14 +956,14 @@ mod tests {
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 0);
 
-        now_ms += ta.hc.sync_keepalive_interval_ms;
+        now_ms += ta.hc.sync_keepalive_interval_ms.unwrap();
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
         test_sync_frame(&frames[0], frame::SyncFrame { next_frame_id: None, next_packet_id: None });
 
         // Disrupt the normal timing
-        now_ms += ta.hc.sync_keepalive_interval_ms/2;
+        now_ms += ta.hc.sync_keepalive_interval_ms.unwrap()/2;
 
         ta.enqueue_packet(vec![ 0; MAX_FRAGMENT_SIZE ].into_boxed_slice(), 0, SendMode::Unreliable);
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
@@ -981,7 +977,7 @@ mod tests {
 
         ta.receive_ack(frame::AckFrame { frame_acks: Vec::new(), frame_window_base_id: 1, packet_window_base_id: 1 });
 
-        now_ms += ta.hc.sync_keepalive_interval_ms;
+        now_ms += ta.hc.sync_keepalive_interval_ms.unwrap();
 
         let frames = ta.emit_frames(now_ms, rtt_ms, 10000);
         assert_eq!(frames.len(), 1);
@@ -1068,8 +1064,7 @@ mod tests {
             tx_alloc_limit: packet_size,
             rx_alloc_limit: packet_size,
 
-            keepalive: false,
-            keepalive_interval_ms: 5000,
+            keepalive_interval_ms: None,
         };
 
         let mut sender = TestApparatus::new_config(config.clone());

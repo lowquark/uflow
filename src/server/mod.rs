@@ -381,8 +381,11 @@ impl Server {
                             tx_alloc_limit: state.remote_max_receive_alloc as usize,
                             rx_alloc_limit: self.config.endpoint_config.max_receive_alloc as usize,
 
-                            keepalive: self.config.endpoint_config.keepalive,
-                            keepalive_interval_ms: self.config.endpoint_config.keepalive_interval_ms,
+                            keepalive_interval_ms: if self.config.endpoint_config.keepalive {
+                                Some(self.config.endpoint_config.keepalive_interval_ms)
+                            } else {
+                                None
+                            },
                         };
 
                         let half_connection = half_connection::HalfConnection::new(config);
