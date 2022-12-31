@@ -355,17 +355,21 @@ pub struct EndpointConfig {
     /// exceeds this value.
     pub max_receive_alloc: usize,
 
+    // TODO (0.8.0): Combine keepalive and keepalive_interval_ms into Option<u64>
+
     /// Whether the endpoint should automatically send keepalive frames if no data has been sent
-    /// for one keepalive interval (currently 5 seconds). If set to false, the connection will time
-    /// out if either endpoint does not send data for one timeout interval (currently 20 seconds).
+    /// for one keepalive interval (see `keepalive_interval_ms`). If set to false, one endpoint
+    /// must continually send data to avoid causing a timeout on the opposite host.
     pub keepalive: bool,
 
-    /// Interval in milliseconds at which keepalive frames are sent.
-    /// By default this is 5 seconds.
+    /// The interval in milliseconds at which keepalive frames are sent.
+    ///
+    /// *Note*: Keepalive frames will not be sent faster than the connection RTO (computed
+    /// according to TFRC) or 2s, whichever is longer.
     pub keepalive_interval_ms: u64,
 
-    /// Time in milliseconds after which an active connection will terminate if no data has been received.
-    /// By default this is 20 seconds.
+    /// Time in milliseconds after which an active connection will terminate if no frames have been
+    /// received from the remote endpoint.
     pub active_timeout_ms: u64,
 }
 
@@ -376,6 +380,8 @@ impl Default for EndpointConfig {
     ///   * Maximum packet size: 1MB
     ///   * Maximum packet receive allocation: 1MB
     ///   * Keepalive: true
+    ///   * Keepalive interval: 5s
+    ///   * Active timeout: 20s
     fn default() -> Self {
         Self {
             max_send_rate: 2_000_000,

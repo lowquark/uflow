@@ -239,6 +239,11 @@ impl HalfConnection {
         let sync_timeout_ms = rto_ms.max(MIN_SYNC_TIMEOUT_MS);
 
         if elapsed_ms >= sync_timeout_ms {
+            // A sync frame contains a frame ID any time the frame queue contains unacknowledged
+            // frames. This indicates to the receiver that sufficient time has passed since a frame
+            // was sent, and that the frame receive window should be advanced. This effects a call
+            // to `FrameAckQueue::resynchronize()` on the receiver, preventing the send/receive
+            // windows from desynchronizing in the event that many frames are dropped.
             let next_frame_id =
                 if self.frame_queue.next_id() != self.frame_queue.base_id() {
                     Some(self.frame_queue.next_id())
@@ -246,6 +251,12 @@ impl HalfConnection {
                     None
                 };
 
+            // A sync frame contains a packet ID any time the send queue contains unacknowledged
+            // packets and no packet fragments would be resent. This indicates to the receiver that
+            // sufficient time has passed since a packet was sent, and that the packet receive
+            // window should be advanced. This effects a call to `PacketReceiver::resynchronize()`
+            // on the receiver, preventing the send/receive windows from desynchronizing in the
+            // event that many unreliable packets are dropped.
             let next_packet_id =
                 if self.packet_sender.next_id() != self.packet_sender.base_id() &&
                    self.resend_queue.len() == 0 && self.pending_queue.len() == 0 {
@@ -254,6 +265,10 @@ impl HalfConnection {
                     None
                 };
 
+            // If neither a frame ID nor a packet ID would be sent, send a sync frame anyway to
+            // generate an ack and keep the connection alive. The user-specified keeaplive interval
+            // is considered in this case, but the rate at which keepalive frames are sent will
+            // still be restricted by TFRC's RTO computation and by MIN_SYNC_TIMEOUT_MS.
             if next_frame_id.is_none() && next_packet_id.is_none() {
                 if self.sync_keepalive {
                     if elapsed_ms < self.sync_keepalive_interval_ms {
