@@ -1,6 +1,9 @@
 use std::thread;
 use std::time;
 
+static TIMEOUT_MS: u64 = 3000;
+static TEST_TIMEOUT_MS: u64 = 4000;
+
 #[test]
 fn client_handshake_timeout() {
     let cfg = Default::default();
@@ -22,7 +25,7 @@ fn client_handshake_timeout() {
             }
         }
 
-        thread::sleep(time::Duration::from_secs(1));
+        thread::sleep(time::Duration::from_millis(100));
     }
 
     if !timeout_seen {
@@ -53,15 +56,16 @@ fn client_active_timeout() {
     let client = thread::spawn(|| {
         let cfg = uflow::client::Config {
             endpoint_config: uflow::EndpointConfig {
-                active_timeout_ms: 20000,
+                active_timeout_ms: TIMEOUT_MS,
                 ..Default::default()
             }
         };
 
         let mut client = uflow::client::Client::connect("127.0.0.1:9999", cfg).unwrap();
 
-        // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within 25 seconds
-        let end_time = time::Instant::now() + time::Duration::from_secs(25);
+        // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within the test
+        // timeout
+        let end_time = time::Instant::now() + time::Duration::from_millis(TEST_TIMEOUT_MS);
         let mut connect_seen = false;
         let mut timeout_seen = false;
 
@@ -81,7 +85,7 @@ fn client_active_timeout() {
                 }
             }
 
-            thread::sleep(time::Duration::from_secs(1));
+            thread::sleep(time::Duration::from_millis(100));
         }
 
         if !connect_seen {
@@ -161,7 +165,7 @@ fn server_active_timeout() {
     let server = thread::spawn(|| {
         let cfg = uflow::server::Config {
             endpoint_config: uflow::EndpointConfig {
-                active_timeout_ms: 20000,
+                active_timeout_ms: TIMEOUT_MS,
                 ..Default::default()
             },
             ..Default::default()
@@ -169,8 +173,9 @@ fn server_active_timeout() {
 
         let mut server = uflow::server::Server::bind("127.0.0.1:6666", cfg).unwrap();
 
-        // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within 25 seconds
-        let end_time = time::Instant::now() + time::Duration::from_secs(25);
+        // We expect to see exactly one Connect and one Error(ErrorType::Timeout) within the test
+        // timeout
+        let end_time = time::Instant::now() + time::Duration::from_millis(TEST_TIMEOUT_MS);
         let mut connect_seen = false;
         let mut timeout_seen = false;
 
@@ -190,7 +195,7 @@ fn server_active_timeout() {
                 }
             }
 
-            thread::sleep(time::Duration::from_secs(1));
+            thread::sleep(time::Duration::from_millis(100));
         }
 
         if !connect_seen {
