@@ -1,6 +1,11 @@
 
 # Changelog
 
+## 0.7.1
+
+* Added the ability to configure timeouts for active connections, as well as
+  how often keepalive frames are sent.
+
 ## 0.7.0
 
 The public API has changed significantly since the previous version:
